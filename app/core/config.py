@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Server
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8080"))
-    debug: bool = os.getenv("DEBUG", "False").lower() == "true"
+    debug: bool = os.getenv("DEBUG", "False").strip().lower() in ("true", "1", "yes", "on")
     
     # CORS
     cors_origins: list = ["*"]
