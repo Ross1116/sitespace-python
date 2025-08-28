@@ -21,11 +21,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Create uploads directory
-RUN mkdir -p /app/uploads
+# Create uploads directory and make start script executable
+RUN mkdir -p /app/uploads && chmod +x start.sh
 
 # Expose port
 EXPOSE 8080
 
 # Run the application
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
+CMD ["./start.sh"]
