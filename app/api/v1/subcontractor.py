@@ -12,11 +12,10 @@ from ...schemas.subcontractor import (
     SubcontractorCreate, SubcontractorUpdate, SubcontractorResponse, SubcontractorListResponse
 )
 from ...schemas.base import MessageResponse
-import json
 
 router = APIRouter(prefix="/Subcontractor", tags=["Subcontractor"])
 
-@router.post("/saveSubcontractor", response_model=SubcontractorResponse)
+@router.post("/saveSubcontractor", response_model=MessageResponse)
 def save_subcontractor(
     subcontractor: SubcontractorCreate,
     db: Session = Depends(get_db),
@@ -34,34 +33,7 @@ def save_subcontractor(
             )
         
         created_subcontractor = create_subcontractor(db, subcontractor)
-        
-        # Convert the created subcontractor to response format with proper JSON handling
-        subcontractor_data = {
-            'id': created_subcontractor.id,
-            'name': created_subcontractor.name,
-            'email_id': created_subcontractor.email_id,
-            'contractor_project_id': created_subcontractor.contractor_project_id,
-            'contractor_name': created_subcontractor.contractor_name,
-            'contractor_company': created_subcontractor.contractor_company,
-            'contractor_trade': created_subcontractor.contractor_trade,
-            'contractor_email': created_subcontractor.contractor_email,
-            'contractor_phone': created_subcontractor.contractor_phone,
-            'contractor_pass': created_subcontractor.contractor_pass,
-            'created_by': created_subcontractor.created_by,
-            'created_at': created_subcontractor.created_at,
-            'updated_at': created_subcontractor.updated_at
-        }
-        
-        # Handle contractor_project conversion from JSON string to list
-        if created_subcontractor.contractor_project:
-            try:
-                subcontractor_data['contractor_project'] = json.loads(created_subcontractor.contractor_project)
-            except (json.JSONDecodeError, TypeError):
-                subcontractor_data['contractor_project'] = []
-        else:
-            subcontractor_data['contractor_project'] = []
-        
-        return SubcontractorResponse(**subcontractor_data)
+        return MessageResponse(message="Subcontractor saved successfully!")
     except HTTPException:
         raise
     except Exception as e:
@@ -81,21 +53,10 @@ def get_subcontractor_list(
     try:
         subcontractors = get_all_subcontractors(db)
         
-        # Convert contractor_project from JSON strings to lists
-        subcontractor_responses = []
-        for subcontractor in subcontractors:
-            subcontractor_dict = subcontractor.__dict__.copy()
-            if subcontractor_dict.get('contractor_project') and isinstance(subcontractor_dict['contractor_project'], str):
-                try:
-                    subcontractor_dict['contractor_project'] = json.loads(subcontractor_dict['contractor_project'])
-                except (json.JSONDecodeError, TypeError):
-                    subcontractor_dict['contractor_project'] = []
-            subcontractor_responses.append(SubcontractorResponse(**subcontractor_dict))
-        
         return SubcontractorListResponse(
             success=True,
             message="Subcontractors retrieved successfully",
-            data=subcontractor_responses
+            data=subcontractors
         )
     except Exception as e:
         raise HTTPException(
@@ -103,7 +64,7 @@ def get_subcontractor_list(
             detail=f"Failed to retrieve subcontractors: {str(e)}"
         )
 
-@router.put("/updateSubcontractor/{subcontractor_id}", response_model=SubcontractorResponse)
+@router.put("/updateSubcontractor/{subcontractor_id}", response_model=MessageResponse)
 def update_subcontractor_endpoint(
     subcontractor_id: int,
     subcontractor_update: SubcontractorUpdate,
@@ -120,34 +81,7 @@ def update_subcontractor_endpoint(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Subcontractor not found"
             )
-        
-        # Convert the updated subcontractor to response format with proper JSON handling
-        subcontractor_data = {
-            'id': updated_subcontractor.id,
-            'name': updated_subcontractor.name,
-            'email_id': updated_subcontractor.email_id,
-            'contractor_project_id': updated_subcontractor.contractor_project_id,
-            'contractor_name': updated_subcontractor.contractor_name,
-            'contractor_company': updated_subcontractor.contractor_company,
-            'contractor_trade': updated_subcontractor.contractor_trade,
-            'contractor_email': updated_subcontractor.contractor_email,
-            'contractor_phone': updated_subcontractor.contractor_phone,
-            'contractor_pass': updated_subcontractor.contractor_pass,
-            'created_by': updated_subcontractor.created_by,
-            'created_at': updated_subcontractor.created_at,
-            'updated_at': updated_subcontractor.updated_at
-        }
-        
-        # Handle contractor_project conversion from JSON string to list
-        if updated_subcontractor.contractor_project:
-            try:
-                subcontractor_data['contractor_project'] = json.loads(updated_subcontractor.contractor_project)
-            except (json.JSONDecodeError, TypeError):
-                subcontractor_data['contractor_project'] = []
-        else:
-            subcontractor_data['contractor_project'] = []
-        
-        return SubcontractorResponse(**subcontractor_data)
+        return MessageResponse(message="Subcontractor updated successfully!")
     except HTTPException:
         raise
     except Exception as e:

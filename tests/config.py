@@ -35,8 +35,8 @@ ENDPOINTS = {
     "auth": {
         "signup": "/api/auth/signup",
         "signin": "/api/auth/signin",
-        "current_user": "/api/auth/me",
-        "user_by_token": "/api/auth/userbytoken"
+        "current_user": "/api/auth/current-user",
+        "user_by_token": "/api/auth/get-user-by-token"
     },
     "assets": {
         "save": "/api/Asset/saveAsset",
@@ -48,20 +48,20 @@ ENDPOINTS = {
     "slot_booking": {
         "save": "/api/SlotBooking/saveSlotBooking",
         "list": "/api/SlotBooking/getSlotBookingList",
-        "update": "/api/SlotBooking/updateSlotBooking/{booking_id}",
-        "delete": "/api/SlotBooking/deleteSlotBooking/{booking_id}"
+        "update": "/api/SlotBooking/updateSlotBooking",
+        "delete": "/api/SlotBooking/deleteSlotBooking"
     },
     "site_project": {
         "save": "/api/SiteProject/saveSiteProject",
         "list": "/api/SiteProject/getSiteProjectList",
-        "update": "/api/SiteProject/updateSiteProject/{project_id}",
-        "delete": "/api/SiteProject/deleteSiteProject/{project_id}"
+        "update": "/api/SiteProject/updateSiteProject",
+        "delete": "/api/SiteProject/deleteSiteProject"
     },
     "subcontractor": {
         "save": "/api/Subcontractor/saveSubcontractor",
         "list": "/api/Subcontractor/getSubcontractorList",
-        "update": "/api/Subcontractor/updateSubcontractor/{subcontractor_id}",
-        "delete": "/api/Subcontractor/deleteSubcontractor/{subcontractor_id}"
+        "update": "/api/Subcontractor/updateSubcontractor",
+        "delete": "/api/Subcontractor/deleteSubcontractor"
     },
     "file_upload": {
         "upload": "/api/uploadfile"

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseSettings):
-    # Database - Use SQLite for testing
+    # Database - Use PostgreSQL for production, SQLite for testing
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
     
     # JWT
@@ -16,13 +16,13 @@ class Settings(BaseSettings):
     
     # App
     secret_key: str = os.getenv("SECRET_KEY", "PARAGON$87654321")
-    export_files_absolute_path: str = os.getenv("EXPORT_FILES_ABSOLUTE_PATH", "D:/New_folder/")
+    export_files_absolute_path: str = os.getenv("EXPORT_FILES_ABSOLUTE_PATH", "/app/uploads/")
     export_files_server_path: str = os.getenv("EXPORT_FILES_SERVER_PATH", "getFile")
     
     # Server
-    host: str = os.getenv("HOST", "127.0.0.1")
+    host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8080"))
-    debug: bool = os.getenv("DEBUG", "True").lower() == "true"
+    debug: bool = os.getenv("DEBUG", "False").lower() == "true"
     
     # CORS
     cors_origins: list = ["*"]
