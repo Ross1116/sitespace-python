@@ -11,13 +11,22 @@ from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subco
 # Import all models so SQLAlchemy knows about them
 from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model
 
-# Create database tables (optional for testing)
+# Create database tables (optional for testing) - Non-blocking
+def create_tables_if_possible():
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+        return True
+    except Exception as e:
+        print(f"⚠️  Database connection failed: {e}")
+        print("📝 Application will run without database for testing")
+        return False
+
+# Try to create tables but don't block startup
 try:
-    Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created successfully")
+    create_tables_if_possible()
 except Exception as e:
-    print(f"⚠️  Database connection failed: {e}")
-    print("📝 Application will run without database for testing")
+    print(f"⚠️  Table creation skipped: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -77,10 +86,36 @@ async def root():
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "message": "Sitespace API is healthy"
-    }
+    try:
+        # Basic health check - just return success if app is running
+        health_status = {
+            "status": "healthy",
+            "message": "Sitespace API is healthy",
+            "version": "1.0.0"
+        }
+        
+        # Optional: Test database connection (non-blocking)
+        try:
+            from .core.database import engine
+            with engine.connect() as conn:
+                conn.execute("SELECT 1")
+            health_status["database"] = "connected"
+        except Exception as db_error:
+            # Don't fail health check if DB is down
+            health_status["database"] = "disconnected"
+            health_status["db_error"] = str(db_error)
+            print(f"⚠️  Database health check failed: {db_error}")
+        
+        return health_status
+        
+    except Exception as e:
+        # Even if something goes wrong, return a basic response
+        print(f"❌ Health check error: {e}")
+        return {
+            "status": "degraded",
+            "message": "API is running but with issues",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     uvicorn.run(
