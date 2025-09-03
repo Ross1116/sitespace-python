@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8080"))
     debug: bool = os.getenv("DEBUG", "False").strip().lower() in ("true", "1", "yes", "on")
     
-    # CORS
-    cors_origins: list = ["*"]
+    # CORS - Update with your actual frontend domains for production
+    cors_origins: list = os.getenv("CORS_ORIGINS", "https://sitespace.vercel.app").split(",") if os.getenv("CORS_ORIGINS") else ["https://sitespace.vercel.app"]
     
     class Config:
         env_file = ".env"
