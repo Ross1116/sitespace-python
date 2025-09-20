@@ -35,8 +35,8 @@ ENDPOINTS = {
     "auth": {
         "signup": "/api/auth/signup",
         "signin": "/api/auth/signin",
-        "current_user": "/api/auth/current-user",
-        "user_by_token": "/api/auth/get-user-by-token"
+        "current_user": "/api/auth/me",
+        "user_by_token": "/api/auth/userbytoken"
     },
     "assets": {
         "save": "/api/Asset/saveAsset",
