@@ -9,15 +9,15 @@ def get_asset(db: Session, asset_id: int) -> Optional[Asset]:
 def get_asset_by_key(db: Session, asset_key: str) -> Optional[Asset]:
     return db.query(Asset).filter(Asset.asset_key == asset_key).first()
 
-def get_assets_by_project(db: Session, asset_project: str) -> List[Asset]:
-    return db.query(Asset).filter(Asset.asset_project == asset_project).all()
+def get_assets_by_project(db: Session, project_id: int) -> List[Asset]:
+    return db.query(Asset).filter(Asset.project_id == project_id).all()
 
 def get_assets(db: Session, skip: int = 0, limit: int = 100) -> List[Asset]:
     return db.query(Asset).offset(skip).limit(limit).all()
 
 def create_asset(db: Session, asset: AssetCreate) -> Asset:
     db_asset = Asset(
-        asset_project=asset.asset_project,
+        project_id=asset.project_id,
         asset_title=asset.asset_title,
         asset_location=asset.asset_location,
         asset_status=asset.asset_status,

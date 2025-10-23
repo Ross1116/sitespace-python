@@ -22,7 +22,7 @@ class SubcontractorCreate(SubcontractorBase):
 class SubcontractorUpdate(BaseModel):
     name: Optional[str] = None
     email_id: Optional[str] = None
-    contractor_project: Optional[List[str]] = None
+    contractor_project: Optional[List[int]] = None
     contractor_project_id: Optional[str] = None
     contractor_name: Optional[str] = None
     contractor_company: Optional[str] = None

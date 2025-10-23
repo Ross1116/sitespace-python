@@ -8,8 +8,8 @@ import json
 def get_slot_booking(db: Session, booking_id: int) -> Optional[SlotBooking]:
     return db.query(SlotBooking).filter(SlotBooking.id == booking_id).first()
 
-def get_slot_bookings_by_project(db: Session, booking_project: str) -> List[SlotBooking]:
-    return db.query(SlotBooking).filter(SlotBooking.booking_project == booking_project).all()
+def get_slot_bookings_by_project(db: Session, project_id: str) -> List[SlotBooking]:
+    return db.query(SlotBooking).filter(SlotBooking.project_id == project_id).all()
 
 def get_all_slot_bookings(db: Session, skip: int = 0, limit: int = 100) -> List[SlotBooking]:
     return db.query(SlotBooking).offset(skip).limit(limit).all()
@@ -21,7 +21,7 @@ def create_slot_booking(db: Session, slot_booking: SlotBookingCreate) -> SlotBoo
     booked_assets_json = json.dumps(slot_booking.booked_assets) if slot_booking.booked_assets else "[]"
     
     db_slot_booking = SlotBooking(
-        booking_project=slot_booking.booking_project,
+        project_id=slot_booking.project_id,
         booking_title=slot_booking.booking_title,
         booking_for=slot_booking.booking_for,
         booked_assets=booked_assets_json,

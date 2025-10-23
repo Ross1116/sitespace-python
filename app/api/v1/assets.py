@@ -32,7 +32,7 @@ def save_asset(
 
 @router.get("/getAssetList", response_model=AssetListResponse)
 def get_asset_list(
-    asset_project: str = Query(..., description="Project name to filter assets"),
+    project_id: int = Query(..., description="Project name to filter assets"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -40,7 +40,7 @@ def get_asset_list(
     Get list of assets by project
     """
     try:
-        assets = get_assets_by_project(db, asset_project)
+        assets = get_assets_by_project(db, project_id)
         asset_responses = [AssetResponse.from_orm(asset) for asset in assets]
         return AssetListResponse(
             success=True,

@@ -31,7 +31,7 @@ def save_slot_booking(
         # Convert the created booking to response format with proper JSON handling
         booking_data = {
             'id': created_booking.id,
-            'booking_project': created_booking.booking_project,
+            'project_id': created_booking.project_id,
             'booking_title': created_booking.booking_title,
             'booking_for': created_booking.booking_for,
             'booking_status': created_booking.booking_status,
@@ -63,7 +63,7 @@ def save_slot_booking(
 
 @router.get("/getSlotBookingList", response_model=SlotBookingListResponse)
 def get_slot_booking_list(
-    booking_project: Optional[str] = Query(None, description="Filter by project"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -71,8 +71,8 @@ def get_slot_booking_list(
     Get list of slot bookings, optionally filtered by project
     """
     try:
-        if booking_project:
-            bookings = get_slot_bookings_by_project(db, booking_project)
+        if project_id:
+            bookings = get_slot_bookings_by_project(db, project_id)
         else:
             bookings = get_all_slot_bookings(db)
         
@@ -82,7 +82,7 @@ def get_slot_booking_list(
             # Create dict from database object
             booking_data = {
                 'id': booking.id,
-                'booking_project': booking.booking_project,
+                'project_id': booking.project_id,
                 'booking_title': booking.booking_title,
                 'booking_for': booking.booking_for,
                 'booking_status': booking.booking_status,
@@ -139,7 +139,7 @@ def update_slot_booking_endpoint(
         # Convert the updated booking to response format with proper JSON handling
         booking_data = {
             'id': updated_booking.id,
-            'booking_project': updated_booking.booking_project,
+            'project_id': updated_booking.project_id,
             'booking_title': updated_booking.booking_title,
             'booking_for': updated_booking.booking_for,
             'booking_status': updated_booking.booking_status,

@@ -3,7 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 
 class SlotBookingBase(BaseModel):
-    booking_project: str
+    project_id: int
     booking_title: str
     booking_for: Optional[str] = None
     booked_assets: Optional[List[str]] = None
@@ -18,7 +18,7 @@ class SlotBookingCreate(SlotBookingBase):
     pass
 
 class SlotBookingUpdate(BaseModel):
-    booking_project: Optional[str] = None
+    project_id: Optional[int] = None
     booking_title: Optional[str] = None
     booking_for: Optional[str] = None
     booked_assets: Optional[List[str]] = None

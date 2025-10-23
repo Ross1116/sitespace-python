@@ -1,23 +1,27 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Text
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from ..core.database import Base
 
 class SiteProject(Base):
     __tablename__ = "site_projects"
     
     id = Column(Integer, primary_key=True, index=True)
-    contractor_key = Column(String, unique=True, index=True)
-    email_id = Column(String)
-    contractor_project = Column(String)  # Store as JSON string for SQLite compatibility
-    contractor_project_id = Column(String)
-    contractor_name = Column(String)
-    contractor_company = Column(String)
-    contractor_trade = Column(String)
-    contractor_email = Column(String)
-    contractor_phone = Column(String)
-    created_by = Column(String)
+    contractor_key = Column(String, unique=True, index=True, nullable=True)
+    email_id = Column(String, nullable=True)
+    contractor_project = Column(Text, nullable=True)
+    contractor_project_id = Column(String, nullable=True)
+    contractor_name = Column(String, nullable=True)
+    contractor_company = Column(String, nullable=True)
+    contractor_trade = Column(String, nullable=True)
+    contractor_email = Column(String, nullable=True)
+    contractor_phone = Column(String, nullable=True)
+    created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
+    bookings = relationship("SlotBooking", back_populates="project", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<SiteProject(id={self.id}, contractor_name='{self.contractor_name}', company='{self.contractor_company}')>"

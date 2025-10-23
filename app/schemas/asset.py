@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime
 
 class AssetBase(BaseModel):
-    asset_project: str
+    project_id: int
     asset_title: str
     asset_location: Optional[str] = None
     asset_status: Optional[str] = "active"
@@ -17,7 +17,7 @@ class AssetCreate(AssetBase):
     pass
 
 class AssetUpdate(BaseModel):
-    asset_project: Optional[str] = None
+    project_id: Optional[str] = None
     asset_title: Optional[str] = None
     asset_location: Optional[str] = None
     asset_status: Optional[str] = None

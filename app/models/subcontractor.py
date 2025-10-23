@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..core.database import Base
 
@@ -6,10 +7,11 @@ class Subcontractor(Base):
     __tablename__ = "subcontractors"
     
     id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    project = relationship("Project", back_populates="subcontractors")
+
     name = Column(String)
     email_id = Column(String)
-    contractor_project = Column(String)  # Store as JSON string for SQLite compatibility
-    contractor_project_id = Column(String)
     contractor_name = Column(String)
     contractor_company = Column(String)
     contractor_trade = Column(String)
