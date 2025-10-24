@@ -27,6 +27,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if DATABASE_URL:
     try:
+        # Use a short connect timeout for faster retries
         engine = create_engine(DATABASE_URL, connect_args={'connect_timeout': 5})
         with engine.connect() as connection:
             connection.execute(text('SELECT 1'))
@@ -52,26 +53,14 @@ if [ $DB_READY -eq 0 ]; then
 else
     echo "✅ PostgreSQL is running and accepting connections."
 
-    # --- FORCED MIGRATION LOGIC (TEMPORARY FIX) ---
-    # WARNING: This logic is intentionally UNCONDITIONAL to fix the "UndefinedTable" error.
-    # It forces Alembic to clear history and run all CREATE TABLE statements from scratch.
-    echo "⚠️  FORCING FULL SCHEMA RECREATION (stamp base + upgrade head) to resolve UndefinedTable error."
-    echo "   *** YOU MUST REVERT THIS FILE AFTER THIS DEPLOY IS SUCCESSFUL ***"
-    
-    # 1. Force the DB history back to the start (base)
-    alembic stamp base
-    if [ $? -ne 0 ]; then
-        echo "❌ ERROR: Alembic command failed (stamp base)."
-        exit 1
-    fi
-    
-    # 2. Run all migrations from base to head, creating the tables
+    # --- STANDARD MIGRATION LOGIC (SAFE) ---
+    echo "🔄 Running Alembic database migrations (upgrade head)..."
     alembic upgrade head
     if [ $? -ne 0 ]; then
-        echo "❌ ERROR: Alembic command failed (upgrade head after stamp base)."
+        echo "❌ ERROR: Alembic command failed (upgrade head)."
         exit 1
     fi
-    echo "✅ Tables created and Migrations successful."
+    echo "✅ Migrations successful."
 
 fi
 
