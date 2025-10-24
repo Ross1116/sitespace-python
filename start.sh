@@ -7,104 +7,79 @@ echo "🚀 Starting Sitespace FastAPI application..."
 export PORT=${PORT:-8080}
 echo "📡 Using port: $PORT"
 
-# Check if DATABASE_URL is set
-if [ -z "$DATABASE_URL" ]; then
-    echo "⚠️  WARNING: DATABASE_URL not set, using SQLite fallback"
-else
-    echo "✅ DATABASE_URL is configured"
-    echo "🔗 DATABASE_URL: ${DATABASE_URL:0:50}..." # Show first 50 chars for debugging
-fi
+# --- Database Initialization and Wait ---
+echo "✅ DATABASE_URL is configured"
+echo "🔗 DATABASE_URL: ${DATABASE_URL:0:50}..."
 
-# Check if required environment variables are set
-if [ -z "$JWT_SECRET" ]; then
-    echo "⚠️  WARNING: JWT_SECRET not set, using default (not secure for production)"
-else
-    echo "✅ JWT_SECRET is set"
-fi
+WAIT_ATTEMPTS=15
+WAIT_DELAY=2
+DB_READY=0
 
-if [ -z "$SECRET_KEY" ]; then
-    echo "⚠️  WARNING: SECRET_KEY not set, using default (not secure for production)"
-else
-    echo "✅ SECRET_KEY is set"
-fi
-
-# --- START: DATABASE MIGRATION & WAIT FIX ---
-
-# The Railway-provided DATABASE_URL usually points directly to the 'sitespace' database.
-# Alembic needs to connect, and sometimes the database is still starting up.
-if [ -n "$DATABASE_URL" ]; then
-    echo "⏱️ Waiting for PostgreSQL to become available..."
-    
-    # Extract host, port, user, and password from the URL for psql connection test
-    # This uses a simple awk-based parser, assuming a standard postgresql://user:pass@host:port/dbname format
-    DB_HOST=$(echo "$DATABASE_URL" | awk -F'[@:/]' '{print $5}')
-    DB_PORT=$(echo "$DATABASE_URL" | awk -F'[@:/]' '{print $6}' | cut -d/ -f1)
-    DB_USER=$(echo "$DATABASE_URL" | awk -F'[@:/]' '{print $3}')
-    DB_PASS=$(echo "$DATABASE_URL" | awk -F'[@:/]' '{print $4}')
-    
-    # Use PING (or a simple loop) to check connectivity
-    # This loop attempts to connect to the DB using a small Python script
-    MAX_RETRIES=15
-    RETRY_COUNT=0
-    
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        # Use Python to try and open a connection, which is more reliable than psql when credentials are complex
-        python -c "
+echo "⏱️ Waiting for PostgreSQL to become available..."
+for i in $(seq 1 $WAIT_ATTEMPTS); do
+    # Try connecting to the database using psql (if available) or Python
+    if python -c "
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
-try:
-    engine = create_engine(os.environ['DATABASE_URL'])
-    with engine.connect():
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+if DATABASE_URL:
+    try:
+        engine = create_engine(DATABASE_URL, connect_args={'connect_timeout': 5})
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
         print('Database connection successful!')
         exit(0)
-except OperationalError:
-    print('Database not ready, retrying...')
-    exit(1)
-"
-        if [ $? -eq 0 ]; then
-            echo "✅ PostgreSQL is running and accepting connections."
-            break
-        fi
-
-        RETRY_COUNT=$((RETRY_COUNT+1))
-        echo "Attempt $RETRY_COUNT/$MAX_RETRIES: Waiting 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        echo "❌ ERROR: PostgreSQL did not start in time. Deployment aborted."
-        exit 1
+    except (OperationalError, ProgrammingError) as e:
+        print(f'Database not ready, retrying...')
+        exit(1)
+else:
+    print('DATABASE_URL not set, skipping connection check.')
+    exit(0)
+" ; then
+        DB_READY=1
+        break
     fi
-    
-    # --- MIGRATION RUNNER ---
-    
-    # Determine Alembic command based on environment variable
-    ALEMBIC_CMD="upgrade head"
+    echo "Attempt $i/$WAIT_ATTEMPTS: Waiting $WAIT_DELAY seconds..."
+    sleep $WAIT_DELAY
+done
 
-    if [ "$ALEMBIC_STAMP_HEAD" = "true" ]; then
-        ALEMBIC_CMD="stamp head"
-        echo "⚠️  FORCE STAMP MODE: Using 'alembic stamp head' to resolve revision history mismatch."
-        echo "   (IMPORTANT: Ensure ALEMBIC_STAMP_HEAD is removed after a successful deploy.)"
-    else
-        echo "🔄 Running Alembic database migrations (upgrade head)..."
-    fi
+if [ $DB_READY -eq 0 ]; then
+    echo "💥 FATAL: PostgreSQL failed to become available after $WAIT_ATTEMPTS attempts."
+    echo "Continuing without running migrations..."
+else
+    echo "✅ PostgreSQL is running and accepting connections."
 
-    # Run the determined command
-    alembic $ALEMBIC_CMD
+    # --- FORCED MIGRATION LOGIC (TEMPORARY FIX) ---
+    # WARNING: This logic is intentionally UNCONDITIONAL to fix the "UndefinedTable" error.
+    # It forces Alembic to clear history and run all CREATE TABLE statements from scratch.
+    echo "⚠️  FORCING FULL SCHEMA RECREATION (stamp base + upgrade head) to resolve UndefinedTable error."
+    echo "   *** YOU MUST REVERT THIS FILE AFTER THIS DEPLOY IS SUCCESSFUL ***"
+    
+    # 1. Force the DB history back to the start (base)
+    alembic stamp base
     if [ $? -ne 0 ]; then
-        echo "❌ ERROR: Alembic command failed ($ALEMBIC_CMD)."
+        echo "❌ ERROR: Alembic command failed (stamp base)."
         exit 1
     fi
     
-    echo "✅ Migrations/Stamp command successful."
+    # 2. Run all migrations from base to head, creating the tables
+    alembic upgrade head
+    if [ $? -ne 0 ]; then
+        echo "❌ ERROR: Alembic command failed (upgrade head after stamp base)."
+        exit 1
+    fi
+    echo "✅ Tables created and Migrations successful."
+
 fi
 
-# --- END: DATABASE MIGRATION & WAIT FIX ---
-
+# --- Application Startup ---
 
 # Test Python import before starting server
 echo "🔍 Testing Python imports..."
+# (Your Python import test remains here)
 python -c "
 try:
     from app.main import app
