@@ -9,23 +9,23 @@ echo "📡 Using port: $PORT"
 
 # Check if DATABASE_URL is set
 if [ -z "$DATABASE_URL" ]; then
-    echo "⚠️  WARNING: DATABASE_URL not set, using SQLite fallback"
+    echo "⚠️  WARNING: DATABASE_URL not set, using SQLite fallback"
 else
-    echo "✅ DATABASE_URL is configured"
-    echo "🔗 DATABASE_URL: ${DATABASE_URL:0:50}..." # Show first 50 chars for debugging
+    echo "✅ DATABASE_URL is configured"
+    echo "🔗 DATABASE_URL: ${DATABASE_URL:0:50}..." # Show first 50 chars for debugging
 fi
 
 # Check if required environment variables are set
 if [ -z "$JWT_SECRET" ]; then
-    echo "⚠️  WARNING: JWT_SECRET not set, using default (not secure for production)"
+    echo "⚠️  WARNING: JWT_SECRET not set, using default (not secure for production)"
 else
-    echo "✅ JWT_SECRET is set"
+    echo "✅ JWT_SECRET is set"
 fi
 
 if [ -z "$SECRET_KEY" ]; then
-    echo "⚠️  WARNING: SECRET_KEY not set, using default (not secure for production)"
+    echo "⚠️  WARNING: SECRET_KEY not set, using default (not secure for production)"
 else
-    echo "✅ SECRET_KEY is set"
+    echo "✅ SECRET_KEY is set"
 fi
 
 # --- START: DATABASE MIGRATION & WAIT FIX ---
@@ -77,14 +77,27 @@ except OperationalError:
         exit 1
     fi
     
-    # Run database migrations
-    echo "🔄 Running Alembic database migrations..."
-    alembic upgrade head
+    # --- MIGRATION RUNNER ---
+    
+    # Determine Alembic command based on environment variable
+    ALEMBIC_CMD="upgrade head"
+
+    if [ "$ALEMBIC_STAMP_HEAD" = "true" ]; then
+        ALEMBIC_CMD="stamp head"
+        echo "⚠️  FORCE STAMP MODE: Using 'alembic stamp head' to resolve revision history mismatch."
+        echo "   (IMPORTANT: Ensure ALEMBIC_STAMP_HEAD is removed after a successful deploy.)"
+    else
+        echo "🔄 Running Alembic database migrations (upgrade head)..."
+    fi
+
+    # Run the determined command
+    alembic $ALEMBIC_CMD
     if [ $? -ne 0 ]; then
-        echo "❌ ERROR: Alembic migration failed."
+        echo "❌ ERROR: Alembic command failed ($ALEMBIC_CMD)."
         exit 1
     fi
-    echo "✅ Migrations complete."
+    
+    echo "✅ Migrations/Stamp command successful."
 fi
 
 # --- END: DATABASE MIGRATION & WAIT FIX ---
@@ -94,18 +107,18 @@ fi
 echo "🔍 Testing Python imports..."
 python -c "
 try:
-    from app.main import app
-    print('✅ App import successful')
+    from app.main import app
+    print('✅ App import successful')
 except Exception as e:
-    print(f'❌ App import failed: {e}')
-    import traceback
-    traceback.print_exc()
-    exit(1)
+    print(f'❌ App import failed: {e}')
+    import traceback
+    traceback.print_exc()
+    exit(1)
 "
 
-if [ $? -ne 0 ]; then/
-    echo "💥 Import test failed, exiting..."
-    exit 1
+if [ $? -ne 0 ]; then
+    echo "💥 Import test failed, exiting..."
+    exit 1
 fi
 
 # Start the application
