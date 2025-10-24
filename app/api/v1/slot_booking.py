@@ -78,21 +78,61 @@ def check_booking_access(
     )
 
 
-def validate_booking_times(start_time: str, end_time: str) -> None:
+def validate_booking_times(start_time, end_time) -> None:
     """Validate that start_time is before end_time"""
-    try:
-        start = datetime.strptime(start_time, "%H:%M").time()
-        end = datetime.strptime(end_time, "%H:%M").time()
+    from datetime import time as time_type
+    
+    # Handle both string and time objects
+    if isinstance(start_time, str):
+        # Handle different time formats
+        if 'T' in start_time or 'Z' in start_time:
+            # ISO format like "08:56:03.503Z"
+            start_time = start_time.replace('Z', '').replace('T', '')
+            if '.' in start_time:
+                start_time = start_time.split('.')[0]  # Remove milliseconds
         
-        if start >= end:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Start time must be before end time"
-            )
-    except ValueError:
+        # Parse time string
+        if len(start_time.split(':')) == 3:
+            # Format: HH:MM:SS
+            start = datetime.strptime(start_time, "%H:%M:%S").time()
+        else:
+            # Format: HH:MM
+            start = datetime.strptime(start_time, "%H:%M").time()
+    elif isinstance(start_time, time_type):
+        start = start_time
+    else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid time format. Use HH:MM format"
+            detail=f"Invalid start_time type: {type(start_time)}"
+        )
+    
+    if isinstance(end_time, str):
+        # Handle different time formats
+        if 'T' in end_time or 'Z' in end_time:
+            # ISO format like "10:56:03.503Z"
+            end_time = end_time.replace('Z', '').replace('T', '')
+            if '.' in end_time:
+                end_time = end_time.split('.')[0]  # Remove milliseconds
+        
+        # Parse time string
+        if len(end_time.split(':')) == 3:
+            # Format: HH:MM:SS
+            end = datetime.strptime(end_time, "%H:%M:%S").time()
+        else:
+            # Format: HH:MM
+            end = datetime.strptime(end_time, "%H:%M").time()
+    elif isinstance(end_time, time_type):
+        end = end_time
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid end_time type: {type(end_time)}"
+        )
+    
+    if start >= end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Start time must be before end time"
         )
 
 
@@ -251,10 +291,10 @@ def get_bookings(
             date_to=date_to
         )
         
-        # For non-admin users, filter to show only accessible bookings
         if current_user.role != UserRole.ADMIN:
-            # Show user's own bookings and bookings from their projects
-            filter_params.user_id = current_user.id
+            # If no manager_id filter is specified, show only user's bookings
+            if not manager_id:
+                filter_params.manager_id = current_user.id
         
         bookings, total = booking_crud.get_bookings(
             db, 

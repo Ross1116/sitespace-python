@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 from uuid import UUID
 from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session, joinedload
+from collections import defaultdict
 
 from ..models.slot_booking import SlotBooking, BookingStatus
 from ..models.user import User
@@ -455,14 +456,18 @@ def get_booking_statistics(
     db: Session,
     project_id: Optional[UUID] = None,
     date_from: Optional[date] = None,
-    date_to: Optional[date] = None
+    date_to: Optional[date] = None,
+    user_id: Optional[UUID] = None 
 ) -> BookingStatistics:
     """Calculate booking statistics"""
     query = db.query(SlotBooking)
     
     if project_id:
         query = query.filter(SlotBooking.project_id == project_id)
-    
+        
+    if user_id:
+        status_counts = status_counts.filter(SlotBooking.manager_id == user_id)
+        
     if date_from:
         query = query.filter(SlotBooking.booking_date >= date_from)
     
@@ -477,6 +482,8 @@ def get_booking_statistics(
     
     if project_id:
         status_counts = status_counts.filter(SlotBooking.project_id == project_id)
+    if user_id:
+        busiest_day_query = busiest_day_query.filter(SlotBooking.manager_id == user_id)
     if date_from:
         status_counts = status_counts.filter(SlotBooking.booking_date >= date_from)
     if date_to:
@@ -497,6 +504,8 @@ def get_booking_statistics(
     
     if project_id:
         busiest_day_query = busiest_day_query.filter(SlotBooking.project_id == project_id)
+    if user_id:
+        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.manager_id == user_id)
     if date_from:
         busiest_day_query = busiest_day_query.filter(SlotBooking.booking_date >= date_from)
     if date_to:
@@ -642,6 +651,79 @@ def get_user_upcoming_bookings(
         ))
     
     return booking_responses
+
+def get_calendar_view(
+    db: Session,
+    date_from: date,
+    date_to: date,
+    project_id: Optional[UUID] = None,
+    asset_id: Optional[UUID] = None,
+    user_id: Optional[UUID] = None
+) -> List[BookingCalendarView]:
+    """Get bookings in calendar view format"""
+    from collections import defaultdict
+    
+    query = db.query(SlotBooking).options(
+        joinedload(SlotBooking.project),
+        joinedload(SlotBooking.manager),
+        joinedload(SlotBooking.subcontractor),
+        joinedload(SlotBooking.asset)
+    )
+    
+    # Apply filters
+    query = query.filter(
+        SlotBooking.booking_date >= date_from,
+        SlotBooking.booking_date <= date_to
+    )
+    
+    if project_id:
+        query = query.filter(SlotBooking.project_id == project_id)
+    
+    if asset_id:
+        query = query.filter(SlotBooking.asset_id == asset_id)
+    
+    if user_id:
+        query = query.filter(SlotBooking.manager_id == user_id)
+    
+    # Get bookings and group by date
+    bookings = query.order_by(
+        SlotBooking.booking_date,
+        SlotBooking.start_time
+    ).all()
+    
+    # Group bookings by date
+    bookings_by_date = defaultdict(list)
+    for booking in bookings:
+        booking_response = BookingResponse(
+            id=booking.id,
+            project_id=booking.project_id,
+            manager_id=booking.manager_id,
+            subcontractor_id=booking.subcontractor_id,
+            asset_id=booking.asset_id,
+            booking_date=booking.booking_date,
+            start_time=booking.start_time,
+            end_time=booking.end_time,
+            status=booking.status,
+            purpose=booking.purpose,
+            notes=booking.notes,
+            created_at=booking.created_at,
+            updated_at=booking.updated_at
+        )
+        bookings_by_date[booking.booking_date].append(booking_response)
+    
+    # Create calendar view objects
+    calendar_view = []
+    current_date = date_from
+    while current_date <= date_to:
+        day_bookings = bookings_by_date.get(current_date, [])
+        calendar_view.append(BookingCalendarView(
+            date=current_date,
+            bookings=day_bookings,
+            total_bookings=len(day_bookings)
+        ))
+        current_date += timedelta(days=1)
+    
+    return calendar_view
 
 # Additional helper functions
 
