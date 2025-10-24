@@ -23,7 +23,6 @@ try:
     import app.models.user
     import app.models.asset
     import app.models.file_upload
-    import app.models.project
     import app.models.site_project
     import app.models.slot_booking
     import app.models.subcontractor

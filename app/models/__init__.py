@@ -11,5 +11,5 @@ __all__ = [
     "SlotBooking",
     "SiteProject",
     "Subcontractor",
-    "FileUpload"
+    "FileUpload",
 ]

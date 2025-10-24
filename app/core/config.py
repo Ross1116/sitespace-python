@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS512")
     jwt_expiration_ms: int = int(os.getenv("JWT_EXPIRATION_MS", "86400000"))
     
+    # Token expiration settings
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
+    PASSWORD_RESET_EXPIRE_HOURS: int = 1
+    
     # App
     secret_key: str = os.getenv("SECRET_KEY", "PARAGON$87654321")
     export_files_absolute_path: str = os.getenv("EXPORT_FILES_ABSOLUTE_PATH", "/app/uploads/")
@@ -26,6 +32,25 @@ class Settings(BaseSettings):
     
     # CORS - Update with your actual frontend domains for production
     cors_origins: list = os.getenv("CORS_ORIGINS", "https://sitespace.vercel.app").split(",") if os.getenv("CORS_ORIGINS") else ["https://sitespace.vercel.app"]
+    
+     # Email settings
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_TLS: bool = True
+    FROM_EMAIL: str = "noreply@example.com"
+    FROM_NAME: str = "Your App Name"
+    
+    # Frontend URL for email links
+    FRONTEND_URL: str = "http://localhost:3000"
+    
+    # App settings
+    APP_NAME: str = "Sitespace"
+    
+    # Token expiry settings
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
+    PASSWORD_RESET_EXPIRE_HOURS: int = 1
     
     class Config:
         env_file = ".env"

@@ -1,23 +1,39 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
-from sqlalchemy.sql import func
-from ..core.database import Base
+from sqlalchemy import Column, String, Boolean, DateTime, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from datetime import datetime
+import uuid
+import enum
+from app.core.database import Base
+
+class UserRole(str, enum.Enum):
+    MANAGER = "manager"
+    ADMIN = "admin"
 
 class User(Base):
     __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
-    user_id = Column(String, unique=True, index=True)
-    user_phone = Column(String)
-    profile_pic = Column(String)
-    credit_point = Column(Integer, default=0)
-    role = Column(String, default="user")
-    dob = Column(String)
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    role = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    email_verified = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships - using the association tables
+    managed_projects = relationship(
+        "SiteProject",
+        secondary="manager_site_project",
+        back_populates="managers"
+    )
     
-    def __repr__(self):
-        return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
+    bookings = relationship(
+        "SlotBooking",
+        back_populates="manager",
+        cascade="all, delete-orphan"
+    )

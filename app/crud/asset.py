@@ -1,55 +1,605 @@
-from sqlalchemy.orm import Session
-from typing import Optional, List
-from ..models.asset import Asset
-from ..schemas.asset import AssetCreate, AssetUpdate
+# crud/asset.py
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, or_, func, cast, Date
+from typing import List, Optional, Tuple, Dict, Any
+from uuid import UUID
+from datetime import datetime, date, time, timedelta
+from decimal import Decimal
 
-def get_asset(db: Session, asset_id: int) -> Optional[Asset]:
-    return db.query(Asset).filter(Asset.id == asset_id).first()
+from ..models.asset import Asset, AssetStatus
+from ..models.site_project import SiteProject
+from ..models.slot_booking import SlotBooking
+from ..schemas.asset import (
+    AssetCreate, AssetUpdate, AssetTransfer,
+    AssetDetailResponse, AssetAvailabilityCheck,
+    AssetAvailabilityResponse, BookingConflict,
+    MaintenanceRecord
+)
 
-def get_asset_by_key(db: Session, asset_key: str) -> Optional[Asset]:
-    return db.query(Asset).filter(Asset.asset_key == asset_key).first()
-
-def get_assets_by_project(db: Session, project_id: int) -> List[Asset]:
-    return db.query(Asset).filter(Asset.project_id == project_id).all()
-
-def get_assets(db: Session, skip: int = 0, limit: int = 100) -> List[Asset]:
-    return db.query(Asset).offset(skip).limit(limit).all()
-
-def create_asset(db: Session, asset: AssetCreate) -> Asset:
+def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset:
+    """Create a new asset"""
+    # Check if project exists
+    project = db.query(SiteProject).filter(SiteProject.id == asset.project_id).first()
+    if not project:
+        raise ValueError(f"Project with id {asset.project_id} not found")
+    
     db_asset = Asset(
         project_id=asset.project_id,
-        asset_title=asset.asset_title,
-        asset_location=asset.asset_location,
-        asset_status=asset.asset_status,
-        asset_poc=asset.asset_poc,
-        maintenance_start_dt=asset.maintenance_start_dt,
-        maintenance_end_dt=asset.maintenance_end_dt,
-        usage_instructions=asset.usage_instructions,
-        asset_key=asset.asset_key
+        asset_code=asset.asset_code,
+        name=asset.name,
+        type=asset.type,
+        description=asset.description,
+        purchase_date=asset.purchase_date,
+        purchase_value=asset.purchase_value,
+        current_value=asset.current_value or asset.purchase_value,
+        status=asset.status or AssetStatus.AVAILABLE
     )
+    
     db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
     return db_asset
 
-def update_asset(db: Session, asset_id: int, asset_update: AssetUpdate) -> Optional[Asset]:
+def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
+    """Get an asset by ID"""
+    return db.query(Asset).filter(Asset.id == asset_id).first()
+
+def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
+    """Get asset with all relationships loaded"""
+    return db.query(Asset)\
+        .options(
+            joinedload(Asset.project),
+            joinedload(Asset.bookings)
+        )\
+        .filter(Asset.id == asset_id)\
+        .first()
+
+def get_asset_by_code(db: Session, asset_code: str) -> Optional[Asset]:
+    """Get an asset by asset code"""
+    return db.query(Asset).filter(Asset.asset_code == asset_code).first()
+
+def get_assets_paginated(
+    db: Session,
+    project_id: Optional[UUID] = None,
+    status: Optional[AssetStatus] = None,
+    asset_type: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100
+) -> Tuple[List[Asset], int]:
+    """Get paginated assets with filters"""
+    query = db.query(Asset)
+    
+    if project_id:
+        query = query.filter(Asset.project_id == project_id)
+    
+    if status:
+        query = query.filter(Asset.status == status)
+    
+    if asset_type:
+        query = query.filter(Asset.type == asset_type)
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination and ordering
+    assets = query.order_by(Asset.created_at.desc())\
+        .offset(skip).limit(limit).all()
+    
+    return assets, total
+
+def get_assets_brief(
+    db: Session,
+    project_id: UUID,
+    status: Optional[AssetStatus] = None
+) -> List[Asset]:
+    """Get brief list of assets for selectors/dropdowns"""
+    query = db.query(Asset).filter(Asset.project_id == project_id)
+    
+    if status:
+        query = query.filter(Asset.status == status)
+    else:
+        # By default, exclude retired assets for brief lists
+        query = query.filter(Asset.status != AssetStatus.RETIRED)
+    
+    return query.order_by(Asset.name).all()
+
+def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailResponse]:
+    """Get detailed asset information with statistics"""
+    asset = get_asset_with_details(db, asset_id)
+    
+    if not asset:
+        return None
+    
+    # Calculate statistics
+    total_bookings = len(asset.bookings)
+    active_bookings = len([b for b in asset.bookings if b.status == 'confirmed'])
+    completed_bookings = len([b for b in asset.bookings if b.status == 'completed'])
+    
+    # Calculate utilization rate
+    utilization_rate = 0.0
+    if asset.purchase_date:
+        days_owned = (date.today() - asset.purchase_date).days
+        if days_owned > 0:
+            # Count unique days with bookings
+            booked_days = db.query(
+                func.count(func.distinct(SlotBooking.booking_date))
+            ).filter(
+                and_(
+                    SlotBooking.asset_id == asset_id,
+                    SlotBooking.status.in_(['confirmed', 'completed'])
+                )
+            ).scalar() or 0
+            utilization_rate = min((booked_days / days_owned) * 100, 100.0)
+    
+    # Calculate depreciation if both values exist
+    depreciation_amount = None
+    depreciation_percentage = None
+    if asset.purchase_value and asset.current_value:
+        depreciation_amount = float(asset.purchase_value - asset.current_value)
+        if asset.purchase_value > 0:
+            depreciation_percentage = (depreciation_amount / float(asset.purchase_value)) * 100
+    
+    # Get recent bookings
+    recent_bookings = db.query(SlotBooking)\
+        .filter(SlotBooking.asset_id == asset_id)\
+        .order_by(SlotBooking.booking_date.desc())\
+        .limit(10).all()
+    
+    # Get maintenance history (placeholder - implement based on your maintenance model)
+    maintenance_history = []
+    
+    return AssetDetailResponse(
+        id=asset.id,
+        project_id=asset.project_id,
+        asset_code=asset.asset_code,
+        name=asset.name,
+        type=asset.type,
+        description=asset.description,
+        purchase_date=asset.purchase_date,
+        purchase_value=asset.purchase_value,
+        current_value=asset.current_value,
+        status=asset.status,
+        created_at=asset.created_at,
+        updated_at=asset.updated_at,
+        project_name=asset.project.name if asset.project else None,
+        project_location=asset.project.location if asset.project else None,
+        total_bookings=total_bookings,
+        active_bookings=active_bookings,
+        completed_bookings=completed_bookings,
+        utilization_rate=round(utilization_rate, 2),
+        depreciation_amount=depreciation_amount,
+        depreciation_percentage=round(depreciation_percentage, 2) if depreciation_percentage else None,
+        maintenance_history=maintenance_history,
+        recent_bookings=[{
+            "id": b.id,
+            "booking_date": b.booking_date,
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "subcontractor_id": b.subcontractor_id,
+            "status": b.status
+        } for b in recent_bookings]
+    )
+
+def update_asset(
+    db: Session,
+    asset_id: UUID,
+    asset_update: AssetUpdate,
+    user_id: UUID = None
+) -> Optional[Asset]:
+    """Update an asset"""
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
     
-    update_data = asset_update.dict(exclude_unset=True)
+    update_data = asset_update.model_dump(exclude_unset=True)
+    
+    # If updating asset_code, check uniqueness
+    if 'asset_code' in update_data and update_data['asset_code'] != db_asset.asset_code:
+        existing = get_asset_by_code(db, update_data['asset_code'])
+        if existing:
+            raise ValueError(f"Asset code {update_data['asset_code']} already exists")
+    
     for field, value in update_data.items():
         setattr(db_asset, field, value)
+    
+    db_asset.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(db_asset)
+    return db_asset
+
+def transfer_asset(
+    db: Session,
+    asset_id: UUID,
+    transfer: AssetTransfer,
+    user_id: UUID = None
+) -> Optional[Asset]:
+    """Transfer asset to another project"""
+    db_asset = get_asset(db, asset_id)
+    if not db_asset:
+        return None
+    
+    # Check if new project exists
+    new_project = db.query(SiteProject).filter(
+        SiteProject.id == transfer.new_project_id
+    ).first()
+    if not new_project:
+        raise ValueError("Target project not found")
+    
+    # Check for active bookings that might be affected
+    active_bookings = db.query(SlotBooking).filter(
+        and_(
+            SlotBooking.asset_id == asset_id,
+            SlotBooking.booking_date >= date.today(),
+            SlotBooking.status == 'confirmed'
+        )
+    ).count()
+    
+    if active_bookings > 0 and not transfer.force_transfer:
+        raise ValueError(f"Asset has {active_bookings} active future bookings. Use force_transfer=true to proceed.")
+    
+    # Store old project for logging
+    old_project_id = db_asset.project_id
+    
+    # Update asset project
+    db_asset.project_id = transfer.new_project_id
+    if transfer.update_status:
+        db_asset.status = transfer.update_status
+    db_asset.updated_at = datetime.utcnow()
+    
+    # Update related bookings if needed
+    if transfer.update_bookings:
+        db.query(SlotBooking).filter(
+            and_(
+                SlotBooking.asset_id == asset_id,
+                SlotBooking.project_id == old_project_id
+            )
+        ).update({"project_id": transfer.new_project_id})
     
     db.commit()
     db.refresh(db_asset)
     return db_asset
 
-def delete_asset(db: Session, asset_id: int) -> bool:
+def check_asset_availability(
+    db: Session,
+    check: AssetAvailabilityCheck
+) -> AssetAvailabilityResponse:
+    """Check if asset is available for booking"""
+    
+    # Get the asset first to check its status
+    asset = get_asset(db, check.asset_id)
+    if not asset:
+        return AssetAvailabilityResponse(
+            is_available=False,
+            conflicts=[],
+            reason="Asset not found"
+        )
+    
+    # Check asset status
+    if asset.status != AssetStatus.AVAILABLE:
+        return AssetAvailabilityResponse(
+            is_available=False,
+            conflicts=[],
+            reason=f"Asset is {asset.status.value}"
+        )
+    
+    # Parse time strings to time objects
+    start_hour, start_min = map(int, check.start_time.split(':'))
+    end_hour, end_min = map(int, check.end_time.split(':'))
+    
+    check_start_time = time(start_hour, start_min)
+    check_end_time = time(end_hour, end_min)
+    
+    # Find conflicting bookings
+    conflicts = db.query(SlotBooking).filter(
+        and_(
+            SlotBooking.asset_id == check.asset_id,
+            SlotBooking.booking_date == check.date,
+            SlotBooking.status.in_(['confirmed', 'pending']),
+            or_(
+                # New booking starts during existing booking
+                and_(
+                    SlotBooking.start_time <= check_start_time,
+                    SlotBooking.end_time > check_start_time
+                ),
+                # New booking ends during existing booking
+                and_(
+                    SlotBooking.start_time < check_end_time,
+                    SlotBooking.end_time >= check_end_time
+                ),
+                # New booking completely covers existing booking
+                and_(
+                    SlotBooking.start_time >= check_start_time,
+                    SlotBooking.end_time <= check_end_time
+                )
+            )
+        )
+    ).all()
+    
+    booking_conflicts = [
+        BookingConflict(
+            booking_id=booking.id,
+            start_time=booking.start_time.strftime('%H:%M') if booking.start_time else '',
+            end_time=booking.end_time.strftime('%H:%M') if booking.end_time else '',
+            booked_by=str(booking.subcontractor_id) if booking.subcontractor_id else 'Unknown',
+            status=booking.status
+        )
+        for booking in conflicts
+    ]
+    
+    return AssetAvailabilityResponse(
+        is_available=len(conflicts) == 0,
+        conflicts=booking_conflicts,
+        asset_status=asset.status.value
+    )
+
+def delete_asset(db: Session, asset_id: UUID, user_id: UUID = None) -> bool:
+    """Delete or retire an asset"""
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return False
     
-    db.delete(db_asset)
-    db.commit()
+    # Check if asset has any bookings
+    has_bookings = db.query(SlotBooking).filter(
+        SlotBooking.asset_id == asset_id
+    ).first() is not None
+    
+    if has_bookings:
+        # Soft delete - change status to retired
+        db_asset.status = AssetStatus.RETIRED
+        db_asset.updated_at = datetime.utcnow()
+        db.commit()
+    else:
+        # Hard delete if no bookings
+        db.delete(db_asset)
+        db.commit()
+    
     return True
+
+def get_available_assets(
+    db: Session,
+    project_id: UUID,
+    check_date: date,
+    start_time: str,
+    end_time: str,
+    asset_type: Optional[str] = None
+) -> List[Asset]:
+    """Get all available assets for a specific time slot"""
+    # Get all assets for the project
+    query = db.query(Asset).filter(
+        and_(
+            Asset.project_id == project_id,
+            Asset.status == AssetStatus.AVAILABLE
+        )
+    )
+    
+    if asset_type:
+        query = query.filter(Asset.type == asset_type)
+    
+    assets = query.all()
+    
+    available_assets = []
+    for asset in assets:
+        check = AssetAvailabilityCheck(
+            asset_id=asset.id,
+            date=check_date,
+            start_time=start_time,
+            end_time=end_time
+        )
+        availability = check_asset_availability(db, check)
+        if availability.is_available:
+            available_assets.append(asset)
+    
+    return available_assets
+
+def update_asset_value(
+    db: Session,
+    asset_id: UUID,
+    new_value: Decimal,
+    user_id: UUID = None
+) -> Optional[Asset]:
+    """Update asset current value (for depreciation)"""
+    db_asset = get_asset(db, asset_id)
+    if not db_asset:
+        return None
+    
+    db_asset.current_value = new_value
+    db_asset.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(db_asset)
+    return db_asset
+
+def update_asset_status(
+    db: Session,
+    asset_id: UUID,
+    new_status: AssetStatus,
+    user_id: UUID = None
+) -> Optional[Asset]:
+    """Update asset status"""
+    db_asset = get_asset(db, asset_id)
+    if not db_asset:
+        return None
+    
+    # Check if status transition is valid
+    if db_asset.status == AssetStatus.RETIRED and new_status != AssetStatus.RETIRED:
+        # Check if asset has no future bookings
+        future_bookings = db.query(SlotBooking).filter(
+            and_(
+                SlotBooking.asset_id == asset_id,
+                SlotBooking.booking_date >= date.today()
+            )
+        ).count()
+        
+        if future_bookings > 0:
+            raise ValueError("Cannot reactivate asset with future bookings")
+    
+    db_asset.status = new_status
+    db_asset.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(db_asset)
+    return db_asset
+
+# Additional helper functions
+
+def get_assets_by_type(
+    db: Session,
+    project_id: UUID,
+    asset_type: str,
+    include_unavailable: bool = False
+) -> List[Asset]:
+    """Get all assets of a specific type in a project"""
+    query = db.query(Asset).filter(
+        and_(
+            Asset.project_id == project_id,
+            Asset.type == asset_type
+        )
+    )
+    
+    if not include_unavailable:
+        query = query.filter(Asset.status == AssetStatus.AVAILABLE)
+    
+    return query.order_by(Asset.name).all()
+
+def get_asset_statistics(
+    db: Session,
+    asset_id: UUID,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> Dict[str, Any]:
+    """Get comprehensive statistics for an asset"""
+    asset = get_asset(db, asset_id)
+    if not asset:
+        return {}
+    
+    # Build base query for bookings
+    bookings_query = db.query(SlotBooking).filter(
+        SlotBooking.asset_id == asset_id
+    )
+    
+    if start_date:
+        bookings_query = bookings_query.filter(SlotBooking.booking_date >= start_date)
+    if end_date:
+        bookings_query = bookings_query.filter(SlotBooking.booking_date <= end_date)
+    
+    bookings = bookings_query.all()
+    
+    # Calculate statistics
+    total_bookings = len(bookings)
+    confirmed_bookings = sum(1 for b in bookings if b.status == 'confirmed')
+    completed_bookings = sum(1 for b in bookings if b.status == 'completed')
+    cancelled_bookings = sum(1 for b in bookings if b.status == 'cancelled')
+    
+    # Calculate total hours booked
+    total_hours = 0
+    for booking in bookings:
+        if booking.start_time and booking.end_time and booking.status in ['confirmed', 'completed']:
+            start_dt = datetime.combine(booking.booking_date, booking.start_time)
+            end_dt = datetime.combine(booking.booking_date, booking.end_time)
+            hours = (end_dt - start_dt).total_seconds() / 3600
+            total_hours += hours
+    
+    # Calculate value depreciation
+    depreciation_info = {}
+    if asset.purchase_value and asset.current_value:
+        depreciation_amount = float(asset.purchase_value - asset.current_value)
+        depreciation_percentage = (depreciation_amount / float(asset.purchase_value)) * 100
+        depreciation_info = {
+            "original_value": float(asset.purchase_value),
+            "current_value": float(asset.current_value),
+            "depreciation_amount": depreciation_amount,
+            "depreciation_percentage": round(depreciation_percentage, 2)
+        }
+    
+    # Calculate utilization rate for the period
+    if start_date and end_date:
+        total_days = (end_date - start_date).days + 1
+        booked_days = len(set(b.booking_date for b in bookings if b.status in ['confirmed', 'completed']))
+        utilization_rate = (booked_days / total_days) * 100 if total_days > 0 else 0
+    else:
+        utilization_rate = 0
+    
+    return {
+        "asset_id": asset_id,
+        "asset_name": asset.name,
+        "asset_code": asset.asset_code,
+        "asset_type": asset.type,
+        "status": asset.status.value,
+        "bookings": {
+            "total": total_bookings,
+            "confirmed": confirmed_bookings,
+            "completed": completed_bookings,
+            "cancelled": cancelled_bookings,
+            "total_hours": round(total_hours, 2)
+        },
+        "utilization_rate": round(utilization_rate, 2),
+        "depreciation": depreciation_info,
+        "period": {
+            "start_date": start_date,
+            "end_date": end_date
+        }
+    }
+
+def search_assets(
+    db: Session,
+    search_term: str,
+    project_id: Optional[UUID] = None,
+    skip: int = 0,
+    limit: int = 100
+) -> Tuple[List[Asset], int]:
+    """Search assets by name, code, or type"""
+    query = db.query(Asset)
+    
+    # Apply search filter
+    search_filter = or_(
+        Asset.name.ilike(f"%{search_term}%"),
+        Asset.asset_code.ilike(f"%{search_term}%"),
+        Asset.type.ilike(f"%{search_term}%"),
+        Asset.description.ilike(f"%{search_term}%") if Asset.description else False
+    )
+    query = query.filter(search_filter)
+    
+    # Filter by project if specified
+    if project_id:
+        query = query.filter(Asset.project_id == project_id)
+    
+    # Exclude retired assets from search by default
+    query = query.filter(Asset.status != AssetStatus.RETIRED)
+    
+    total = query.count()
+    assets = query.order_by(Asset.name).offset(skip).limit(limit).all()
+    
+    return assets, total
+
+def get_assets_requiring_maintenance(
+    db: Session,
+    project_id: Optional[UUID] = None,
+    days_threshold: int = 90
+) -> List[Asset]:
+    """Get assets that might require maintenance based on usage"""
+    query = db.query(Asset).filter(
+        Asset.status == AssetStatus.AVAILABLE
+    )
+    
+    if project_id:
+        query = query.filter(Asset.project_id == project_id)
+    
+    assets = query.all()
+    
+    # Filter assets based on maintenance criteria
+    maintenance_needed = []
+    threshold_date = date.today() - timedelta(days=days_threshold)
+    
+    for asset in assets:
+        # Check if asset has been heavily used recently
+        recent_bookings = db.query(func.count(SlotBooking.id)).filter(
+            and_(
+                SlotBooking.asset_id == asset.id,
+                SlotBooking.booking_date >= threshold_date,
+                SlotBooking.status == 'completed'
+            )
+        ).scalar()
+        
+        # You can adjust this threshold based on asset type
+        if recent_bookings > 20:  # More than 20 bookings in the period
+            maintenance_needed.append(asset)
+    
+    return maintenance_needed

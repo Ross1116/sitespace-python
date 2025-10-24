@@ -1,56 +1,84 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
-from datetime import datetime
-import json
+from datetime import datetime, date
+from uuid import UUID
+from decimal import Decimal
 
-class SubcontractorBase(BaseModel):
-    name: Optional[str] = None
-    email_id: Optional[str] = None
-    contractor_project: Optional[List[str]] = None
-    contractor_project_id: Optional[str] = None
-    contractor_name: Optional[str] = None
-    contractor_company: Optional[str] = None
-    contractor_trade: Optional[str] = None
-    contractor_email: Optional[str] = None
-    contractor_phone: Optional[str] = None
-    contractor_pass: Optional[str] = None
-    created_by: Optional[str] = None
+from .base import BaseSchema, TimestampSchema
+from .enums import TradeSpecialty
+from .auth import PasswordMixin
 
-class SubcontractorCreate(SubcontractorBase):
-    pass
+class SubcontractorBase(BaseSchema):
+    """Base subcontractor schema"""
+    email: EmailStr
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    company_name: Optional[str] = Field(None, max_length=255)
+    trade_specialty: Optional[TradeSpecialty] = None
+    phone: Optional[str] = Field(None, max_length=20)
 
-class SubcontractorUpdate(BaseModel):
-    name: Optional[str] = None
-    email_id: Optional[str] = None
-    contractor_project: Optional[List[int]] = None
-    contractor_project_id: Optional[str] = None
-    contractor_name: Optional[str] = None
-    contractor_company: Optional[str] = None
-    contractor_trade: Optional[str] = None
-    contractor_email: Optional[str] = None
-    contractor_phone: Optional[str] = None
-    contractor_pass: Optional[str] = None
-    created_by: Optional[str] = None
-
-class SubcontractorResponse(SubcontractorBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+class SubcontractorCreate(SubcontractorBase, PasswordMixin):
+    """Subcontractor creation schema"""
+    confirm_password: str
     
-    @field_validator('contractor_project', mode='before')
-    @classmethod
-    def parse_contractor_project(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except (json.JSONDecodeError, TypeError):
-                return []
-        return v or []
-    
-    class Config:
-        from_attributes = True
+    @field_validator('confirm_password')
+    def passwords_match(cls, v, info):
+        if 'password' in info.data and v != info.data['password']:
+            raise ValueError('Passwords do not match')
+        return v
 
-class SubcontractorListResponse(BaseModel):
-    success: bool
-    message: str
-    data: List[SubcontractorResponse]
+class SubcontractorUpdate(BaseSchema):
+    """Subcontractor update schema"""
+    email: Optional[EmailStr] = None
+    first_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    last_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    company_name: Optional[str] = Field(None, max_length=255)
+    trade_specialty: Optional[TradeSpecialty] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    is_active: Optional[bool] = None
+
+class SubcontractorResponse(SubcontractorBase, TimestampSchema):
+    """Subcontractor response schema"""
+    id: UUID
+    is_active: bool
+
+class SubcontractorDetailResponse(SubcontractorResponse):
+    """Detailed subcontractor response"""
+    active_projects_count: int = 0
+    total_bookings: int = 0
+    current_assignments: List['ProjectAssignmentResponse'] = []
+
+class SubcontractorBriefResponse(BaseSchema):
+    """Brief subcontractor info"""
+    id: UUID
+    email: EmailStr
+    first_name: str
+    last_name: str
+    company_name: Optional[str]
+    trade_specialty: Optional[TradeSpecialty]
+
+class SubcontractorListResponse(BaseSchema):
+    """Subcontractor list response"""
+    subcontractors: List[SubcontractorResponse]
+    total: int
+    skip: int
+    limit: int
+    has_more: bool
+
+class ProjectAssignmentResponse(BaseSchema):
+    """Project assignment details for subcontractor"""
+    project_id: UUID  # Changed from UUID to match new SiteProject id type
+    project_name: str
+    project_location: Optional[str] = None  # Added to match new model
+    assigned_date: date
+    hourly_rate: Optional[Decimal] = None
+    is_active: bool
+    
+    @field_validator('hourly_rate', mode='before')
+    def round_hourly_rate(cls, v):
+        if v is not None:
+            return round(Decimal(str(v)), 2)
+        return v
+
+# Avoid circular imports
+SubcontractorDetailResponse.model_rebuild()

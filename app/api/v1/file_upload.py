@@ -4,11 +4,11 @@ from ...core.database import get_db
 from ...core.security import get_current_active_user
 from ...models.user import User
 from ...utils.file_upload import save_upload_file
-from ...schemas.base import BaseResponse
+from ...schemas.base import MessageResponse
 
 router = APIRouter(prefix="/uploadfile", tags=["File Upload"])
 
-@router.post("/", response_model=BaseResponse)
+@router.post("/", response_model=MessageResponse)
 async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -30,7 +30,7 @@ async def upload_file(
         result = await save_upload_file(file)
         
         if result["success"]:
-            return BaseResponse(
+            return MessageResponse(
                 success=True,
                 message=result["message"],
                 data={
@@ -42,7 +42,7 @@ async def upload_file(
                 }
             )
         else:
-            return BaseResponse(
+            return MessageResponse(
                 success=False,
                 message=result["message"]
             )
@@ -50,7 +50,7 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
-        return BaseResponse(
+        return MessageResponse(
             success=False,
             message=f"Error uploading file: {str(e)}"
         )

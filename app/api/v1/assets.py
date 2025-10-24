@@ -1,51 +1,73 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Optional
+from uuid import UUID
+from datetime import date
 from ...core.database import get_db
 from ...core.security import get_current_active_user
-from ...crud.asset import (
-    get_asset, get_assets_by_project, create_asset, update_asset, delete_asset
-)
+from ...crud import asset as asset_crud
 from ...models.user import User
-from ...schemas.asset import AssetCreate, AssetUpdate, AssetResponse, AssetListResponse
-from ...schemas.base import BaseResponse
+from ...schemas.asset import (
+    AssetCreate, AssetUpdate, AssetTransfer,
+    AssetResponse, AssetDetailResponse, AssetBriefResponse, AssetListResponse,
+    AssetAvailabilityCheck, AssetAvailabilityResponse
+)
+from ...schemas.enums import AssetStatus
 
-router = APIRouter(prefix="/Asset", tags=["Asset Management"])
+router = APIRouter(prefix="/assets", tags=["Asset Management"])
 
-@router.post("/saveAsset", response_model=AssetResponse)
-def save_asset(
+@router.post("/", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
+def create_asset(
     asset: AssetCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Save a new asset
-    """
+    """Create a new asset"""
     try:
-        db_asset = create_asset(db, asset)
+        # Check if asset_code already exists
+        if asset_crud.get_asset_by_code(db, asset.asset_code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Asset with code {asset.asset_code} already exists"
+            )
+        
+        db_asset = asset_crud.create_asset(db, asset, current_user.id)
         return AssetResponse.model_validate(db_asset)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save asset: {str(e)}"
+            detail=f"Failed to create asset: {str(e)}"
         )
 
-@router.get("/getAssetList", response_model=AssetListResponse)
-def get_asset_list(
-    project_id: int = Query(..., description="Project name to filter assets"),
+@router.get("/", response_model=AssetListResponse)
+def list_assets(
+    project_id: Optional[UUID] = Query(None, description="Filter by project ID"),
+    status: Optional[AssetStatus] = Query(None, description="Filter by status"),
+    asset_type: Optional[str] = Query(None, description="Filter by asset type"),
+    skip: int = Query(0, ge=0, description="Number of items to skip"),
+    limit: int = Query(100, ge=1, le=100, description="Number of items to return"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Get list of assets by project
-    """
+    """Get paginated list of assets with optional filters"""
     try:
-        assets = get_assets_by_project(db, project_id)
-        asset_responses = [AssetResponse.from_orm(asset) for asset in assets]
+        assets, total = asset_crud.get_assets_paginated(
+            db=db,
+            project_id=project_id,
+            status=status,
+            asset_type=asset_type,
+            skip=skip,
+            limit=limit
+        )
+        
         return AssetListResponse(
-            success=True,
-            data=asset_responses,
-            message="Assets retrieved successfully"
+            assets=[AssetResponse.model_validate(asset) for asset in assets],
+            total=total,
+            skip=skip,
+            limit=limit,
+            has_more=(skip + limit) < total
         )
     except Exception as e:
         raise HTTPException(
@@ -53,85 +75,153 @@ def get_asset_list(
             detail=f"Error retrieving assets: {str(e)}"
         )
 
-@router.post("/updateAsset", response_model=BaseResponse)
-def update_asset_endpoint(
-    asset_update: AssetUpdate,
-    asset_id: int = Query(..., description="Asset ID to update"),
+@router.get("/brief", response_model=list[AssetBriefResponse])
+def list_assets_brief(
+    project_id: UUID = Query(..., description="Project ID"),
+    status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Update an existing asset
-    """
+    """Get brief list of assets for dropdowns/selectors"""
     try:
-        updated_asset = update_asset(db, asset_id, asset_update)
+        assets = asset_crud.get_assets_brief(db, project_id, status)
+        return [AssetBriefResponse.model_validate(asset) for asset in assets]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving assets: {str(e)}"
+        )
+
+@router.get("/{asset_id}", response_model=AssetDetailResponse)
+def get_asset_detail(
+    asset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get detailed asset information"""
+    try:
+        asset_detail = asset_crud.get_asset_detail(db, asset_id)
+        if not asset_detail:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found"
+            )
+        return asset_detail
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving asset details: {str(e)}"
+        )
+
+@router.get("/code/{asset_code}", response_model=AssetResponse)
+def get_asset_by_code(
+    asset_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get asset by asset code"""
+    try:
+        db_asset = asset_crud.get_asset_by_code(db, asset_code)
+        if not db_asset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Asset with code {asset_code} not found"
+            )
+        return AssetResponse.model_validate(db_asset)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving asset: {str(e)}"
+        )
+
+@router.put("/{asset_id}", response_model=AssetResponse)
+def update_asset(
+    asset_id: UUID,
+    asset_update: AssetUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update an existing asset"""
+    try:
+        updated_asset = asset_crud.update_asset(db, asset_id, asset_update, current_user.id)
         if not updated_asset:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
-        
-        return BaseResponse(
-            success=True,
-            message="Asset updated successfully",
-            data=AssetResponse.from_orm(updated_asset)
-        )
+        return AssetResponse.model_validate(updated_asset)
     except HTTPException:
         raise
     except Exception as e:
-        return BaseResponse(
-            success=False,
-            message=f"Error updating asset: {str(e)}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating asset: {str(e)}"
         )
 
-@router.get("/editAssetdetails", response_model=BaseResponse)
-def get_asset_details(
-    current_user_id: str = Query(..., description="Current user ID"),
+@router.post("/{asset_id}/transfer", response_model=AssetResponse)
+def transfer_asset(
+    asset_id: UUID,
+    transfer: AssetTransfer,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Get asset details for editing
-    """
+    """Transfer asset to another project"""
     try:
-        # This would need to be implemented based on your business logic
-        # For now, returning a placeholder response
-        return BaseResponse(
-            success=True,
-            message="Asset details retrieved successfully",
-            data={"user_id": current_user_id}
+        transferred_asset = asset_crud.transfer_asset(
+            db, asset_id, transfer, current_user.id
         )
+        if not transferred_asset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found"
+            )
+        return AssetResponse.model_validate(transferred_asset)
+    except HTTPException:
+        raise
     except Exception as e:
-        return BaseResponse(
-            success=False,
-            message=f"Error retrieving asset details: {str(e)}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error transferring asset: {str(e)}"
         )
 
-@router.delete("/deleteAsset/{asset_id}", response_model=BaseResponse)
-def delete_asset_endpoint(
-    asset_id: int,
+@router.post("/check-availability", response_model=AssetAvailabilityResponse)
+def check_asset_availability(
+    availability_check: AssetAvailabilityCheck,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Delete an asset
-    """
+    """Check if an asset is available for a specific time slot"""
     try:
-        success = delete_asset(db, asset_id)
+        availability = asset_crud.check_asset_availability(db, availability_check)
+        return availability
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error checking availability: {str(e)}"
+        )
+
+@router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_asset(
+    asset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Delete an asset (soft delete if asset has bookings)"""
+    try:
+        success = asset_crud.delete_asset(db, asset_id, current_user.id)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
-        
-        return BaseResponse(
-            success=True,
-            message="Asset deleted successfully"
-        )
     except HTTPException:
         raise
     except Exception as e:
-        return BaseResponse(
-            success=False,
-            message=f"Error deleting asset: {str(e)}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting asset: {str(e)}"
         )

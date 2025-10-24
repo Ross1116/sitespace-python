@@ -1,35 +1,33 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import Column, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
-from ..core.database import Base
+from datetime import datetime
+import uuid
+import enum
+from app.core.database import Base
+
+class AssetStatus(str, enum.Enum):
+    AVAILABLE = "available"
+    IN_USE = "in_use"
+    MAINTENANCE = "maintenance"
+    RETIRED = "retired"
 
 class Asset(Base):
     __tablename__ = "assets"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    # Primary link: required, links to Project
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    
-    # Secondary link: optional, links to SiteProject
-    site_project_id = Column(Integer, ForeignKey("site_projects.id", ondelete="SET NULL"), nullable=True)
 
-    # Relationship back to Project (back_populates is "assets")
-    project = relationship("Project", back_populates="assets")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("site_projects.id", ondelete="RESTRICT"), nullable=False)
+    asset_code = Column(String(50), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    type = Column(String(100))  # excavator, crane, truck, etc.
+    description = Column(Text)
+    purchase_date = Column(Date)
+    purchase_value = Column(DECIMAL(12, 2))
+    current_value = Column(DECIMAL(12, 2))
+    status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship back to SiteProject (unique back_populates is "assets_ref")
-    site_project_ref = relationship("SiteProject", back_populates="assets_ref")
-
-
-    asset_title = Column(String, nullable=False)
-    asset_location = Column(String)
-    asset_status = Column(String, default="active")
-    asset_poc = Column(String)
-    maintenance_start_dt = Column(String)
-    maintenance_end_dt = Column(String)
-    usage_instructions = Column(Text)
-    asset_key = Column(String, unique=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    def __repr__(self):
-        return f"<Asset(id={self.id}, title='{self.asset_title}', project='{self.project_id}')>"
+    # Relationships
+    project = relationship("SiteProject", back_populates="assets")
+    bookings = relationship("SlotBooking", back_populates="asset", cascade="all, delete-orphan")

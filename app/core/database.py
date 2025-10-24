@@ -6,42 +6,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Create SQLAlchemy engine with better error handling
+# Create SQLAlchemy engine without a SQLite fallback
 def create_database_engine():
+    """
+    Creates the database engine based on the URL in settings. 
+    It is configured for PostgreSQL and will raise an error if connection fails.
+    """
+    
+    # Log the URL being used
+    logger.info(f"Database URL detected: {settings.database_url}")
+    
+    # We remove the outer try/except block to ensure failure if the database is inaccessible, 
+    # preventing silent fallback to an un-migrated SQLite file.
+    if settings.database_url.startswith("postgresql"):
+        # PostgreSQL connection with connection pooling
+        engine = create_engine(
+            settings.database_url,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30,
+            pool_size=5,
+            max_overflow=10,
+            echo=False  # Set to True for SQL debugging
+        )
+        logger.info("✅ PostgreSQL engine configured.")
+    else:
+        # If the URL is not for PostgreSQL, we still use create_engine on it.
+        engine = create_engine(settings.database_url, echo=False)
+        logger.warning("⚠️ Using non-PostgreSQL engine based on URL.")
+            
+    # Test the connection. This must succeed for the application to start.
     try:
-        if settings.database_url.startswith("postgresql"):
-            # PostgreSQL connection with connection pooling
-            engine = create_engine(
-                settings.database_url,
-                pool_pre_ping=True,
-                pool_recycle=300,
-                pool_timeout=30,
-                pool_size=5,
-                max_overflow=10,
-                echo=False  # Set to True for SQL debugging
-            )
-            logger.info("✅ PostgreSQL engine created successfully")
-        else:
-            # SQLite fallback
-            engine = create_engine(settings.database_url, echo=False)
-            logger.info("✅ SQLite engine created successfully")
-            
-        # Test the connection (but don't block startup if it fails)
-        try:
-            with engine.connect() as connection:
-                logger.info("✅ Database connection test successful")
-        except Exception as conn_error:
-            logger.warning(f"⚠️  Database connection test failed: {conn_error}")
-            # Don't fail here, let the app start anyway
-            
-        return engine
-        
-    except Exception as e:
-        logger.error(f"❌ Database engine creation failed: {e}")
-        # Create a fallback SQLite engine
-        fallback_engine = create_engine("sqlite:///./fallback.db", echo=False)
-        logger.warning("🔄 Using fallback SQLite database")
-        return fallback_engine
+        with engine.connect() as connection:
+            logger.info("✅ Database connection test successful.")
+    except Exception as conn_error:
+        # This block catches any failure (Auth, Host, Driver)
+        logger.error(f"❌ FATAL: Database connection failed: {conn_error}")
+        # Re-raise the exception to prevent the application from starting
+        raise RuntimeError("Database connection failed during startup. Check credentials, host, and port.") from conn_error 
+
+    return engine
 
 # Create the engine
 engine = create_database_engine()

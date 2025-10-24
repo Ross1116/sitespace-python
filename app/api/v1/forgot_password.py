@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from ...core.database import get_db
 from ...crud.user import get_user_by_email, update_user
 from ...schemas.user import UserUpdate
-from ...schemas.forgot_password import ForgotPasswordRequest, ResetPasswordRequest, ForgotPasswordResponse
+from ...schemas.auth import ForgotPasswordRequest, ResetPasswordRequest, ForgotPasswordResponse
 from ...utils.password import get_password_hash
 import uuid
 from datetime import datetime, timedelta
