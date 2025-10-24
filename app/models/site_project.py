@@ -20,8 +20,11 @@ class SiteProject(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
-    assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
-    bookings = relationship("SlotBooking", back_populates="project", cascade="all, delete-orphan")
+    # CORRECTED: Unique back_populates name to link to Asset.site_project_ref
+    assets_ref = relationship("Asset", back_populates="site_project_ref", cascade="all, delete-orphan") 
+    
+    # Assuming SlotBooking links to SiteProject via a unique relationship/FK
+    bookings = relationship("SlotBooking", back_populates="site_project", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<SiteProject(id={self.id}, contractor_name='{self.contractor_name}', company='{self.contractor_company}')>"

@@ -12,6 +12,10 @@ class Project(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # Primary relationship link to Asset
     assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
     bookings = relationship("SlotBooking", back_populates="project", cascade="all, delete-orphan")
     subcontractors = relationship("Subcontractor", back_populates="project", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<Project(id={self.id}, name='{self.name}')>"
