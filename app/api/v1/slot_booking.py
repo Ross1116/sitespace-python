@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import date, datetime
 from uuid import UUID
 
@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_db
-from app.core.security import get_current_active_user
+from app.core.security import get_current_active_user, get_user_role, get_entity_id
+from app.models.subcontractor import Subcontractor
 from app.models.user import User
 from app.models.slot_booking import SlotBooking, BookingStatus
 from app.schemas.slot_booking import (
@@ -45,27 +46,35 @@ def validate_date_range(date_from: Optional[date], date_to: Optional[date]) -> N
 def check_booking_access(
     db: Session,
     booking: SlotBooking,
-    user: User,
+    entity: Union[User, Subcontractor],
     require_owner: bool = False
 ) -> None:
-    """Check if user has access to the booking"""
+    """Check if user/subcontractor has access to the booking"""
+    
+    user_role = get_user_role(entity)
+    user_id = get_entity_id(entity)
     
     # Admins always have access
-    if user.role == UserRole.ADMIN:
+    if user_role == UserRole.ADMIN:
         return
     
-    # Check if user is the booking owner (manager)
-    if booking.manager_id == user.id:
+    # Check if entity is the booking owner (manager)
+    if booking.manager_id == user_id:
         return
+    
+    # Check if subcontractor owns the booking
+    if user_role == UserRole.SUBCONTRACTOR and booking.subcontractor_id == user_id:
+        if not require_owner:
+            return
     
     # Check if user is a project manager for this booking's project
-    if booking.project_id:
-        if project_crud.is_project_manager(db, booking.project_id, user.id):
+    if booking.project_id and user_role == UserRole.MANAGER:
+        if project_crud.is_project_manager(db, booking.project_id, user_id):
             if not require_owner:
                 return
     
     # If require_owner is True, only the booking creator can access
-    if require_owner and booking.manager_id != user.id:
+    if require_owner and booking.manager_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the booking owner can perform this action"
@@ -76,7 +85,6 @@ def check_booking_access(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="You don't have access to this booking"
     )
-
 
 def validate_booking_times(start_time, end_time) -> None:
     """Validate that start_time is before end_time"""
@@ -137,21 +145,27 @@ def validate_booking_times(start_time, end_time) -> None:
 
 
 # ==================== Main Endpoints ====================
-
 @router.post("/", response_model=BookingDetailResponse, status_code=status.HTTP_201_CREATED)
 def create_booking(
     booking_data: BookingCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> BookingDetailResponse:
     """
     Create a new booking.
     
+    **Role-based booking:**
+    - **Managers/Admins**: Bookings are automatically CONFIRMED
+    - **Subcontractors**: Bookings are PENDING (require manager approval)
+    
     - Validates time slots and booking date
     - Checks for conflicts with existing bookings
-    - Creates booking with PENDING status
     """
     try:
+        # Get role and ID from entity (works for both User and Subcontractor)
+        user_role = get_user_role(current_entity)
+        user_id = get_entity_id(current_entity)
+        
         # Validate booking times
         validate_booking_times(booking_data.start_time, booking_data.end_time)
         
@@ -161,6 +175,50 @@ def create_booking(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot create bookings for past dates"
             )
+        
+        # Role-specific validations
+        if user_role == UserRole.SUBCONTRACTOR:
+            # Subcontractors can only book for themselves
+            if booking_data.subcontractor_id and booking_data.subcontractor_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Subcontractors can only create bookings for themselves"
+                )
+            
+            # Check if subcontractor is assigned to the project
+            from app.crud import subcontractor as subcontractor_crud
+            if not subcontractor_crud.is_subcontractor_assigned(
+                db, 
+                booking_data.project_id, 
+                user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not assigned to this project"
+                )
+        
+        elif user_role in [UserRole.MANAGER, UserRole.ADMIN]:
+            # Verify manager has access to the project
+            if booking_data.project_id:
+                if user_role != UserRole.ADMIN:  # Admins have access to all projects
+                    if not project_crud.has_project_access(db, booking_data.project_id, user_id):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You don't have access to this project"
+                        )
+            
+            # Verify subcontractor is assigned to the project (only if subcontractor is specified)
+            if booking_data.subcontractor_id:
+                from app.crud import subcontractor as subcontractor_crud
+                if not subcontractor_crud.is_subcontractor_assigned(
+                    db, 
+                    booking_data.project_id, 
+                    booking_data.subcontractor_id
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Selected subcontractor is not assigned to this project"
+                    )
         
         # Check for conflicts before creating
         conflict_check = BookingConflictCheck(
@@ -177,16 +235,14 @@ def create_booking(
                 detail=f"Booking conflicts with {len(conflicts.conflicting_bookings)} existing reservation(s)"
             )
         
-        # Verify user has access to the project if specified
-        if booking_data.project_id:
-            if not project_crud.has_project_access(db, booking_data.project_id, current_user.id):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You don't have access to this project"
-                )
+        # Create the booking with role-based status
+        booking = booking_crud.create_booking(
+            db, 
+            booking_data, 
+            user_id,
+            user_role  # Pass the determined role
+        )
         
-        # Create the booking
-        booking = booking_crud.create_booking(db, booking_data, current_user.id)
         return booking_crud.get_booking_detail(db, booking.id)
         
     except HTTPException:
@@ -197,64 +253,135 @@ def create_booking(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid booking data. Please check asset and project IDs"
         )
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create booking: {str(e)}"
         )
-
-
+        
 @router.post("/bulk", response_model=List[BookingDetailResponse], status_code=status.HTTP_201_CREATED)
 def create_bulk_bookings(
     bulk_data: BulkBookingCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> List[BookingDetailResponse]:
     """
     Create multiple bookings at once.
     
     - Creates bookings for multiple assets and/or dates
     - Validates all bookings before creating any
+    - Role-based status: CONFIRMED for managers, PENDING for subcontractors
     - Returns list of created bookings
     """
     try:
+        # Get role and ID from entity (works for both User and Subcontractor)
+        user_role = get_user_role(current_entity)
+        user_id = get_entity_id(current_entity)
+        
         # Validate all bookings first
         for booking_date in bulk_data.booking_dates:
             if booking_date < date.today():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Cannot create bookings for past dates"
+                    detail=f"Cannot create bookings for past date: {booking_date}"
                 )
         
         # Validate times
-        for booking in bulk_data.bookings:
-            validate_booking_times(booking.start_time, booking.end_time)
+        validate_booking_times(bulk_data.start_time, bulk_data.end_time)
         
-        # Check project access if specified
-        if bulk_data.project_id:
-            if not project_crud.has_project_access(db, bulk_data.project_id, current_user.id):
+        # Role-specific validations
+        if user_role == UserRole.SUBCONTRACTOR:
+            # Subcontractor must book for themselves
+            if bulk_data.subcontractor_id and bulk_data.subcontractor_id != user_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You don't have access to this project"
+                    detail="Subcontractors can only create bookings for themselves"
+                )
+            
+            from app.crud import subcontractor as subcontractor_crud
+            if not subcontractor_crud.is_subcontractor_assigned(
+                db, 
+                bulk_data.project_id, 
+                user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not assigned to this project"
                 )
         
-        # Create all bookings
-        bookings = booking_crud.create_bulk_bookings(db, bulk_data, current_user.id)
+        elif user_role in [UserRole.MANAGER, UserRole.ADMIN]:
+            # Check project access
+            if bulk_data.project_id:
+                if user_role != UserRole.ADMIN:
+                    if not project_crud.has_project_access(db, bulk_data.project_id, user_id):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You don't have access to this project"
+                        )
+            
+            # Verify subcontractor is assigned to project (only if specified)
+            if bulk_data.subcontractor_id:
+                from app.crud import subcontractor as subcontractor_crud
+                if not subcontractor_crud.is_subcontractor_assigned(
+                    db, 
+                    bulk_data.project_id, 
+                    bulk_data.subcontractor_id
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Selected subcontractor is not assigned to this project"
+                    )
+        
+        # Check for conflicts for all combinations
+        for asset_id in bulk_data.asset_ids:
+            for booking_date in bulk_data.booking_dates:
+                conflict_check = BookingConflictCheck(
+                    asset_id=asset_id,
+                    booking_date=booking_date,
+                    start_time=bulk_data.start_time,
+                    end_time=bulk_data.end_time
+                )
+                
+                conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
+                if conflicts.has_conflict:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Conflict found for asset on {booking_date}"
+                    )
+        
+        # Create all bookings with role-based status
+        bookings = booking_crud.create_bulk_bookings(
+            db, 
+            bulk_data, 
+            user_id,      
+            user_role     
+        )
         
         # Return detailed response for each booking
         return [booking_crud.get_booking_detail(db, b.id) for b in bookings]
         
     except HTTPException:
         raise
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create bulk bookings: {str(e)}"
         )
-
-
+        
 @router.get("/", response_model=BookingListResponse)
 def get_bookings(
     skip: int = Query(0, ge=0, description="Number of items to skip"),
@@ -267,16 +394,23 @@ def get_bookings(
     date_from: Optional[date] = Query(None, description="Filter from date"),
     date_to: Optional[date] = Query(None, description="Filter to date"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> BookingListResponse:
     """
     Get list of bookings with optional filters.
+    
+    **Role-based filtering:**
+    - **Admins**: See all bookings
+    - **Managers**: See bookings for their projects
+    - **Subcontractors**: See only their own bookings
     
     - Supports pagination
     - Multiple filter options
     - Returns detailed booking information
     """
     try:
+        user_role = get_user_role(current_entity)
+        user_id = get_entity_id(current_entity)
         # Validate date range
         validate_date_range(date_from, date_to)
         
@@ -291,10 +425,15 @@ def get_bookings(
             date_to=date_to
         )
         
-        if current_user.role != UserRole.ADMIN:
-            # If no manager_id filter is specified, show only user's bookings
-            if not manager_id:
-                filter_params.manager_id = current_user.id
+        # Apply role-based filters
+        if user_role == UserRole.SUBCONTRACTOR:
+            # Subcontractors can only see their own bookings
+            filter_params.subcontractor_id = user_id
+        elif user_role == UserRole.MANAGER:
+            # Managers see bookings they created or for their projects
+            if not manager_id and not project_id:
+                filter_params.manager_id = user_id
+        # Admins see everything (no additional filter)
         
         bookings, total = booking_crud.get_bookings(
             db, 
@@ -318,7 +457,7 @@ def get_bookings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve bookings: {str(e)}"
         )
-
+        
 
 @router.get("/calendar", response_model=List[BookingCalendarView])
 def get_calendar_view(
@@ -711,6 +850,7 @@ def duplicate_booking(
     
     - Copies all booking details except the date
     - Checks for conflicts on the new date
+    - Role-based status applied
     """
     try:
         # Get original booking
@@ -749,19 +889,34 @@ def duplicate_booking(
         # Create duplicate booking
         duplicate_data = BookingCreate(
             project_id=original.project_id,
+            manager_id=original.manager_id if current_user.role in [UserRole.ADMIN, UserRole.MANAGER] else None,
             subcontractor_id=original.subcontractor_id,
             asset_id=original.asset_id,
             booking_date=new_date,
             start_time=original.start_time,
             end_time=original.end_time,
-            notes=f"Duplicated from booking {booking_id}"
+            purpose=original.purpose,
+            notes=f"Duplicated from booking {booking_id}. {original.notes or ''}"
         )
         
-        new_booking = booking_crud.create_booking(db, duplicate_data, current_user.id)
+        # Create with role-based status
+        new_booking = booking_crud.create_booking(
+            db, 
+            duplicate_data, 
+            current_user.id,
+            current_user.role  # ← ADD THIS LINE - Pass the user's role
+        )
+        
         return booking_crud.get_booking_detail(db, new_booking.id)
         
     except HTTPException:
         raise
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(

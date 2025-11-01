@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 from typing import Optional, Union, Dict, Any
+from uuid import UUID
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import HTTPException, status, Depends
@@ -15,6 +16,7 @@ from ..models.user import User
 from ..models.subcontractor import Subcontractor  # Add this import
 from ..crud.user import get_user, get_user_by_email
 from .password import verify_password, get_password_hash
+from ..schemas.enums import UserRole
 
 # JWT token bearer
 security = HTTPBearer()
@@ -321,3 +323,40 @@ def generate_key_and_iv(key_length: int, iv_length: int, iterations: int, salt: 
     iv = bytes(generated_data[key_length:key_length + iv_length]) if iv_length > 0 else b''
     
     return [key, iv]
+
+def get_user_role(entity: Union[User, Subcontractor]) -> UserRole:
+    """
+    Get UserRole from User or Subcontractor entity.
+    
+    Args:
+        entity: User or Subcontractor instance
+        
+    Returns:
+        UserRole enum value
+    """
+    if isinstance(entity, Subcontractor):
+        return UserRole.SUBCONTRACTOR
+    elif isinstance(entity, User):
+        return UserRole(entity.role)
+    else:
+        raise ValueError(f"Invalid entity type: {type(entity)}")
+
+def get_entity_id(entity: Union[User, Subcontractor]) -> UUID:
+    """
+    Get ID from User or Subcontractor entity.
+    
+    Args:
+        entity: User or Subcontractor instance
+        
+    Returns:
+        UUID of the entity
+    """
+    return entity.id
+
+def is_subcontractor(entity: Union[User, Subcontractor]) -> bool:
+    """Check if entity is a Subcontractor"""
+    return isinstance(entity, Subcontractor)
+
+def is_user(entity: Union[User, Subcontractor]) -> bool:
+    """Check if entity is a User"""
+    return isinstance(entity, User)

@@ -31,9 +31,10 @@ class BookingBase(TimeSlot):
 class BookingCreate(BookingBase):
     """Booking creation schema"""
     project_id: UUID
-    manager_id: UUID
-    subcontractor_id: UUID
+    manager_id: Optional[UUID] = None
+    subcontractor_id: Optional[UUID] = None
     asset_id: UUID
+    
     
     @field_validator('booking_date')
     def validate_booking_date(cls, v):
@@ -71,7 +72,7 @@ class BookingResponse(BookingBase, TimestampSchema):
     id: UUID
     project_id: UUID
     manager_id: UUID
-    subcontractor_id: UUID
+    subcontractor_id: Optional[UUID] = None
     asset_id: UUID
     status: BookingStatus
 
@@ -79,7 +80,7 @@ class BookingDetailResponse(BookingResponse):
     """Detailed booking response"""
     project: SiteProjectBriefResponse
     manager: UserBriefResponse
-    subcontractor: SubcontractorBriefResponse
+    subcontractor: Optional[SubcontractorBriefResponse] = None
     asset: AssetBriefResponse
 
 class BookingListResponse(BaseSchema):
@@ -127,7 +128,7 @@ class BulkBookingCreate(BaseSchema):
     """Create multiple bookings"""
     project_id: UUID
     manager_id: UUID
-    subcontractor_id: UUID
+    subcontractor_id: Optional[UUID] = None 
     asset_ids: List[UUID]
     booking_dates: List[date]
     start_time: time

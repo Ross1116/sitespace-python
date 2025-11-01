@@ -23,26 +23,25 @@ from ..schemas.slot_booking import (
     BookingDetailResponse,
     BookingResponse
 )
+from ..schemas.enums import UserRole
 
 def create_booking(
     db: Session,
     booking_data: BookingCreate,
-    created_by_id: UUID
+    created_by_id: UUID,
+    created_by_role: UserRole  # ADD THIS PARAMETER
 ) -> SlotBooking:
-    """Create a new booking in the database"""
+    """
+    Create a new booking in the database with role-based status.
+    
+    - Managers/Admins: Booking is automatically CONFIRMED
+    - Subcontractors: Booking is PENDING (requires manager approval)
+    """
     
     # Validate that all referenced entities exist
     project = db.query(SiteProject).filter(SiteProject.id == booking_data.project_id).first()
     if not project:
         raise ValueError(f"Project with id {booking_data.project_id} not found")
-    
-    manager = db.query(User).filter(User.id == booking_data.manager_id).first()
-    if not manager:
-        raise ValueError(f"Manager with id {booking_data.manager_id} not found")
-    
-    subcontractor = db.query(Subcontractor).filter(Subcontractor.id == booking_data.subcontractor_id).first()
-    if not subcontractor:
-        raise ValueError(f"Subcontractor with id {booking_data.subcontractor_id} not found")
     
     asset = db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
     if not asset:
@@ -52,18 +51,73 @@ def create_booking(
     if asset.status != AssetStatus.AVAILABLE:
         raise ValueError(f"Asset is not available (status: {asset.status})")
     
+    # Determine manager_id, subcontractor_id, and status based on role
+    if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
+        # Manager/Admin creating booking
+        manager_id = booking_data.manager_id or created_by_id
+        subcontractor_id = booking_data.subcontractor_id  # Can be None
+        booking_status = BookingStatus.CONFIRMED
+        
+        # Validate manager exists
+        manager = db.query(User).filter(User.id == manager_id).first()
+        if not manager:
+            raise ValueError(f"Manager with id {manager_id} not found")
+        
+        # Validate subcontractor exists (if provided)
+        if subcontractor_id:
+            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+            if not subcontractor:
+                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+        
+    elif created_by_role == UserRole.SUBCONTRACTOR:
+        # Subcontractor creating booking - must be for themselves
+        subcontractor_id = created_by_id
+        
+        # Subcontractor must provide their ID or it defaults to current user
+        if booking_data.subcontractor_id and booking_data.subcontractor_id != created_by_id:
+            raise ValueError("Subcontractors can only create bookings for themselves")
+        
+        # Validate subcontractor exists
+        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+        if not subcontractor:
+            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+        
+        # Auto-assign a manager from the project
+        if booking_data.manager_id:
+            manager_id = booking_data.manager_id
+            # Validate manager exists
+            manager = db.query(User).filter(User.id == manager_id).first()
+            if not manager:
+                raise ValueError(f"Manager with id {manager_id} not found")
+        else:
+            # Find a manager from the project
+            project_with_managers = db.query(SiteProject)\
+                .options(joinedload(SiteProject.managers))\
+                .filter(SiteProject.id == booking_data.project_id)\
+                .first()
+            
+            if not project_with_managers or not project_with_managers.managers:
+                raise ValueError("No managers found for this project")
+            
+            # Assign to the first manager
+            manager_id = project_with_managers.managers[0].id
+        
+        booking_status = BookingStatus.PENDING
+    else:
+        raise ValueError(f"Invalid user role: {created_by_role}")
+    
     # Create the booking
     db_booking = SlotBooking(
         project_id=booking_data.project_id,
-        manager_id=booking_data.manager_id or created_by_id,  # Use current user as manager if not specified
-        subcontractor_id=booking_data.subcontractor_id,
+        manager_id=manager_id,
+        subcontractor_id=subcontractor_id,  # Can be None for manager bookings
         asset_id=booking_data.asset_id,
         booking_date=booking_data.booking_date,
         start_time=booking_data.start_time,
         end_time=booking_data.end_time,
         purpose=booking_data.purpose,
         notes=booking_data.notes,
-        status=BookingStatus.PENDING
+        status=booking_status  # Role-based status
     )
     
     db.add(db_booking)
@@ -75,9 +129,15 @@ def create_booking(
 def create_bulk_bookings(
     db: Session,
     bulk_data: BulkBookingCreate,
-    created_by_id: UUID
+    created_by_id: UUID,
+    created_by_role: UserRole  # ADD THIS PARAMETER
 ) -> List[SlotBooking]:
-    """Create multiple bookings at once"""
+    """
+    Create multiple bookings at once with role-based status.
+    
+    - Managers/Admins: Bookings are automatically CONFIRMED
+    - Subcontractors: Bookings are PENDING (require manager approval)
+    """
     bookings = []
     failed_bookings = []
     
@@ -86,13 +146,53 @@ def create_bulk_bookings(
     if not project:
         raise ValueError(f"Project with id {bulk_data.project_id} not found")
     
-    manager = db.query(User).filter(User.id == bulk_data.manager_id).first()
-    if not manager:
-        raise ValueError(f"Manager with id {bulk_data.manager_id} not found")
-    
-    subcontractor = db.query(Subcontractor).filter(Subcontractor.id == bulk_data.subcontractor_id).first()
-    if not subcontractor:
-        raise ValueError(f"Subcontractor with id {bulk_data.subcontractor_id} not found")
+    # Determine manager_id, subcontractor_id, and status based on role
+    if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
+        # Manager/Admin creating booking
+        manager_id = bulk_data.manager_id or created_by_id
+        subcontractor_id = bulk_data.subcontractor_id  # Can be None
+        booking_status = BookingStatus.CONFIRMED
+        
+        # Validate manager exists
+        manager = db.query(User).filter(User.id == manager_id).first()
+        if not manager:
+            raise ValueError(f"Manager with id {manager_id} not found")
+        
+        # Validate subcontractor exists (if provided)
+        if subcontractor_id:
+            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+            if not subcontractor:
+                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+        
+    elif created_by_role == UserRole.SUBCONTRACTOR:
+        # Subcontractor creating booking - must be for themselves
+        subcontractor_id = created_by_id
+        
+        if bulk_data.subcontractor_id and bulk_data.subcontractor_id != created_by_id:
+            raise ValueError("Subcontractors can only create bookings for themselves")
+        
+        # Validate subcontractor exists
+        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+        if not subcontractor:
+            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+        
+        # Auto-assign a manager from the project
+        if bulk_data.manager_id:
+            manager_id = bulk_data.manager_id
+        else:
+            project_with_managers = db.query(SiteProject)\
+                .options(joinedload(SiteProject.managers))\
+                .filter(SiteProject.id == bulk_data.project_id)\
+                .first()
+            
+            if not project_with_managers or not project_with_managers.managers:
+                raise ValueError("No managers found for this project")
+            
+            manager_id = project_with_managers.managers[0].id
+        
+        booking_status = BookingStatus.PENDING
+    else:
+        raise ValueError(f"Invalid user role: {created_by_role}")
     
     for asset_id in bulk_data.asset_ids:
         # Validate asset exists and is available
@@ -125,15 +225,15 @@ def create_bulk_bookings(
             
             db_booking = SlotBooking(
                 project_id=bulk_data.project_id,
-                manager_id=bulk_data.manager_id or created_by_id,
-                subcontractor_id=bulk_data.subcontractor_id,
+                manager_id=manager_id,
+                subcontractor_id=subcontractor_id,  # Can be None
                 asset_id=asset_id,
                 booking_date=booking_date,
                 start_time=bulk_data.start_time,
                 end_time=bulk_data.end_time,
                 purpose=bulk_data.purpose,
                 notes=bulk_data.notes,
-                status=BookingStatus.PENDING
+                status=booking_status  # Role-based status
             )
             
             db.add(db_booking)
@@ -146,6 +246,10 @@ def create_bulk_bookings(
             db.refresh(booking)
     
     # You might want to return failed_bookings info as well
+    if failed_bookings:
+        # Log or handle failed bookings
+        print(f"Failed to create {len(failed_bookings)} bookings: {failed_bookings}")
+    
     return bookings
 
 def get_booking(db: Session, booking_id: UUID) -> Optional[SlotBooking]:

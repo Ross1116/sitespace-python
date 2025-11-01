@@ -19,7 +19,7 @@ class User(Base):
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
     phone = Column(String, nullable=True)
-    role = Column(String, nullable=False)
+    role = Column(String, nullable=False)    
     is_active = Column(Boolean, default=True)
     email_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
