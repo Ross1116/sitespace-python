@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("DEBUG", "False").strip().lower() in ("true", "1", "yes", "on")
     
     # CORS - Update with your actual frontend domains for production
-    cors_origins: list = os.getenv("CORS_ORIGINS", "https://sitespace.vercel.app").split(",") if os.getenv("CORS_ORIGINS") else ["https://sitespace.vercel.app"]
+    cors_origins: list = os.getenv(
+    "CORS_ORIGINS", 
+    "http://localhost:3000,http://localhost:5173,https://sitespace.vercel.app"
+    ).split(",")
     
      # Email settings
     SMTP_HOST: str = "smtp.gmail.com"
