@@ -1,4 +1,3 @@
-# crud/site_project.py
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
@@ -100,15 +99,11 @@ def get_projects(
     if 'end_date_to' in filters and filters['end_date_to']:
         query = query.filter(SiteProject.end_date <= filters['end_date_to'])
     
-    # User access filter - get projects where user is manager or subcontractor
+    # User access filter - get projects where user is a manager
+    # Note: Subcontractors don't have user_id, they're separate entities
     if 'user_id' in filters and filters['user_id']:
         query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == filters['user_id']),
-                SiteProject.subcontractors.any(
-                    Subcontractor.user_id == filters['user_id']
-                )
-            )
+            SiteProject.managers.any(User.id == filters['user_id'])
         )
     
     return query.order_by(SiteProject.created_at.desc()).offset(skip).limit(limit).all()
@@ -143,14 +138,10 @@ def count_projects(db: Session, filters: Dict[str, Any] = {}) -> int:
     if 'end_date_to' in filters and filters['end_date_to']:
         query = query.filter(SiteProject.end_date <= filters['end_date_to'])
     
+    # User access filter - get projects where user is a manager
     if 'user_id' in filters and filters['user_id']:
         query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == filters['user_id']),
-                SiteProject.subcontractors.any(
-                    Subcontractor.user_id == filters['user_id']
-                )
-            )
+            SiteProject.managers.any(User.id == filters['user_id'])
         )
     
     return query.count()
@@ -202,17 +193,11 @@ def delete_project(db: Session, project: SiteProject):
     db.commit()
 
 def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
-    """Check if user has access to project (as manager or subcontractor)"""
+    """Check if user has access to project (as manager only)"""
     project = db.query(SiteProject)\
         .filter(SiteProject.id == project_id)\
-        .filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id)
-                # SiteProject.subcontractors.any(
-                #     Subcontractor.user_id == user_id
-                # )
-            )
-        ).first()
+        .filter(SiteProject.managers.any(User.id == user_id))\
+        .first()
     
     return project is not None
 
@@ -253,6 +238,17 @@ def count_project_managers(db: Session, project_id: UUID) -> int:
         return len(project.managers)
     return 0
 
+def count_lead_managers(db: Session, project_id: UUID) -> int:
+    """Count lead managers (for now, returns 1 if any managers exist)"""
+    project = db.query(SiteProject)\
+        .options(joinedload(SiteProject.managers))\
+        .filter(SiteProject.id == project_id)\
+        .first()
+    
+    if project and project.managers:
+        return 1  # Currently only one lead manager (first in list)
+    return 0
+
 def add_manager_to_project(
     db: Session, 
     project_id: UUID, 
@@ -288,14 +284,9 @@ def add_subcontractor_to_project(
     project_id: UUID, 
     subcontractor_id: UUID,
     hourly_rate: Optional[float] = None,
-    is_active: bool = True  # Add this parameter
+    is_active: bool = True
 ):
-    """Add subcontractor to project
-    
-    Note: hourly_rate and is_active are not stored in the current model.
-    If needed, create an association object to store project-specific rates and status.
-    """
-    # Only add if is_active is True (for now, since we can't store the status)
+    """Add subcontractor to project"""
     if not is_active:
         return False
         
@@ -332,13 +323,8 @@ def update_project_subcontractor(
     subcontractor_id: UUID,
     update_data: Any
 ):
-    """Update subcontractor details in project
-    
-    Current model doesn't support project-specific subcontractor data.
-    To implement this, you'd need an association object pattern.
-    """
+    """Update subcontractor details in project"""
     # Placeholder for future implementation
-    # Would require changes to the association table
     return True
 
 def get_available_subcontractors(
@@ -373,8 +359,6 @@ def get_available_subcontractors(
     
     return query.all()
 
-# Additional helper functions
-
 def get_user_projects(
     db: Session,
     user_id: UUID,
@@ -382,23 +366,11 @@ def get_user_projects(
     skip: int = 0,
     limit: int = 100
 ) -> List[SiteProject]:
-    """Get all projects for a specific user"""
+    """Get all projects for a specific user (managers only)"""
     query = db.query(SiteProject)
     
-    if role == 'manager':
-        query = query.filter(SiteProject.managers.any(User.id == user_id))
-    elif role == 'subcontractor':
-        query = query.filter(
-            SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-        )
-    else:
-        # Get all projects where user is either manager or subcontractor
-        query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id),
-                SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-            )
-        )
+    # Only filter by managers (subcontractors are separate entities)
+    query = query.filter(SiteProject.managers.any(User.id == user_id))
     
     return query.order_by(SiteProject.created_at.desc())\
         .offset(skip).limit(limit).all()
@@ -423,12 +395,7 @@ def search_projects(
     
     # If user_id provided, filter to user's projects only
     if user_id:
-        query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id),
-                SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-            )
-        )
+        query = query.filter(SiteProject.managers.any(User.id == user_id))
     
     return query.order_by(SiteProject.created_at.desc())\
         .offset(skip).limit(limit).all()
@@ -443,17 +410,12 @@ def get_active_projects(
     query = db.query(SiteProject).filter(
         or_(
             SiteProject.status == 'active',
-            SiteProject.status == None  # Default is considered active
+            SiteProject.status == None
         )
     )
     
     if user_id:
-        query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id),
-                SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-            )
-        )
+        query = query.filter(SiteProject.managers.any(User.id == user_id))
     
     return query.order_by(SiteProject.created_at.desc())\
         .offset(skip).limit(limit).all()
@@ -469,12 +431,7 @@ def get_projects_by_status(
     query = db.query(SiteProject).filter(SiteProject.status == status)
     
     if user_id:
-        query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id),
-                SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-            )
-        )
+        query = query.filter(SiteProject.managers.any(User.id == user_id))
     
     return query.order_by(SiteProject.created_at.desc())\
         .offset(skip).limit(limit).all()
@@ -500,37 +457,17 @@ def get_upcoming_projects(
     )
     
     if user_id:
-        query = query.filter(
-            or_(
-                SiteProject.managers.any(User.id == user_id),
-                SiteProject.subcontractors.any(Subcontractor.user_id == user_id)
-            )
-        )
+        query = query.filter(SiteProject.managers.any(User.id == user_id))
     
     return query.order_by(SiteProject.start_date.asc())\
         .offset(skip).limit(limit).all()
 
-    
 def is_subcontractor_assigned(
     db: Session,
     project_id: UUID,
     subcontractor_id: UUID
 ) -> bool:
-    """
-    Check if a subcontractor is already assigned to a project.
-    
-    Args:
-        db: Database session
-        project_id: The project ID to check
-        subcontractor_id: The subcontractor ID to check
-    
-    Returns:
-        True if the subcontractor is assigned to the project, False otherwise
-    """
-    from ..models.site_project import SiteProject
-    from ..models.subcontractor import Subcontractor
-    
-    # Query to check if the relationship exists
+    """Check if a subcontractor is already assigned to a project"""
     project = db.query(SiteProject).filter(
         SiteProject.id == project_id
     ).first()
@@ -548,3 +485,20 @@ def is_subcontractor_assigned(
     ).first()
     
     return subcontractor_assigned is not None
+
+def get_project_statistics(db: Session, project_id: UUID) -> Optional[Dict[str, Any]]:
+    """Get project statistics"""
+    project = get_project_with_details(db, project_id)
+    
+    if not project:
+        return None
+    
+    return {
+        "project_id": str(project.id),
+        "project_name": project.name,
+        "total_managers": len(project.managers),
+        "total_subcontractors": len(project.subcontractors),
+        "total_assets": len(project.assets) if hasattr(project, 'assets') else 0,
+        "total_bookings": len(project.slot_bookings) if hasattr(project, 'slot_bookings') else 0,
+        "status": project.status
+    }
