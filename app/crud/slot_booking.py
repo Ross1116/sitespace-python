@@ -798,7 +798,8 @@ def get_calendar_view(
     # Group bookings by date
     bookings_by_date = defaultdict(list)
     for booking in bookings:
-        booking_response = BookingResponse(
+        # ✅ Create BookingDetailResponse instead of BookingResponse
+        booking_detail = BookingDetailResponse(
             id=booking.id,
             project_id=booking.project_id,
             manager_id=booking.manager_id,
@@ -811,9 +812,39 @@ def get_calendar_view(
             purpose=booking.purpose,
             notes=booking.notes,
             created_at=booking.created_at,
-            updated_at=booking.updated_at
+            updated_at=booking.updated_at,
+            # ✅ Add required relationship data
+            project={
+                "id": booking.project.id,
+                "name": booking.project.name,
+                "location": booking.project.location,
+                "status": booking.project.status
+            } if booking.project else None,
+            manager={
+                "id": booking.manager.id,
+                "email": booking.manager.email,
+                "first_name": booking.manager.first_name,
+                "last_name": booking.manager.last_name,
+                "role": booking.manager.role,
+                "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
+            } if booking.manager else None,
+            subcontractor={
+                "id": booking.subcontractor.id,
+                "email": booking.subcontractor.email,
+                "first_name": booking.subcontractor.first_name,
+                "last_name": booking.subcontractor.last_name,
+                "company_name": booking.subcontractor.company_name,
+                "trade_specialty": booking.subcontractor.trade_specialty
+            } if booking.subcontractor else None,
+            asset={
+                "id": booking.asset.id,
+                "asset_code": booking.asset.asset_code,
+                "name": booking.asset.name,
+                "type": booking.asset.type,
+                "status": booking.asset.status.value if booking.asset.status else None
+            } if booking.asset else None
         )
-        bookings_by_date[booking.booking_date].append(booking_response)
+        bookings_by_date[booking.booking_date].append(booking_detail)
     
     # Create calendar view objects
     calendar_view = []
@@ -822,8 +853,7 @@ def get_calendar_view(
         day_bookings = bookings_by_date.get(current_date, [])
         calendar_view.append(BookingCalendarView(
             date=current_date,
-            bookings=day_bookings,
-            total_bookings=len(day_bookings)
+            bookings=day_bookings  # Now contains BookingDetailResponse objects
         ))
         current_date += timedelta(days=1)
     
