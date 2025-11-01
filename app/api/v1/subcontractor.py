@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
 from datetime import date
 
 from ...core.database import get_db
-from ...core.security import get_current_active_user
+from ...core.security import get_current_active_user, create_password_reset_token
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
 from ...schemas.subcontractor import (
@@ -24,16 +24,14 @@ router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
 async def verify_manager_access(
     subcontractor_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    db: Session,
+    current_user: User
 ) -> bool:
     """Verify that the current user can access this subcontractor"""
     
-    # Admins can access all
     if current_user.role == "admin":
         return True
     
-    # Managers can only access subcontractors on their projects
     if current_user.role == "manager":
         has_access = subcontractor_crud.check_manager_can_access_subcontractor(
             db,
@@ -47,7 +45,6 @@ async def verify_manager_access(
             )
         return True
     
-    # Other roles don't have access
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Insufficient permissions"
@@ -70,7 +67,6 @@ def get_my_subcontractors(
     Admins see all subcontractors, managers see only their project subcontractors.
     """
     if current_user.role == "admin":
-        # Admins get all subcontractors
         result = subcontractor_crud.get_all_subcontractors(
             db,
             skip=skip,
@@ -79,7 +75,6 @@ def get_my_subcontractors(
             trade_specialty=trade_specialty
         )
     elif current_user.role == "manager":
-        # Managers get only their subcontractors
         result = subcontractor_crud.get_subcontractors_for_manager(
             db,
             manager_id=current_user.id,
@@ -131,8 +126,6 @@ def get_manager_subcontractor_statistics(
         )
     
     stats = subcontractor_crud.get_manager_statistics(db, current_user.id)
-    
-    # Don't return the full subcontractor list in stats, just counts
     stats.pop("subcontractor_list", None)
     
     return stats
@@ -253,7 +246,7 @@ def get_subcontractors_by_trade(
         ) for s in subcontractors
     ]
 
-# ===== ROOT ENDPOINTS (/ PATH) =====
+# ===== ROOT ENDPOINTS (/) =====
 
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
@@ -308,12 +301,16 @@ def create_subcontractor(
     Required fields:
     - email: Unique email address
     - password: Password for the subcontractor account
+    - confirm_password: Must match password
     - first_name: First name
     - last_name: Last name
-    - company_name: Company name
-    - trade_specialty: Trade specialty (enum)
-    - phone: Contact phone number
     """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can create subcontractors"
+        )
+    
     # Check if email already exists
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
         db, 
@@ -375,7 +372,6 @@ def get_subcontractor(
             detail="Subcontractor not found"
         )
     
-    # Format the response with relationships
     return SubcontractorDetailResponse(
         id=subcontractor.id,
         email=subcontractor.email,
@@ -405,6 +401,14 @@ def update_subcontractor(
     """
     Update a subcontractor's information.
     """
+    if current_user.role not in ["manager", "admin"]:
+        # Subcontractors can only update their own profile
+        if current_user.id != subcontractor_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only update your own profile"
+            )
+    
     updated_subcontractor = subcontractor_crud.update_subcontractor(
         db,
         subcontractor_id,
@@ -439,6 +443,12 @@ def delete_subcontractor(
     """
     Soft delete a subcontractor (sets is_active to False).
     """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can delete subcontractors"
+        )
+    
     success = subcontractor_crud.delete_subcontractor(db, subcontractor_id)
     
     if success:
@@ -452,6 +462,100 @@ def delete_subcontractor(
             detail="Subcontractor not found"
         )
 
+@router.post("/{subcontractor_id}/send-welcome-email", response_model=MessageResponse)
+def send_welcome_email_endpoint(
+    subcontractor_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Send welcome email with password setup link to new subcontractor.
+    Uses existing password reset system.
+    """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can send welcome emails"
+        )
+    
+    subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
+    
+    if not subcontractor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subcontractor not found"
+        )
+    
+    # Generate password reset token (reuse existing system!)
+    reset_token = create_password_reset_token(subcontractor.email)
+    
+    # Send custom welcome email instead of "forgot password"
+    # TODO: Replace with your actual email service
+    print(f"""
+    ====================================
+    WELCOME EMAIL
+    ====================================
+    To: {subcontractor.email}
+    Subject: Welcome to Sitespace!
+    
+    Hi {subcontractor.first_name},
+    
+    You've been added to a project on Sitespace!
+    
+    Click here to set your password and get started:
+    http://localhost:3000/set-password?token={reset_token}
+    
+    This link expires in 24 hours.
+    
+    Best,
+    The Sitespace Team
+    ====================================
+    """)
+    
+    return MessageResponse(
+        message="Welcome email sent successfully",
+        success=True
+    )
+
+@router.post("/{subcontractor_id}/activate", response_model=MessageResponse)
+def activate_subcontractor(
+    subcontractor_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Reactivate a deactivated subcontractor.
+    """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can activate subcontractors"
+        )
+    
+    subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
+    
+    if not subcontractor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subcontractor not found"
+        )
+    
+    if subcontractor.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subcontractor is already active"
+        )
+    
+    # Reactivate
+    subcontractor.is_active = True
+    db.commit()
+    
+    return MessageResponse(
+        message="Subcontractor activated successfully",
+        success=True
+    )
+
 @router.delete("/{subcontractor_id}/permanent", response_model=MessageResponse)
 def permanently_delete_subcontractor(
     subcontractor_id: UUID,
@@ -463,20 +567,19 @@ def permanently_delete_subcontractor(
     Permanently delete a subcontractor from the database.
     This action cannot be undone. Requires confirmation.
     
-    Note: This should typically be restricted to admin users only.
+    Restricted to admin users only.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can permanently delete subcontractors"
+        )
+    
     if not confirm:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Permanent deletion requires confirmation"
         )
-    
-    # You might want to add additional permission check here
-    # if not current_user.is_admin:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="Only administrators can permanently delete subcontractors"
-    #     )
     
     subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
     
@@ -503,7 +606,7 @@ def permanently_delete_subcontractor(
     
     if success:
         return MessageResponse(
-            message=f"Subcontractor permanently deleted",
+            message="Subcontractor permanently deleted",
             success=True
         )
     else:
@@ -532,10 +635,8 @@ def get_subcontractor_projects(
             detail="Subcontractor not found"
         )
     
-    # Get projects through the relationship
     projects = []
     for project in subcontractor.assigned_projects[skip:skip + limit]:
-        # Filter by active status if specified
         if is_active is not None and (project.status == "active") != is_active:
             continue
             
@@ -543,8 +644,8 @@ def get_subcontractor_projects(
             project_id=project.id,
             project_name=project.name,
             project_location=project.location,
-            assigned_date=project.created_at.date(),  # Or you might have a specific assigned_date
-            hourly_rate=None,  # This would need to come from the association table if tracked
+            assigned_date=project.created_at.date(),
+            hourly_rate=None,
             is_active=project.status == "active"
         ))
     
@@ -597,7 +698,7 @@ def get_subcontractor_bookings(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Get all slot bookings for a subcontractor.
+    Get all bookings for a subcontractor with optional filters.
     """
     subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
     
@@ -607,50 +708,41 @@ def get_subcontractor_bookings(
             detail="Subcontractor not found"
         )
     
-    # Build query for bookings
-    bookings_query = db.query(subcontractor.bookings)
+    # Filter bookings
+    bookings = subcontractor.bookings
     
-    # Apply filters
     if project_id:
-        bookings_query = bookings_query.filter_by(project_id=project_id)
+        bookings = [b for b in bookings if b.project_id == project_id]
     
     if start_date:
-        bookings_query = bookings_query.filter(
-            subcontractor.bookings.booking_date >= start_date
-        )
+        bookings = [b for b in bookings if b.booking_date >= start_date]
     
     if end_date:
-        bookings_query = bookings_query.filter(
-            subcontractor.bookings.booking_date <= end_date
-        )
+        bookings = [b for b in bookings if b.booking_date <= end_date]
     
     if status:
-        bookings_query = bookings_query.filter_by(status=status)
+        bookings = [b for b in bookings if b.status == status]
     
-    # Get paginated results
-    total = bookings_query.count()
-    bookings = bookings_query.offset(skip).limit(limit).all()
+    # Paginate
+    total = len(bookings)
+    bookings = bookings[skip:skip + limit]
     
-    # Format response
-    booking_list = []
-    for booking in bookings:
-        booking_list.append({
-            "id": booking.id,
-            "project_id": booking.project_id,
-            "project_name": booking.project.name if booking.project else None,
-            "asset_id": booking.asset_id,
-            "asset_name": booking.asset.name if booking.asset else None,
-            "slot_id": booking.slot_id,
-            "booking_date": booking.booking_date,
-            "start_time": booking.start_time,
-            "end_time": booking.end_time,
-            "status": booking.status,
-            "notes": booking.notes,
-            "created_at": booking.created_at,
-            "updated_at": booking.updated_at
-        })
-    
-    return booking_list
+    return [
+        {
+            "id": b.id,
+            "project_id": b.project_id,
+            "project_name": b.project.name if b.project else None,
+            "asset_id": b.asset_id,
+            "asset_name": b.asset.name if b.asset else None,
+            "booking_date": b.booking_date,
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "status": b.status,
+            "notes": b.notes,
+            "created_at": b.created_at,
+            "updated_at": b.updated_at
+        } for b in bookings
+    ]
 
 @router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[dict])
 def get_upcoming_bookings(
@@ -672,11 +764,9 @@ def get_upcoming_bookings(
             detail="Subcontractor not found"
         )
     
-    # Calculate date range
     today = datetime.now().date()
     end_date = today + timedelta(days=days_ahead)
     
-    # Get upcoming bookings
     upcoming_bookings = []
     for booking in subcontractor.bookings:
         if today <= booking.booking_date <= end_date and booking.status != "cancelled":
@@ -693,7 +783,6 @@ def get_upcoming_bookings(
                 "notes": booking.notes
             })
     
-    # Sort by date and time
     upcoming_bookings.sort(key=lambda x: (x["booking_date"], x["start_time"]))
     
     return upcoming_bookings
@@ -751,101 +840,29 @@ def check_subcontractor_availability(
             detail="Subcontractor not found"
         )
     
-    # Check for existing bookings on that date
     existing_bookings = []
     for booking in subcontractor.bookings:
         if booking.booking_date == check_date and booking.status != "cancelled":
             existing_bookings.append({
                 "booking_id": booking.id,
                 "project_name": booking.project.name if booking.project else None,
-                "start_time": booking.start_time,
-                "end_time": booking.end_time,
+                "start_time": str(booking.start_time),
+                "end_time": str(booking.end_time),
                 "status": booking.status
             })
     
-    # Check for conflicts if time range provided
     is_available = True
     conflicts = []
     
     if start_time and end_time and existing_bookings:
         for booking in existing_bookings:
-            # Check for time overlap
             if (booking["start_time"] <= start_time < booking["end_time"] or
                 booking["start_time"] < end_time <= booking["end_time"] or
                 (start_time <= booking["start_time"] and end_time >= booking["end_time"])):
                 is_available = False
                 conflicts.append(booking)
     elif existing_bookings:
-        # If no specific time provided, consider unavailable if any bookings exist
         is_available = False
         conflicts = existing_bookings
     
-    return {
-        "subcontractor_id": subcontractor_id,
-        "date": check_date,
-        "is_available": is_available,
-        "existing_bookings": existing_bookings,
-        "conflicts": conflicts
-    }
-
-@router.get("/{subcontractor_id}/statistics", response_model=dict)
-def get_subcontractor_statistics(
-    subcontractor_id: UUID,
-    start_date: Optional[date] = Query(None, description="Start date for statistics"),
-    end_date: Optional[date] = Query(None, description="End date for statistics"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """
-    Get statistics for a subcontractor (bookings, projects, etc.).
-    """
-    subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
-    
-    if not subcontractor:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subcontractor not found"
-        )
-    
-    # Calculate statistics
-    total_projects = len(subcontractor.assigned_projects)
-    active_projects = sum(1 for p in subcontractor.assigned_projects if p.status == "active")
-    
-    # Filter bookings by date range if provided
-    bookings = subcontractor.bookings
-    if start_date:
-        bookings = [b for b in bookings if b.booking_date >= start_date]
-    if end_date:
-        bookings = [b for b in bookings if b.booking_date <= end_date]
-    
-    total_bookings = len(bookings)
-    completed_bookings = sum(1 for b in bookings if b.status == "completed")
-    cancelled_bookings = sum(1 for b in bookings if b.status == "cancelled")
-    upcoming_bookings = sum(1 for b in bookings if b.status == "confirmed" and b.booking_date >= date.today())
-    
-    # Calculate booking hours (if you track this)
-    total_hours = 0  # You'd need to calculate based on start_time and end_time
-    
-    return {
-        "subcontractor_id": subcontractor_id,
-        "subcontractor_name": f"{subcontractor.first_name} {subcontractor.last_name}",
-        "company_name": subcontractor.company_name,
-        "trade_specialty": subcontractor.trade_specialty,
-        "statistics": {
-            "projects": {
-                "total": total_projects,
-                "active": active_projects,
-                "completed": total_projects - active_projects
-            },
-            "bookings": {
-                "total": total_bookings,
-                "completed": completed_bookings,
-                "cancelled": cancelled_bookings,
-                "upcoming": upcoming_bookings
-            },
-            "period": {
-                "start_date": start_date,
-                "end_date": end_date
-            }
-        }
-    }
+    return 
