@@ -674,7 +674,6 @@ def check_conflicts(
 @router.get("/my/upcoming", response_model=List[BookingDetailResponse])
 def get_my_upcoming_bookings(
     limit: int = Query(10, ge=1, le=100, description="Maximum number of bookings to return"),
-    include_projects: bool = Query(False, description="Include bookings from projects I manage"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ) -> List[BookingDetailResponse]:
@@ -682,15 +681,13 @@ def get_my_upcoming_bookings(
     Get current user's upcoming bookings.
     
     - Shows bookings where user is the manager
-    - Optionally includes bookings from user's projects
     - Ordered by date and time
     """
     try:
         bookings = booking_crud.get_user_upcoming_bookings(
             db, 
             user_id=current_user.id,
-            limit=limit,
-            include_projects=include_projects
+            limit=limit
         )
         
         return bookings
