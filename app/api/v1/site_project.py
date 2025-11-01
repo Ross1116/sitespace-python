@@ -155,7 +155,7 @@ def create_project(
 def list_projects(
     name: Optional[str] = Query(None, description="Filter by project name (partial match)"),
     location: Optional[str] = Query(None, description="Filter by location (partial match)"),
-    status: Optional[ProjectStatus] = Query(None, description="Filter by status"),
+    project_status: Optional[ProjectStatus] = Query(None, description="Filter by status"),
     start_date_from: Optional[date] = Query(None, description="Filter by start date (from)"),
     start_date_to: Optional[date] = Query(None, description="Filter by start date (to)"),
     my_projects: bool = Query(False, description="Show only my projects"),
@@ -176,8 +176,8 @@ def list_projects(
         if location:
             filters['location'] = location
         
-        if status:
-            filters['status'] = status
+        if project_status:
+            filters['status'] = project_status
         
         if start_date_from:
             filters['start_date_from'] = start_date_from
