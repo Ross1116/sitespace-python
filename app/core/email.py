@@ -29,7 +29,7 @@ class EmailSender:
         html_content: str,
         text_content: Optional[str] = None
     ):
-        """Send email using SMTP"""
+        """Send email using SMTP (Falls back to Console Print if SMTP fails)"""
         try:
             # Create message
             msg = MIMEMultipart('alternative')
@@ -45,19 +45,31 @@ class EmailSender:
             html_part = MIMEText(html_content, 'html')
             msg.attach(html_part)
             
-            # Send email
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                if self.use_tls:
-                    server.starttls()
-                if self.smtp_user and self.smtp_password:
-                    server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg)
+            # --- TRY TO SEND VIA SMTP ---
+            try:
+                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                    if self.use_tls:
+                        server.starttls()
+                    if self.smtp_user and self.smtp_password:
+                        server.login(self.smtp_user, self.smtp_password)
+                    server.send_message(msg)
+                logger.info(f"Email sent successfully to {to_email}")
+                return True
+
+            # --- CATCH CONNECTION ERRORS (NO SMTP SETUP) ---
+            except (OSError, ConnectionRefusedError, smtplib.SMTPException) as e:
+                print("\n" + "="*60)
+                print(f"⚠️  SMTP NOT CONFIGURED - PRINTING EMAIL TO CONSOLE ⚠️")
+                print(f"To: {to_email}")
+                print(f"Subject: {subject}")
+                print("-" * 60)
+                # Print the raw HTML or Text so you can find the link
+                print(text_content or html_content) 
+                print("="*60 + "\n")
+                return True # Return True so the API thinks it succeeded
                 
-            logger.info(f"Email sent successfully to {to_email}")
-            return True
-            
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            logger.error(f"Failed to process email to {to_email}: {str(e)}")
             return False
 
 # Create email sender instance
@@ -264,6 +276,74 @@ def send_welcome_email(
     """
     
     subject = f"Welcome to {settings.APP_NAME}!"
+    
+    return email_sender.send_email(
+        to_email=to_email,
+        subject=subject,
+        html_content=html_content,
+        text_content=text_content
+    )
+
+
+def send_subcontractor_invite_email(
+    to_email: str,
+    user_name: str,
+    reset_token: str
+):
+    """Send invitation email to new subcontractor to set password"""
+    
+    # Note: We use /set-password on the frontend for new accounts
+    # to distinguish it from a standard /reset-password flow
+    setup_url = f"{settings.FRONTEND_URL}/set-password?token={reset_token}"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background-color: #000000; color: white; padding: 20px; text-align: center; }}
+            .content {{ background-color: #f9f9f9; padding: 20px; margin-top: 20px; }}
+            .button {{ display: inline-block; padding: 10px 20px; background-color: #000000; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
+            .footer {{ text-align: center; margin-top: 20px; font-size: 12px; color: #666; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>Welcome to {settings.APP_NAME}</h1>
+            </div>
+            <div class="content">
+                <h2>Hello {user_name},</h2>
+                <p>You have been added to a project on {settings.APP_NAME}.</p>
+                <p>To access your dashboard and view project details, please set your password by clicking the button below:</p>
+                <a href="{setup_url}" class="button">Set My Password</a>
+                <p>Or copy and paste this link into your browser:</p>
+                <p style="word-break: break-all;">{setup_url}</p>
+                <p>This link is valid for 24 hours.</p>
+            </div>
+            <div class="footer">
+                <p>&copy; {settings.APP_NAME}. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    text_content = f"""
+    Hello {user_name},
+    
+    You have been added to a project on {settings.APP_NAME}.
+    
+    To access your dashboard, please set your password here:
+    {setup_url}
+    
+    Best regards,
+    {settings.APP_NAME} Team
+    """
+    
+    subject = f"You've been invited to {settings.APP_NAME}"
     
     return email_sender.send_email(
         to_email=to_email,

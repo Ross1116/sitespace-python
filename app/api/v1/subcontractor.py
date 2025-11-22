@@ -6,6 +6,7 @@ from datetime import date
 
 from ...core.database import get_db
 from ...core.security import get_current_active_user, create_password_reset_token
+from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
 from ...schemas.subcontractor import (
@@ -471,7 +472,6 @@ def send_welcome_email_endpoint(
 ):
     """
     Send welcome email with password setup link to new subcontractor.
-    Uses existing password reset system.
     """
     if current_user.role not in ["manager", "admin"]:
         raise HTTPException(
@@ -487,37 +487,23 @@ def send_welcome_email_endpoint(
             detail="Subcontractor not found"
         )
     
-    # Generate password reset token (reuse existing system!)
+    # 1. Generate password reset token
     reset_token = create_password_reset_token(subcontractor.email)
     
-    # Send custom welcome email instead of "forgot password"
-    # TODO: Replace with your actual email service
-    print(f"""
-    ====================================
-    WELCOME EMAIL
-    ====================================
-    To: {subcontractor.email}
-    Subject: Welcome to Sitespace!
-    
-    Hi {subcontractor.first_name},
-    
-    You've been added to a project on Sitespace!
-    
-    Click here to set your password and get started:
-    http://localhost:3000/set-password?token={reset_token}
-    
-    This link expires in 24 hours.
-    
-    Best,
-    The Sitespace Team
-    ====================================
-    """)
+    # 2. Send email in background (Non-blocking)
+    # FastAPI will automatically run this synchronous function in a thread pool
+    background_tasks.add_task(
+        send_subcontractor_invite_email,
+        to_email=subcontractor.email,
+        user_name=subcontractor.first_name,
+        reset_token=reset_token
+    )
     
     return MessageResponse(
         message="Welcome email sent successfully",
         success=True
     )
-
+    
 @router.post("/{subcontractor_id}/activate", response_model=MessageResponse)
 def activate_subcontractor(
     subcontractor_id: UUID,
