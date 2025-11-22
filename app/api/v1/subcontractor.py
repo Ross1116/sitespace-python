@@ -466,7 +466,7 @@ def delete_subcontractor(
 @router.post("/{subcontractor_id}/send-welcome-email", response_model=MessageResponse)
 def send_welcome_email_endpoint(
     subcontractor_id: UUID,
-    background_tasks: BackgroundTasks,
+    # background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -490,14 +490,28 @@ def send_welcome_email_endpoint(
     # 1. Generate password reset token
     reset_token = create_password_reset_token(subcontractor.email)
     
+    
+    print(f"Attempting to send email to {subcontractor.email}...")
     # 2. Send email in background (Non-blocking)
-    # FastAPI will automatically run this synchronous function in a thread pool
-    background_tasks.add_task(
-        send_subcontractor_invite_email,
+    email_success = send_subcontractor_invite_email(
         to_email=subcontractor.email,
         user_name=subcontractor.first_name,
         reset_token=reset_token
     )
+    # FastAPI will automatically run this synchronous function in a thread pool
+    # background_tasks.add_task(
+    #     send_subcontractor_invite_email,
+    #     to_email=subcontractor.email,
+    #     user_name=subcontractor.first_name,
+    #     reset_token=reset_token
+    # )
+    
+    if not email_success:
+        print("ERROR: Email function returned False")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to send email. Check Railway Logs for 'SMTP' errors."
+        )
     
     return MessageResponse(
         message="Welcome email sent successfully",
