@@ -9,19 +9,25 @@ logger = logging.getLogger(__name__)
 
 class EmailSender:
     """
-    Email sender utility class using Mailtrap API (HTTP).
-    Replaces SMTP to bypass Railway port blocking.
+    Email sender utility class using Mailtrap SANDBOX API (HTTP).
+    Fully dynamic configuration via Environment Variables.
     """
     
     def __init__(self):
-        # We get the token directly from env to avoid changing config.py immediately
+        # Load configuration from Environment Variables
         self.api_token = os.getenv("MAILTRAP_TOKEN")
-        self.api_url = "https://send.api.mailtrap.io/api/send"
+        self.inbox_id = os.getenv("MAILTRAP_INBOX_ID")
         
-        # IMPORTANT: This must be a verified domain in Mailtrap!
-        # If testing, use: "mailtrap@demomailtrap.com"
-        self.from_email = "mailtrap@demomailtrap.com" 
-        self.from_name = settings.APP_NAME or "My App"
+        # Default to sandbox, but allow override via env var
+        self.api_host = os.getenv("MAILTRAP_HOST", "sandbox.api.mailtrap.io")
+        
+        # Construct the dynamic URL: https://{host}/api/send/{inbox_id}
+        # Note: If inbox_id is missing, this will be caught in send_email validation
+        self.api_url = f"https://{self.api_host}/api/send/{self.inbox_id}"
+        
+        # Sender details
+        self.from_email = os.getenv("FROM_EMAIL", "mailtrap@demomailtrap.com")
+        self.from_name = os.getenv("FROM_NAME", settings.APP_NAME or "My App")
 
     def send_email(
         self,
@@ -30,16 +36,22 @@ class EmailSender:
         html_content: str,
         text_content: Optional[str] = None
     ):
+        # 1. Validation
         if not self.api_token:
-            logger.error("MAILTRAP_TOKEN is missing from environment variables.")
+            logger.error("Missing Env Var: MAILTRAP_TOKEN")
+            return False
+        if not self.inbox_id:
+            logger.error("Missing Env Var: MAILTRAP_INBOX_ID")
             return False
 
+        # 2. Headers
+        # IMPORTANT: Mailtrap Sandbox uses "Api-Token", NOT "Authorization: Bearer"
         headers = {
-            "Authorization": f"Bearer {self.api_token}",
+            "Api-Token": self.api_token,
             "Content-Type": "application/json"
         }
 
-        # Construct the JSON payload required by Mailtrap API
+        # 3. Payload
         payload = {
             "from": {
                 "email": self.from_email,
@@ -51,12 +63,13 @@ class EmailSender:
             "subject": subject,
             "html": html_content,
             "text": text_content if text_content else "Please view this email in an HTML compatible client.",
-            "category": "Transactional"
+            "category": "Transactional" # Optional tag for Mailtrap
         }
 
         try:
-            logger.info(f"Sending email to {to_email} via Mailtrap API...")
+            logger.info(f"Sending email to {to_email} via {self.api_host} (Inbox {self.inbox_id})...")
             
+            # 4. Send Request
             response = requests.post(
                 self.api_url, 
                 headers=headers, 
@@ -64,8 +77,9 @@ class EmailSender:
                 timeout=10
             )
 
+            # 5. Handle Response
             if response.status_code == 200:
-                logger.info(f"✅ Email sent successfully to {to_email}")
+                logger.info(f"✅ Email sent successfully to Mailtrap Inbox #{self.inbox_id}")
                 return True
             else:
                 logger.error(f"❌ Failed to send email. Status: {response.status_code}")
@@ -80,7 +94,7 @@ class EmailSender:
 email_sender = EmailSender()
 
 # ---------------------------------------------------------
-# The helper functions below remain EXACTLY the same as before
+# Helper functions (Templates)
 # ---------------------------------------------------------
 
 def send_verification_email(
