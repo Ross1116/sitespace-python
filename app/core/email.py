@@ -29,7 +29,7 @@ class EmailSender:
         html_content: str,
         text_content: Optional[str] = None
     ):
-        """Send email using SMTP (Falls back to Console Print if SMTP fails)"""
+        """Send email using SMTP with Debug Logging"""
         try:
             # Create message
             msg = MIMEMultipart('alternative')
@@ -37,39 +37,43 @@ class EmailSender:
             msg['From'] = f"{self.from_name} <{self.from_email}>"
             msg['To'] = to_email
             
-            # Add text and HTML parts
             if text_content:
-                text_part = MIMEText(text_content, 'plain')
-                msg.attach(text_part)
+                msg.attach(MIMEText(text_content, 'plain'))
+            msg.attach(MIMEText(html_content, 'html'))
             
-            html_part = MIMEText(html_content, 'html')
-            msg.attach(html_part)
+            print(f"1. DEBUG: Preparing to connect to {self.smtp_host}:{self.smtp_port}")
             
-            # --- TRY TO SEND VIA SMTP ---
-            try:
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                    if self.use_tls:
-                        server.starttls()
-                    if self.smtp_user and self.smtp_password:
-                        server.login(self.smtp_user, self.smtp_password)
-                    server.send_message(msg)
-                logger.info(f"Email sent successfully to {to_email}")
-                return True
-
-            # --- CATCH CONNECTION ERRORS (NO SMTP SETUP) ---
-            except (OSError, ConnectionRefusedError, smtplib.SMTPException) as e:
-                print("\n" + "="*60)
-                print(f"⚠️  SMTP NOT CONFIGURED - PRINTING EMAIL TO CONSOLE ⚠️")
-                print(f"To: {to_email}")
-                print(f"Subject: {subject}")
-                print("-" * 60)
-                # Print the raw HTML or Text so you can find the link
-                print(text_content or html_content) 
-                print("="*60 + "\n")
-                return True # Return True so the API thinks it succeeded
-                
+            # --- MANUAL CONNECTION STEP-BY-STEP ---
+            # timeout=10 ensures we don't hang forever
+            server = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10)
+            server.set_debuglevel(1) # This prints low-level SMTP communication to logs
+            
+            print("2. DEBUG: Connected to server. Sending EHLO...")
+            server.ehlo()
+            
+            if self.use_tls:
+                print("3. DEBUG: Starting TLS...")
+                server.starttls()
+                print("4. DEBUG: TLS established. Sending EHLO again...")
+                server.ehlo()
+            
+            if self.smtp_user and self.smtp_password:
+                print(f"5. DEBUG: Logging in as {self.smtp_user}...")
+                server.login(self.smtp_user, self.smtp_password)
+                print("6. DEBUG: Login successful.")
+            
+            print("7. DEBUG: Sending message...")
+            server.send_message(msg)
+            print("8. DEBUG: Message sent. Quitting...")
+            server.quit()
+            
+            logger.info(f"Email sent successfully to {to_email}")
+            return True
+            
         except Exception as e:
-            logger.error(f"Failed to process email to {to_email}: {str(e)}")
+            # PRINT THE ACTUAL ERROR TO LOGS
+            print(f"\n{'='*30}\nSMTP ERROR DETAIL: {str(e)}\n{'='*30}\n")
+            logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
 
 # Create email sender instance
