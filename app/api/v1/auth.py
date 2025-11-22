@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 
+from app import api
+
 # Import all dependencies at the top
 from ...core.database import get_db
 from ...core.security import (
@@ -507,7 +509,7 @@ def logout(
 # Put this inside app/main.py (near the bottom, before the app runs)
 import socket
 
-@app.get("/debug-mail-public")
+@router.get("/debug-mail-public")
 def debug_mail_public():
     host = "sandbox.smtp.mailtrap.io" # Or smtp.gmail.com
     ports = [2525, 587, 465]
