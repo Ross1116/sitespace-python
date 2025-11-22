@@ -505,30 +505,3 @@ def logout(
     # You could implement token blacklisting here if needed
     # For now, just return success and let client clear tokens
     return {"message": "Successfully logged out"}
-
-# Put this inside app/main.py (near the bottom, before the app runs)
-import socket
-
-@router.get("/debug-mail-public")
-def debug_mail_public():
-    host = "smtp.gmail.com" 
-    
-    ports = [587, 465] # Gmail uses these
-    results = {}
-    
-    try:
-        ip = socket.gethostbyname(host)
-        results["dns"] = f"OK: {ip}"
-    except Exception as e:
-        results["dns"] = f"FAIL: {str(e)}"
-        
-    for port in ports:
-        try:
-            # 3 seconds is usually enough for Google
-            sock = socket.create_connection((host, port), timeout=3)
-            sock.close()
-            results[f"port_{port}"] = "OPEN"
-        except Exception as e:
-            results[f"port_{port}"] = f"CLOSED ({str(e)})"
-            
-    return results

@@ -1,27 +1,28 @@
-# core/email.py
-from typing import Optional
-from pathlib import Path
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from jinja2 import Template
+import os
+import requests
 import logging
+from typing import Optional
 from .config import settings
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
 class EmailSender:
-    """Email sender utility class"""
+    """
+    Email sender utility class using Mailtrap API (HTTP).
+    Replaces SMTP to bypass Railway port blocking.
+    """
     
     def __init__(self):
-        self.smtp_host = settings.SMTP_HOST
-        self.smtp_port = settings.SMTP_PORT
-        self.smtp_user = settings.SMTP_USER
-        self.smtp_password = settings.SMTP_PASSWORD
-        self.from_email = settings.FROM_EMAIL
-        self.from_name = settings.FROM_NAME
-        self.use_tls = settings.SMTP_TLS
+        # We get the token directly from env to avoid changing config.py immediately
+        self.api_token = os.getenv("MAILTRAP_TOKEN")
+        self.api_url = "https://send.api.mailtrap.io/api/send"
         
+        # IMPORTANT: This must be a verified domain in Mailtrap!
+        # If testing, use: "mailtrap@demomailtrap.com"
+        self.from_email = "mailtrap@demomailtrap.com" 
+        self.from_name = settings.APP_NAME or "My App"
+
     def send_email(
         self,
         to_email: str,
@@ -29,52 +30,58 @@ class EmailSender:
         html_content: str,
         text_content: Optional[str] = None
     ):
+        if not self.api_token:
+            logger.error("MAILTRAP_TOKEN is missing from environment variables.")
+            return False
+
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
+
+        # Construct the JSON payload required by Mailtrap API
+        payload = {
+            "from": {
+                "email": self.from_email,
+                "name": self.from_name
+            },
+            "to": [
+                {"email": to_email}
+            ],
+            "subject": subject,
+            "html": html_content,
+            "text": text_content if text_content else "Please view this email in an HTML compatible client.",
+            "category": "Transactional"
+        }
+
         try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"{self.from_name} <{self.from_email}>"
-            msg['To'] = to_email
+            logger.info(f"Sending email to {to_email} via Mailtrap API...")
             
-            if text_content:
-                msg.attach(MIMEText(text_content, 'plain'))
-            msg.attach(MIMEText(html_content, 'html'))
-            
-            print(f"DEBUG: Connecting to {self.smtp_host}:{self.smtp_port}...", flush=True)
-            
-            # LOGIC SWITCH: Use SSL for 465, Standard for others
-            if int(self.smtp_port) == 465:
-                # Implicit SSL (Secure from the start)
-                server = smtplib.SMTP_SSL(self.smtp_host.strip(), int(self.smtp_port), timeout=15)
+            response = requests.post(
+                self.api_url, 
+                headers=headers, 
+                json=payload, 
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                logger.info(f"✅ Email sent successfully to {to_email}")
+                return True
             else:
-                # Standard / STARTTLS
-                server = smtplib.SMTP(self.smtp_host.strip(), int(self.smtp_port), timeout=15)
-            
-            server.set_debuglevel(1) 
-            
-            # Only needed for non-SSL ports (587/2525)
-            if int(self.smtp_port) != 465:
-                server.ehlo()
-                if self.use_tls:
-                    print("DEBUG: Starting TLS...", flush=True)
-                    server.starttls()
-                    server.ehlo()
-            
-            if self.smtp_user and self.smtp_password:
-                print(f"DEBUG: Logging in...", flush=True)
-                server.login(self.smtp_user, self.smtp_password)
-            
-            server.send_message(msg)
-            server.quit()
-            
-            logger.info(f"Email sent successfully to {to_email}")
-            return True
-            
+                logger.error(f"❌ Failed to send email. Status: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return False
+
         except Exception as e:
-            print(f"SMTP ERROR: {str(e)}", flush=True)
+            logger.error(f"❌ Exception in email sending: {str(e)}")
             return False
 
 # Create email sender instance
 email_sender = EmailSender()
+
+# ---------------------------------------------------------
+# The helper functions below remain EXACTLY the same as before
+# ---------------------------------------------------------
 
 def send_verification_email(
     to_email: str,
@@ -284,7 +291,6 @@ def send_welcome_email(
         html_content=html_content,
         text_content=text_content
     )
-
 
 def send_subcontractor_invite_email(
     to_email: str,
