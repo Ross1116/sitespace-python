@@ -865,4 +865,35 @@ def check_subcontractor_availability(
         is_available = False
         conflicts = existing_bookings
     
-    return 
+    return
+
+import socket
+
+@router.get("/debug-network")
+def debug_network():
+    """
+    Tests connectivity to Mailtrap on all ports
+    """
+    host = "sandbox.smtp.mailtrap.io"
+    ports = [2525, 587, 465]
+    results = {}
+    
+    # 1. Test DNS Resolution
+    try:
+        ip = socket.gethostbyname(host)
+        results["dns_resolution"] = f"Success: {host} -> {ip}"
+    except Exception as e:
+        results["dns_resolution"] = f"FAILED: {str(e)}"
+        return results # Stop if DNS fails
+
+    # 2. Test TCP Connection to Ports
+    for port in ports:
+        try:
+            # Try to open a raw socket connection with 3 second timeout
+            sock = socket.create_connection((host, port), timeout=3)
+            sock.close()
+            results[f"port_{port}"] = "✅ OPEN (Connection Successful)"
+        except Exception as e:
+            results[f"port_{port}"] = f"❌ CLOSED/TIMEOUT: {str(e)}"
+            
+    return results
