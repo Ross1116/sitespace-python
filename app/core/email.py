@@ -29,9 +29,7 @@ class EmailSender:
         html_content: str,
         text_content: Optional[str] = None
     ):
-        """Send email using SMTP with Debug Logging"""
         try:
-            # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
             msg['From'] = f"{self.from_name} <{self.from_email}>"
@@ -41,39 +39,38 @@ class EmailSender:
                 msg.attach(MIMEText(text_content, 'plain'))
             msg.attach(MIMEText(html_content, 'html'))
             
-            print(f"1. DEBUG: Preparing to connect to '{self.smtp_host}':{self.smtp_port}", flush=True)
+            print(f"DEBUG: Connecting to {self.smtp_host}:{self.smtp_port}...", flush=True)
             
-            # --- MANUAL CONNECTION STEP-BY-STEP ---
-            # timeout=10 ensures we don't hang forever
-            server = smtplib.SMTP(self.smtp_host.strip(), int(self.smtp_port), timeout=5)
-            server.set_debuglevel(1) # This prints low-level SMTP communication to logs
+            # LOGIC SWITCH: Use SSL for 465, Standard for others
+            if int(self.smtp_port) == 465:
+                # Implicit SSL (Secure from the start)
+                server = smtplib.SMTP_SSL(self.smtp_host.strip(), int(self.smtp_port), timeout=15)
+            else:
+                # Standard / STARTTLS
+                server = smtplib.SMTP(self.smtp_host.strip(), int(self.smtp_port), timeout=15)
             
-            print("2. DEBUG: Connected to server. Sending EHLO...")
-            server.ehlo()
+            server.set_debuglevel(1) 
             
-            if self.use_tls:
-                print("3. DEBUG: Starting TLS...")
-                server.starttls()
-                print("4. DEBUG: TLS established. Sending EHLO again...")
+            # Only needed for non-SSL ports (587/2525)
+            if int(self.smtp_port) != 465:
                 server.ehlo()
+                if self.use_tls:
+                    print("DEBUG: Starting TLS...", flush=True)
+                    server.starttls()
+                    server.ehlo()
             
             if self.smtp_user and self.smtp_password:
-                print(f"5. DEBUG: Logging in as {self.smtp_user}...")
+                print(f"DEBUG: Logging in...", flush=True)
                 server.login(self.smtp_user, self.smtp_password)
-                print("6. DEBUG: Login successful.")
             
-            print("7. DEBUG: Sending message...")
             server.send_message(msg)
-            print("8. DEBUG: Message sent. Quitting...")
             server.quit()
             
             logger.info(f"Email sent successfully to {to_email}")
             return True
             
         except Exception as e:
-            # PRINT THE ACTUAL ERROR TO LOGS
-            print(f"\n{'='*30}\nSMTP ERROR DETAIL: {str(e)}\n{'='*30}\n")
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            print(f"SMTP ERROR: {str(e)}", flush=True)
             return False
 
 # Create email sender instance
