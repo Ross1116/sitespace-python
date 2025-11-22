@@ -41,11 +41,11 @@ class EmailSender:
                 msg.attach(MIMEText(text_content, 'plain'))
             msg.attach(MIMEText(html_content, 'html'))
             
-            print(f"1. DEBUG: Preparing to connect to {self.smtp_host}:{self.smtp_port}")
+            print(f"1. DEBUG: Preparing to connect to '{self.smtp_host}':{self.smtp_port}", flush=True)
             
             # --- MANUAL CONNECTION STEP-BY-STEP ---
             # timeout=10 ensures we don't hang forever
-            server = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10)
+            server = smtplib.SMTP(self.smtp_host.strip(), int(self.smtp_port), timeout=5)
             server.set_debuglevel(1) # This prints low-level SMTP communication to logs
             
             print("2. DEBUG: Connected to server. Sending EHLO...")
