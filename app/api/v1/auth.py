@@ -511,8 +511,9 @@ import socket
 
 @router.get("/debug-mail-public")
 def debug_mail_public():
-    host = "sandbox.smtp.mailtrap.io" # Or smtp.gmail.com
-    ports = [2525, 587, 465]
+    host = "smtp.gmail.com" 
+    
+    ports = [587, 465] # Gmail uses these
     results = {}
     
     try:
@@ -523,6 +524,7 @@ def debug_mail_public():
         
     for port in ports:
         try:
+            # 3 seconds is usually enough for Google
             sock = socket.create_connection((host, port), timeout=3)
             sock.close()
             results[f"port_{port}"] = "OPEN"
