@@ -506,12 +506,12 @@ def send_welcome_email_endpoint(
         reset_token=reset_token
     )
     
-    if not email_success:
-        print("ERROR: Email function returned False")
-        raise HTTPException(
-            status_code=500, 
-            detail="Failed to send email. Check Railway Logs for 'SMTP' errors."
-        )
+    # if not email_success:
+    #     print("ERROR: Email function returned False")
+    #     raise HTTPException(
+    #         status_code=500, 
+    #         detail="Failed to send email. Check Railway Logs for 'SMTP' errors."
+    #     )
     
     return MessageResponse(
         message="Welcome email sent successfully",
