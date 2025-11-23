@@ -95,7 +95,8 @@ def get_entity_password_hash(entity: Union[User, Subcontractor]) -> str:
 def update_entity_password(db: Session, entity: Union[User, Subcontractor], new_password: str) -> None:
     """Update password for user or subcontractor"""
     if isinstance(entity, Subcontractor):
-        subcontractor_crud.update_password(db, entity, new_password)
+        # FIXED: Pass entity.id instead of entity object
+        subcontractor_crud.update_password(db, entity.id, new_password)
     else:
         user_crud.update_password(db, entity, new_password)
 
@@ -116,11 +117,6 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
     
     if not any(c.isdigit() for c in password):
         return False, "Password must contain at least one number"
-    
-    # Optional: Check for special characters
-    # special_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?"
-    # if not any(c in special_chars for c in password):
-    #     return False, "Password must contain at least one special character"
     
     return True, ""
 
