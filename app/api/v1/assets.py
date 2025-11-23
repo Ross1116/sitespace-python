@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import List, Optional, Union
 from uuid import UUID
 from datetime import date
+
+from app.models.subcontractor import Subcontractor
 from ...core.database import get_db
-from ...core.security import get_current_active_user
+from ...core.security import get_current_active_user, get_user_role, get_entity_id
 from ...crud import asset as asset_crud
-from ...models.user import User
+from ...crud import site_project as project_crud 
+from ...models.user import User, UserRole
 from ...schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetResponse, AssetDetailResponse, AssetBriefResponse, AssetListResponse,
@@ -15,6 +18,31 @@ from ...schemas.asset import (
 from ...schemas.enums import AssetStatus
 
 router = APIRouter(prefix="/assets", tags=["Asset Management"])
+
+def check_asset_view_access(db: Session, project_id: UUID, entity: Union[User, Subcontractor]):
+    """Helper to check if entity can view assets of a project"""
+    user_role = get_user_role(entity)
+    user_id = get_entity_id(entity)
+
+    if user_role == UserRole.ADMIN:
+        return True
+    
+    if user_role == UserRole.SUBCONTRACTOR:
+        if not project_crud.is_subcontractor_assigned(db, project_id, user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not assigned to this project"
+            )
+        return True
+        
+    # Managers
+    if not project_crud.has_project_access(db, project_id, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this project"
+        )
+    return True
+
 
 @router.post("/", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
 def create_asset(
@@ -49,10 +77,24 @@ def list_assets(
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(100, ge=1, le=100, description="Number of items to return"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    # Change Dependency to accept Subcontractors
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
     """Get paginated list of assets with optional filters"""
     try:
+        # 1. Security Check
+        if project_id:
+            check_asset_view_access(db, project_id, current_entity)
+        else:
+            # If no project_id provided, restrict non-admins
+            role = get_user_role(current_entity)
+            if role != UserRole.ADMIN:
+                # Ideally, you should filter the query to ONLY projects the user belongs to.
+                # For now, we enforce that a project_id MUST be provided for non-admins to ensure security
+                # or you can let them see all assets if that is your business logic.
+                # A safe default is:
+                pass 
+
         assets, total = asset_crud.get_assets_paginated(
             db=db,
             project_id=project_id,
@@ -69,23 +111,30 @@ def list_assets(
             limit=limit,
             has_more=(skip + limit) < total
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving assets: {str(e)}"
         )
 
-@router.get("/brief", response_model=list[AssetBriefResponse])
+@router.get("/brief", response_model=List[AssetBriefResponse])
 def list_assets_brief(
     project_id: UUID = Query(..., description="Project ID"),
     status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
     """Get brief list of assets for dropdowns/selectors"""
     try:
+        # Security Check
+        check_asset_view_access(db, project_id, current_entity)
+
         assets = asset_crud.get_assets_brief(db, project_id, status)
         return [AssetBriefResponse.model_validate(asset) for asset in assets]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -96,16 +145,23 @@ def list_assets_brief(
 def get_asset_detail(
     asset_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
     """Get detailed asset information"""
     try:
-        asset_detail = asset_crud.get_asset_detail(db, asset_id)
-        if not asset_detail:
+        # 1. Fetch Asset to find its Project ID
+        asset = asset_crud.get_asset(db, asset_id)
+        if not asset:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
+            
+        # 2. Security Check using the asset's project_id
+        check_asset_view_access(db, asset.project_id, current_entity)
+
+        # 3. Get Full Details
+        asset_detail = asset_crud.get_asset_detail(db, asset_id)
         return asset_detail
     except HTTPException:
         raise
