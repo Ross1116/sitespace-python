@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
 from datetime import date, datetime, timedelta
-from ...models.site_project import SiteProject
 
 from ...core.database import get_db
 # Added verify_password to imports
@@ -300,93 +299,59 @@ def create_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Create a new subcontractor and optionally assign them to a project.
-    """
-    if current_user.role not in ["manager", "admin"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers and admins can create subcontractors"
-        )
-    
-    # 1. Check if email already exists
+    # --- FIX 3: Circular Import Prevention ---
+    # Import SiteProject HERE, not at the top of the file
+    from ...models.site_project import SiteProject 
+
+    # --- FIX 2: Handle "Email Already Exists" ---
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
-        db, 
-        email=subcontractor_data.email
+        db, email=subcontractor_data.email
     )
     
     if existing_subcontractor:
-        # EDGE CASE: If they exist but aren't on this project, just link them!
+        # If they exist AND we have a project_id, just link them!
+        # Don't return an error.
         if subcontractor_data.project_id:
-            subcontractor_crud.assign_subcontractor_to_project(
-                db, 
-                existing_subcontractor.id, 
-                subcontractor_data.project_id
-            )
-            return existing_subcontractor
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-    
-    # 2. Create the subcontractor
-    try:
-        new_subcontractor = subcontractor_crud.create_subcontractor(
-            db, 
-            subcontractor_data
-        )
-
-        # 3. AUTOMATICALLY ASSIGN TO PROJECT (The Fix)
-        if subcontractor_data.project_id:
-            # Optional: verify manager owns this project
+            # (Optional: Check if manager owns this project for security)
             if current_user.role == "manager":
-                 # Import SiteProject here to avoid circular imports at top level if necessary
-                from ...models.site_project import SiteProject
-                
                 project = db.query(SiteProject).filter(
                     SiteProject.id == subcontractor_data.project_id,
                     SiteProject.managers.any(id=current_user.id)
                 ).first()
-                
                 if not project:
-                    # If manager doesn't own the project, create user but don't link
-                    # Or raise error depending on business logic. 
-                    # Here we'll just continue to avoid blocking creation.
-                    pass
-                else:
-                    subcontractor_crud.assign_subcontractor_to_project(
-                        db, 
-                        new_subcontractor.id, 
-                        subcontractor_data.project_id
-                    )
-            elif current_user.role == "admin":
+                    raise HTTPException(status_code=403, detail="Cannot assign to this project")
+
+            # Perform the assignment
+            subcontractor_crud.assign_subcontractor_to_project(
+                db, existing_subcontractor.id, subcontractor_data.project_id
+            )
+            return existing_subcontractor # Return the existing user
+        else:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    # --- FIX 1: Atomic Creation & Assignment ---
+    # Create the user
+    new_subcontractor = subcontractor_crud.create_subcontractor(db, subcontractor_data)
+
+    # Immediately assign to project if ID is present
+    if subcontractor_data.project_id:
+        if current_user.role == "manager":
+            # Verify manager owns the project
+            project = db.query(SiteProject).filter(
+                SiteProject.id == subcontractor_data.project_id,
+                SiteProject.managers.any(id=current_user.id)
+            ).first()
+            
+            if project:
                 subcontractor_crud.assign_subcontractor_to_project(
-                    db, 
-                    new_subcontractor.id, 
-                    subcontractor_data.project_id
+                    db, new_subcontractor.id, subcontractor_data.project_id
                 )
-        
-        return SubcontractorResponse(
-            id=new_subcontractor.id,
-            email=new_subcontractor.email,
-            first_name=new_subcontractor.first_name,
-            last_name=new_subcontractor.last_name,
-            company_name=new_subcontractor.company_name,
-            trade_specialty=new_subcontractor.trade_specialty,
-            phone=new_subcontractor.phone,
-            is_active=new_subcontractor.is_active,
-            created_at=new_subcontractor.created_at,
-            updated_at=new_subcontractor.updated_at
-        )
-        
-    except Exception as e:
-        db.rollback()
-        print(f"Error creating subcontractor: {str(e)}") # For debugging
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating subcontractor: {str(e)}"
-        )
+        elif current_user.role == "admin":
+            subcontractor_crud.assign_subcontractor_to_project(
+                db, new_subcontractor.id, subcontractor_data.project_id
+            )
+    
+    return new_subcontractor
 
 # ===== PARAMETERIZED ROUTES (/{subcontractor_id}) - MUST BE LAST =====
 
