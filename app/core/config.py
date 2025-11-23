@@ -36,14 +36,14 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:5173,https://sitespace.vercel.app"
     ).split(",")
     
-     # Email settings
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
-    SMTP_TLS: bool = True
-    FROM_EMAIL: str = "noreply@example.com"
-    FROM_NAME: str = "Your App Name"
+    # Email / Mailtrap
+    MAILTRAP_TOKEN: Optional[str] = None
+    MAILTRAP_INBOX_ID: Optional[str] = None
+    MAILTRAP_HOST: Optional[str] = "sandbox.api.mailtrap.io"
+    
+    # Email Sender Info
+    FROM_EMAIL: str = "noreply@sitespace.com"
+    FROM_NAME: str = "Sitespace Dev"
     
     # Frontend URL for email links
     FRONTEND_URL: str = "http://localhost:3000"
