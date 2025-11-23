@@ -1,16 +1,18 @@
+# app/api/v1/endpoints/subcontractor.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Union, Any
 from uuid import UUID
 from datetime import date, datetime, timedelta
 
 from ...core.database import get_db
-# Added verify_password to imports
 from ...core.security import get_current_active_user, create_password_reset_token, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
-# Added SubcontractorPasswordUpdate to imports
+# We handle the Subcontractor model via CRUD, but might need it for typing if available
+# from ...models.subcontractor import Subcontractor 
+
 from ...schemas.subcontractor import (
     SubcontractorCreate,
     SubcontractorUpdate,
@@ -24,7 +26,9 @@ from ...schemas.base import MessageResponse
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
-# ===== HELPER FUNCTIONS =====
+# ========================================================
+# HELPER FUNCTIONS
+# ========================================================
 
 async def verify_manager_access(
     subcontractor_id: UUID,
@@ -54,7 +58,9 @@ async def verify_manager_access(
         detail="Insufficient permissions"
     )
 
-# ===== STATIC ROUTES FIRST (NO PARAMETERS) =====
+# ========================================================
+# LIST & SEARCH ROUTES
+# ========================================================
 
 @router.get("/my-subcontractors", response_model=SubcontractorListResponse)
 def get_my_subcontractors(
@@ -188,7 +194,6 @@ def get_available_subcontractors(
 ):
     """
     Get all available subcontractors for a specific date and time.
-    Useful for scheduling and finding replacements.
     """
     available = subcontractor_crud.get_available_subcontractors_for_date(
         db,
@@ -212,8 +217,6 @@ def get_available_subcontractors(
             updated_at=s.updated_at
         ) for s in available
     ]
-
-# ===== STATIC ROUTES WITH SPECIFIC PARAMETERS =====
 
 @router.get("/by-trade/{trade_specialty}", response_model=List[SubcontractorResponse])
 def get_subcontractors_by_trade(
@@ -249,8 +252,6 @@ def get_subcontractors_by_trade(
             updated_at=s.updated_at
         ) for s in subcontractors
     ]
-
-# ===== ROOT ENDPOINTS (/) =====
 
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
@@ -299,18 +300,20 @@ def create_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    # --- FIX 3: Circular Import Prevention ---
-    # Import SiteProject HERE, not at the top of the file
+    """
+    Create a new subcontractor.
+    If email already exists, it will attempt to assign the existing subcontractor to the project (if provided).
+    """
+    # Import locally to avoid circular dependencies
     from ...models.site_project import SiteProject 
 
-    # --- FIX 2: Handle "Email Already Exists" ---
+    # Check for existing email
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
         db, email=subcontractor_data.email
     )
     
     if existing_subcontractor:
         # If they exist AND we have a project_id, just link them!
-        # Don't return an error.
         if subcontractor_data.project_id:
             # (Optional: Check if manager owns this project for security)
             if current_user.role == "manager":
@@ -325,12 +328,11 @@ def create_subcontractor(
             subcontractor_crud.assign_subcontractor_to_project(
                 db, existing_subcontractor.id, subcontractor_data.project_id
             )
-            return existing_subcontractor # Return the existing user
+            return existing_subcontractor
         else:
             raise HTTPException(status_code=400, detail="Email already registered")
 
-    # --- FIX 1: Atomic Creation & Assignment ---
-    # Create the user
+    # Create new subcontractor
     new_subcontractor = subcontractor_crud.create_subcontractor(db, subcontractor_data)
 
     # Immediately assign to project if ID is present
@@ -353,7 +355,54 @@ def create_subcontractor(
     
     return new_subcontractor
 
-# ===== PARAMETERIZED ROUTES (/{subcontractor_id}) - MUST BE LAST =====
+# ========================================================
+# SELF-UPDATE ROUTES (MUST BE BEFORE PARAMETERIZED ROUTES)
+# ========================================================
+
+@router.put("/me", response_model=SubcontractorResponse)
+def update_subcontractor_me(
+    subcontractor_update: SubcontractorUpdate,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_active_user)
+):
+    """
+    Update logged-in subcontractor's own profile.
+    """
+    # 1. Verify the user is a subcontractor
+    # We check for a property specific to subcontractors (like 'trade_specialty')
+    if not hasattr(current_user, "trade_specialty"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only subcontractors can access this endpoint"
+        )
+    
+    # 2. Security: Prevent self-deactivation via this endpoint
+    # We manually exclude 'is_active' from the update data
+    update_data = subcontractor_update.model_dump(exclude={'is_active'}, exclude_unset=True)
+    
+    # 3. Check email uniqueness
+    if "email" in update_data and update_data["email"] != current_user.email:
+        existing = subcontractor_crud.get_subcontractor_by_email(db, update_data["email"])
+        if existing and existing.id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+
+    # 4. Re-construct the update model (safe version) and update
+    safe_update = SubcontractorUpdate(**update_data)
+    
+    updated_sub = subcontractor_crud.update_subcontractor(
+        db,
+        current_user.id,
+        safe_update
+    )
+    
+    return updated_sub
+
+# ========================================================
+# SPECIFIC SUBCONTRACTOR ROUTES (/{subcontractor_id})
+# ========================================================
 
 @router.get("/{subcontractor_id}", response_model=SubcontractorDetailResponse)
 def get_subcontractor(
@@ -402,16 +451,24 @@ def update_subcontractor(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Update a subcontractor's information.
+    Update a subcontractor's information (Manager/Admin access).
     """
+    # Permission check
     if current_user.role not in ["manager", "admin"]:
-        # Subcontractors can only update their own profile
-        if current_user.id != subcontractor_id:
+        # If the user is trying to update themselves but didn't use /me, allow it if ID matches
+        # Assuming current_user has an 'id' attribute
+        if getattr(current_user, 'id', None) != subcontractor_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only update your own profile"
+                detail="Insufficient permissions"
             )
     
+    # Check email uniqueness
+    if subcontractor_update.email:
+        existing = subcontractor_crud.get_subcontractor_by_email(db, subcontractor_update.email)
+        if existing and existing.id != subcontractor_id:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
     updated_subcontractor = subcontractor_crud.update_subcontractor(
         db,
         subcontractor_id,
@@ -424,18 +481,7 @@ def update_subcontractor(
             detail="Subcontractor not found"
         )
     
-    return SubcontractorResponse(
-        id=updated_subcontractor.id,
-        email=updated_subcontractor.email,
-        first_name=updated_subcontractor.first_name,
-        last_name=updated_subcontractor.last_name,
-        company_name=updated_subcontractor.company_name,
-        trade_specialty=updated_subcontractor.trade_specialty,
-        phone=updated_subcontractor.phone,
-        is_active=updated_subcontractor.is_active,
-        created_at=updated_subcontractor.created_at,
-        updated_at=updated_subcontractor.updated_at
-    )
+    return updated_subcontractor
 
 @router.put("/{subcontractor_id}/password", response_model=MessageResponse)
 def update_subcontractor_password(
@@ -447,7 +493,6 @@ def update_subcontractor_password(
     """
     Update a subcontractor's password.
     """
-    # 1. Get Subcontractor
     subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
     if not subcontractor:
         raise HTTPException(
@@ -455,22 +500,27 @@ def update_subcontractor_password(
             detail="Subcontractor not found"
         )
 
-    # 2. Permission Check
     # Only Admin, Manager, or the Subcontractor themselves can change the password
-    if current_user.role not in ["manager", "admin"] and current_user.id != subcontractor_id:
+    can_update = False
+    if getattr(current_user, 'role', None) in ["manager", "admin"]:
+        can_update = True
+    elif getattr(current_user, 'id', None) == subcontractor_id:
+        can_update = True
+        
+    if not can_update:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not authorized to update this password"
         )
 
-    # 3. Verify Old Password
+    # Verify Old Password
     if not verify_password(password_data.current_password, subcontractor.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect current password"
         )
 
-    # 4. Update Password
+    # Update Password
     subcontractor_crud.update_password(db, subcontractor_id, password_data.new_password)
 
     return MessageResponse(message="Password updated successfully", success=True)
@@ -484,7 +534,7 @@ def delete_subcontractor(
     """
     Soft delete a subcontractor (sets is_active to False).
     """
-    if current_user.role not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can delete subcontractors"
@@ -513,7 +563,7 @@ def send_welcome_email_endpoint(
     """
     Send welcome email with password setup link to new subcontractor.
     """
-    if current_user.role not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can send welcome emails"
@@ -530,7 +580,6 @@ def send_welcome_email_endpoint(
     # 1. Generate password reset token
     reset_token = create_password_reset_token(subcontractor.email)
     
-    print(f"Attempting to send email to {subcontractor.email}...")
     # 2. Send email in background
     background_tasks.add_task(
         send_subcontractor_invite_email,
@@ -553,7 +602,7 @@ def activate_subcontractor(
     """
     Reactivate a deactivated subcontractor.
     """
-    if current_user.role not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can activate subcontractors"
@@ -574,8 +623,7 @@ def activate_subcontractor(
         )
     
     # Reactivate
-    subcontractor.is_active = True
-    db.commit()
+    subcontractor_crud.activate_subcontractor(db, subcontractor_id)
     
     return MessageResponse(
         message="Subcontractor activated successfully",
@@ -592,7 +640,7 @@ def permanently_delete_subcontractor(
     """
     Permanently delete a subcontractor from the database.
     """
-    if current_user.role != "admin":
+    if getattr(current_user, 'role', None) != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can permanently delete subcontractors"
@@ -659,6 +707,7 @@ def get_subcontractor_projects(
         )
     
     projects = []
+    # Use slice on the relationship
     for project in subcontractor.assigned_projects[skip:skip + limit]:
         if is_active is not None and (project.status == "active") != is_active:
             continue
@@ -731,7 +780,7 @@ def get_subcontractor_bookings(
             detail="Subcontractor not found"
         )
     
-    # Filter bookings
+    # Filter bookings via Python list comprehension (or move to CRUD for efficiency)
     bookings = subcontractor.bookings
     
     if project_id:
@@ -745,6 +794,9 @@ def get_subcontractor_bookings(
     
     if status:
         bookings = [b for b in bookings if b.status == status]
+    
+    # Sort by date descending
+    bookings.sort(key=lambda x: (x.booking_date, x.start_time), reverse=True)
     
     # Paginate
     bookings = bookings[skip:skip + limit]
@@ -827,11 +879,11 @@ def get_booking_counts(
     statuses = ["pending", "confirmed", "completed", "cancelled"]
     counts = {}
     
-    for status in statuses:
-        counts[status] = subcontractor_crud.count_subcontractor_bookings_by_status(
+    for status_name in statuses:
+        counts[status_name] = subcontractor_crud.count_subcontractor_bookings_by_status(
             db, 
             subcontractor_id, 
-            status
+            status_name
         )
     
     return {
@@ -841,7 +893,7 @@ def get_booking_counts(
     }
 
 @router.get("/{subcontractor_id}/availability", response_model=dict)
-def check_subcontractor_availability(
+def check_subcontractor_availability_detail(
     subcontractor_id: UUID,
     check_date: date = Query(..., description="Date to check availability"),
     start_time: Optional[str] = Query(None, description="Start time (HH:MM format)"),
@@ -876,7 +928,7 @@ def check_subcontractor_availability(
     
     if start_time and end_time and existing_bookings:
         for booking in existing_bookings:
-            # Simplified time check
+            # Simplified time check (assuming string comparison works for HH:MM)
             b_start = booking["start_time"]
             b_end = booking["end_time"]
             
@@ -886,11 +938,8 @@ def check_subcontractor_availability(
                 is_available = False
                 conflicts.append(booking)
     elif existing_bookings and not (start_time and end_time):
-        # If we have bookings but no specific time asked, just show them
-        # Note: logic depends on business rule. Usually if no time specified, 
-        # we just return the bookings so frontend can decide.
-        is_available = False # Technically "busy" part of the day
-        conflicts = existing_bookings
+        # If bookings exist but no specific time requested, return them but don't mark whole day busy
+        pass 
     
     return {
         "subcontractor_id": subcontractor_id,
@@ -913,14 +962,14 @@ def assign_subcontractor_to_project_endpoint(
     """
     from ...models.site_project import SiteProject 
     
-    if current_user.role not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can assign subcontractors"
         )
 
-    # Optional: specific manager check (can they access this project?)
-    if current_user.role == "manager":
+    # Optional: specific manager check
+    if getattr(current_user, 'role', None) == "manager":
         # Check if manager owns this project
         project = db.query(SiteProject).filter(
             SiteProject.id == project_id,
@@ -952,7 +1001,7 @@ def remove_subcontractor_from_project_endpoint(
     """
     Remove a subcontractor from a project.
     """
-    if current_user.role not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"

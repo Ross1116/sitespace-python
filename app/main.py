@@ -6,7 +6,7 @@ import uvicorn
 
 from .core.config import settings
 from .core.database import engine, Base
-from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, forgot_password
+from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, forgot_password, users
 
 # Import all models so SQLAlchemy knows about them
 from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model
@@ -89,6 +89,7 @@ app.include_router(file_upload.router, prefix="/api")
 app.include_router(slot_booking.router, prefix="/api")
 app.include_router(site_project.router, prefix="/api")
 app.include_router(subcontractor.router, prefix="/api")
+app.include_router(users.router, prefix="/api") 
 app.include_router(forgot_password.router, prefix="/api")
 
 # Root endpoint

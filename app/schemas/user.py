@@ -1,6 +1,6 @@
+# app/schemas/user.py
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
-from datetime import datetime
 from uuid import UUID
 import re
 
@@ -33,11 +33,22 @@ class UserCreate(UserBase, PasswordMixin):
         return v
 
 class UserUpdate(BaseSchema):
-    """User update schema"""
+    """
+    User update schema (Safe fields for self-update).
+    Note: 'is_active' and 'role' are removed to prevent users from 
+    changing their own permissions.
+    """
     email: Optional[EmailStr] = None
     first_name: Optional[str] = Field(None, min_length=1, max_length=100)
     last_name: Optional[str] = Field(None, min_length=1, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
+
+class UserAdminUpdate(UserUpdate):
+    """
+    Admin update schema (Includes sensitive fields).
+    Inherits from UserUpdate and adds administrative fields.
+    """
+    role: Optional[UserRole] = None
     is_active: Optional[bool] = None
 
 class UserResponse(UserBase, TimestampSchema):
@@ -46,10 +57,16 @@ class UserResponse(UserBase, TimestampSchema):
     role: UserRole
     is_active: bool
 
+# Forward reference handling for nested responses
+class ProjectBriefResponse(BaseSchema):
+    id: UUID
+    name: str
+    status: str
+
 class UserDetailResponse(UserResponse):
     """Detailed user response with relationships"""
     managed_projects_count: int = 0
-    active_projects: List['ProjectBriefResponse'] = []
+    active_projects: List[ProjectBriefResponse] = []
     subcontractors_count: int = 0
 
 class UserListResponse(BaseSchema):
@@ -67,7 +84,3 @@ class UserBriefResponse(BaseSchema):
     first_name: str
     last_name: str
     role: UserRole
-
-# Avoid circular imports
-from .site_project import SiteProjectBriefResponse as ProjectBriefResponse
-UserDetailResponse.model_rebuild()
