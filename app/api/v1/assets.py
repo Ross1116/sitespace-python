@@ -72,7 +72,7 @@ def create_asset(
 @router.get("/", response_model=AssetListResponse)
 def list_assets(
     project_id: Optional[UUID] = Query(None, description="Filter by project ID"),
-    status: Optional[AssetStatus] = Query(None, description="Filter by status"),
+    asset_status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     asset_type: Optional[str] = Query(None, description="Filter by asset type"),
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(100, ge=1, le=100, description="Number of items to return"),
@@ -89,16 +89,12 @@ def list_assets(
             # If no project_id provided, restrict non-admins
             role = get_user_role(current_entity)
             if role != UserRole.ADMIN:
-                # Ideally, you should filter the query to ONLY projects the user belongs to.
-                # For now, we enforce that a project_id MUST be provided for non-admins to ensure security
-                # or you can let them see all assets if that is your business logic.
-                # A safe default is:
-                pass 
+                return AssetListResponse(assets=[], total=0, skip=skip, limit=limit, has_more=False) 
 
         assets, total = asset_crud.get_assets_paginated(
             db=db,
             project_id=project_id,
-            status=status,
+            status=asset_status,
             asset_type=asset_type,
             skip=skip,
             limit=limit
@@ -122,7 +118,7 @@ def list_assets(
 @router.get("/brief", response_model=List[AssetBriefResponse])
 def list_assets_brief(
     project_id: UUID = Query(..., description="Project ID"),
-    status: Optional[AssetStatus] = Query(None, description="Filter by status"),
+    asset_status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     db: Session = Depends(get_db),
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
@@ -131,7 +127,7 @@ def list_assets_brief(
         # Security Check
         check_asset_view_access(db, project_id, current_entity)
 
-        assets = asset_crud.get_assets_brief(db, project_id, status)
+        assets = asset_crud.get_assets_brief(db, project_id, asset_status)
         return [AssetBriefResponse.model_validate(asset) for asset in assets]
     except HTTPException:
         raise
