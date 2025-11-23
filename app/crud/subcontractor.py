@@ -8,8 +8,10 @@ from datetime import datetime, date, timedelta
 from ..models.subcontractor import Subcontractor
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
+from ..models.user import User
 from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
-from ..core.security import get_password_hash
+
+from ..core.security import get_password_hash, verify_password
 
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
     """Create a new subcontractor"""
@@ -49,6 +51,18 @@ def get_subcontractor_with_details(db: Session, subcontractor_id: UUID) -> Optio
 def get_subcontractor_by_email(db: Session, email: str) -> Optional[Subcontractor]:
     """Get a subcontractor by email"""
     return db.query(Subcontractor).filter(Subcontractor.email == email).first()
+
+def authenticate_subcontractor(db: Session, email: str, password: str) -> Optional[Subcontractor]:
+    """
+    Authenticate a subcontractor by email and password.
+    Returns the subcontractor object if credentials are valid, None otherwise.
+    """
+    subcontractor = get_subcontractor_by_email(db, email)
+    if not subcontractor:
+        return None
+    if not verify_password(password, subcontractor.password_hash):
+        return None
+    return subcontractor
 
 def get_all_subcontractors(
     db: Session,
@@ -106,6 +120,23 @@ def update_subcontractor(
     db.commit()
     db.refresh(db_subcontractor)
     return db_subcontractor
+
+def update_password(db: Session, subcontractor_id: UUID, password: str) -> bool:
+    """
+    Update a subcontractor's password.
+    Hashes the new password before saving.
+    """
+    db_subcontractor = get_subcontractor(db, subcontractor_id)
+    if not db_subcontractor:
+        return False
+        
+    hashed_password = get_password_hash(password)
+    db_subcontractor.password_hash = hashed_password
+    db_subcontractor.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(db_subcontractor)
+    return True
 
 def delete_subcontractor(db: Session, subcontractor_id: UUID) -> bool:
     """Delete a subcontractor (soft delete by setting is_active to False)"""
@@ -183,7 +214,9 @@ def search_subcontractors(
         "has_more": (skip + limit) < total
     }
 
-# New functions to support API endpoints
+# ========================================================
+# Relationship and Logic Functions
+# ========================================================
 
 def get_subcontractor_projects(
     db: Session,
@@ -390,7 +423,6 @@ def get_subcontractor_statistics(
     for booking in bookings:
         if booking.start_time and booking.end_time and booking.status != "cancelled":
             # Assuming times are stored as strings or time objects
-            # You might need to adjust this calculation based on your actual data type
             try:
                 start = datetime.strptime(str(booking.start_time), "%H:%M")
                 end = datetime.strptime(str(booking.end_time), "%H:%M")
@@ -505,8 +537,10 @@ def count_subcontractor_bookings_by_status(
             SlotBooking.status == status
         )
     ).count()
-    
-# crud/subcontractor.py
+
+# ========================================================
+# Manager Relationship Functions
+# ========================================================
 
 def get_subcontractors_for_manager(
     db: Session,
@@ -518,9 +552,6 @@ def get_subcontractors_for_manager(
     project_id: Optional[UUID] = None
 ) -> dict:
     """Get all subcontractors working on projects managed by a specific manager"""
-    
-    from ..models.site_project import SiteProject
-    from ..models.user import User
     
     # First, verify the user is a manager
     manager = db.query(User).filter(
@@ -578,9 +609,6 @@ def get_managers_for_subcontractor(
 ) -> List[Dict[str, Any]]:
     """Get all managers who oversee projects this subcontractor works on"""
     
-    from ..models.site_project import SiteProject
-    from ..models.user import User
-    
     # Get managers through the project relationships
     managers_query = db.query(User, SiteProject).distinct(User.id)\
         .join(
@@ -607,9 +635,6 @@ def check_manager_can_access_subcontractor(
 ) -> bool:
     """Check if a manager has access to a specific subcontractor through shared projects"""
     
-    from ..models.site_project import SiteProject
-    from ..models.user import User
-    
     # Check if they share any projects
     shared_projects = db.query(SiteProject).join(
         SiteProject.managers
@@ -629,9 +654,6 @@ def get_subcontractor_projects_by_manager(
 ) -> List[SiteProject]:
     """Get projects where both the manager and subcontractor are assigned"""
     
-    from ..models.site_project import SiteProject
-    from ..models.user import User
-    
     projects = db.query(SiteProject).join(
         SiteProject.managers
     ).join(
@@ -648,9 +670,6 @@ def get_manager_statistics(
     manager_id: UUID
 ) -> Dict[str, Any]:
     """Get statistics about subcontractors under a manager"""
-    
-    from ..models.site_project import SiteProject
-    from ..models.user import User
     
     # Get unique subcontractors
     subcontractors = db.query(Subcontractor).distinct().join(
@@ -686,18 +705,7 @@ def is_subcontractor_assigned(
 ) -> bool:
     """
     Check if a subcontractor is already assigned to a project.
-    
-    Args:
-        db: Database session
-        project_id: The project ID to check
-        subcontractor_id: The subcontractor ID to check
-    
-    Returns:
-        True if the subcontractor is assigned to the project, False otherwise
     """
-    from ..models.site_project import SiteProject
-    from ..models.subcontractor import Subcontractor
-    
     # Query to check if the relationship exists
     project = db.query(SiteProject).filter(
         SiteProject.id == project_id

@@ -1,3 +1,4 @@
+# schemas/subcontractor.py
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import datetime, date
@@ -37,16 +38,43 @@ class SubcontractorUpdate(BaseSchema):
     phone: Optional[str] = Field(None, max_length=20)
     is_active: Optional[bool] = None
 
+class SubcontractorPasswordUpdate(BaseModel):
+    """Schema for updating subcontractor password"""
+    current_password: str
+    new_password: str = Field(..., min_length=8, description="New password with minimum 8 characters")
+    confirm_password: str
+
+    @field_validator('confirm_password')
+    def passwords_match(cls, v, info):
+        if 'new_password' in info.data and v != info.data['new_password']:
+            raise ValueError('Passwords do not match')
+        return v
+
 class SubcontractorResponse(SubcontractorBase, TimestampSchema):
     """Subcontractor response schema"""
     id: UUID
     is_active: bool
 
+class ProjectAssignmentResponse(BaseSchema):
+    """Project assignment details for subcontractor"""
+    project_id: UUID  
+    project_name: str
+    project_location: Optional[str] = None  
+    assigned_date: date
+    hourly_rate: Optional[Decimal] = None
+    is_active: bool
+    
+    @field_validator('hourly_rate', mode='before')
+    def round_hourly_rate(cls, v):
+        if v is not None:
+            return round(Decimal(str(v)), 2)
+        return v
+
 class SubcontractorDetailResponse(SubcontractorResponse):
     """Detailed subcontractor response"""
     active_projects_count: int = 0
     total_bookings: int = 0
-    current_assignments: List['ProjectAssignmentResponse'] = []
+    current_assignments: List[ProjectAssignmentResponse] = []
 
 class SubcontractorBriefResponse(BaseSchema):
     """Brief subcontractor info"""
@@ -64,21 +92,6 @@ class SubcontractorListResponse(BaseSchema):
     skip: int
     limit: int
     has_more: bool
-
-class ProjectAssignmentResponse(BaseSchema):
-    """Project assignment details for subcontractor"""
-    project_id: UUID  # Changed from UUID to match new SiteProject id type
-    project_name: str
-    project_location: Optional[str] = None  # Added to match new model
-    assigned_date: date
-    hourly_rate: Optional[Decimal] = None
-    is_active: bool
-    
-    @field_validator('hourly_rate', mode='before')
-    def round_hourly_rate(cls, v):
-        if v is not None:
-            return round(Decimal(str(v)), 2)
-        return v
 
 # Avoid circular imports
 SubcontractorDetailResponse.model_rebuild()

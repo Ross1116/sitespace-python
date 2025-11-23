@@ -2,16 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from ...core.database import get_db
-from ...core.security import get_current_active_user, create_password_reset_token
+# Added verify_password to imports
+from ...core.security import get_current_active_user, create_password_reset_token, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
+# Added SubcontractorPasswordUpdate to imports
 from ...schemas.subcontractor import (
     SubcontractorCreate,
     SubcontractorUpdate,
+    SubcontractorPasswordUpdate,
     SubcontractorResponse,
     SubcontractorDetailResponse,
     SubcontractorListResponse,
@@ -298,13 +301,6 @@ def create_subcontractor(
 ):
     """
     Create a new subcontractor.
-    
-    Required fields:
-    - email: Unique email address
-    - password: Password for the subcontractor account
-    - confirm_password: Must match password
-    - first_name: First name
-    - last_name: Last name
     """
     if current_user.role not in ["manager", "admin"]:
         raise HTTPException(
@@ -435,6 +431,44 @@ def update_subcontractor(
         updated_at=updated_subcontractor.updated_at
     )
 
+@router.put("/{subcontractor_id}/password", response_model=MessageResponse)
+def update_subcontractor_password(
+    subcontractor_id: UUID,
+    password_data: SubcontractorPasswordUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Update a subcontractor's password.
+    """
+    # 1. Get Subcontractor
+    subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
+    if not subcontractor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subcontractor not found"
+        )
+
+    # 2. Permission Check
+    # Only Admin, Manager, or the Subcontractor themselves can change the password
+    if current_user.role not in ["manager", "admin"] and current_user.id != subcontractor_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to update this password"
+        )
+
+    # 3. Verify Old Password
+    if not verify_password(password_data.current_password, subcontractor.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect current password"
+        )
+
+    # 4. Update Password
+    subcontractor_crud.update_password(db, subcontractor_id, password_data.new_password)
+
+    return MessageResponse(message="Password updated successfully", success=True)
+
 @router.delete("/{subcontractor_id}", response_model=MessageResponse)
 def delete_subcontractor(
     subcontractor_id: UUID,
@@ -490,28 +524,14 @@ def send_welcome_email_endpoint(
     # 1. Generate password reset token
     reset_token = create_password_reset_token(subcontractor.email)
     
-    
     print(f"Attempting to send email to {subcontractor.email}...")
-    # 2. Send email in background (Non-blocking)
-    # email_success = send_subcontractor_invite_email(
-    #     to_email=subcontractor.email,
-    #     user_name=subcontractor.first_name,
-    #     reset_token=reset_token
-    # )
-    # FastAPI will automatically run this synchronous function in a thread pool
+    # 2. Send email in background
     background_tasks.add_task(
         send_subcontractor_invite_email,
         to_email=subcontractor.email,
         user_name=subcontractor.first_name,
         reset_token=reset_token
     )
-    
-    # if not email_success:
-    #     print("ERROR: Email function returned False")
-    #     raise HTTPException(
-    #         status_code=500, 
-    #         detail="Failed to send email. Check Railway Logs for 'SMTP' errors."
-    #     )
     
     return MessageResponse(
         message="Welcome email sent successfully",
@@ -565,9 +585,6 @@ def permanently_delete_subcontractor(
 ):
     """
     Permanently delete a subcontractor from the database.
-    This action cannot be undone. Requires confirmation.
-    
-    Restricted to admin users only.
     """
     if current_user.role != "admin":
         raise HTTPException(
@@ -724,7 +741,6 @@ def get_subcontractor_bookings(
         bookings = [b for b in bookings if b.status == status]
     
     # Paginate
-    total = len(bookings)
     bookings = bookings[skip:skip + limit]
     
     return [
@@ -754,8 +770,6 @@ def get_upcoming_bookings(
     """
     Get upcoming bookings for a subcontractor in the next N days.
     """
-    from datetime import datetime, timedelta
-    
     subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
     
     if not subcontractor:
@@ -856,13 +870,26 @@ def check_subcontractor_availability(
     
     if start_time and end_time and existing_bookings:
         for booking in existing_bookings:
-            if (booking["start_time"] <= start_time < booking["end_time"] or
-                booking["start_time"] < end_time <= booking["end_time"] or
-                (start_time <= booking["start_time"] and end_time >= booking["end_time"])):
+            # Simplified time check
+            b_start = booking["start_time"]
+            b_end = booking["end_time"]
+            
+            if (b_start <= start_time < b_end or
+                b_start < end_time <= b_end or
+                (start_time <= b_start and end_time >= b_end)):
                 is_available = False
                 conflicts.append(booking)
-    elif existing_bookings:
-        is_available = False
+    elif existing_bookings and not (start_time and end_time):
+        # If we have bookings but no specific time asked, just show them
+        # Note: logic depends on business rule. Usually if no time specified, 
+        # we just return the bookings so frontend can decide.
+        is_available = False # Technically "busy" part of the day
         conflicts = existing_bookings
     
-    return
+    return {
+        "subcontractor_id": subcontractor_id,
+        "date": check_date,
+        "is_available": is_available,
+        "existing_bookings": existing_bookings,
+        "conflicts": conflicts
+    }
