@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 
-from app import api
 
 # Import all dependencies at the top
 from ...core.database import get_db
@@ -326,6 +325,10 @@ def reset_password(
         )
     
     update_entity_password(db, entity, request.password)
+    
+    if not entity.is_active:
+        entity.is_active = True
+        db.commit()
     
     return ResetPasswordResponse(
         message="Password has been reset successfully",
