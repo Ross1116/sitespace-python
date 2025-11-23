@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
 from datetime import date, datetime, timedelta
+from ...models.site_project import SiteProject
 
 from ...core.database import get_db
 # Added verify_password to imports
@@ -300,7 +301,7 @@ def create_subcontractor(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Create a new subcontractor.
+    Create a new subcontractor and optionally assign them to a project.
     """
     if current_user.role not in ["manager", "admin"]:
         raise HTTPException(
@@ -308,24 +309,63 @@ def create_subcontractor(
             detail="Only managers and admins can create subcontractors"
         )
     
-    # Check if email already exists
+    # 1. Check if email already exists
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
         db, 
         email=subcontractor_data.email
     )
     
     if existing_subcontractor:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
+        # EDGE CASE: If they exist but aren't on this project, just link them!
+        if subcontractor_data.project_id:
+            subcontractor_crud.assign_subcontractor_to_project(
+                db, 
+                existing_subcontractor.id, 
+                subcontractor_data.project_id
+            )
+            return existing_subcontractor
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
     
-    # Create the subcontractor
+    # 2. Create the subcontractor
     try:
         new_subcontractor = subcontractor_crud.create_subcontractor(
             db, 
             subcontractor_data
         )
+
+        # 3. AUTOMATICALLY ASSIGN TO PROJECT (The Fix)
+        if subcontractor_data.project_id:
+            # Optional: verify manager owns this project
+            if current_user.role == "manager":
+                 # Import SiteProject here to avoid circular imports at top level if necessary
+                from ...models.site_project import SiteProject
+                
+                project = db.query(SiteProject).filter(
+                    SiteProject.id == subcontractor_data.project_id,
+                    SiteProject.managers.any(id=current_user.id)
+                ).first()
+                
+                if not project:
+                    # If manager doesn't own the project, create user but don't link
+                    # Or raise error depending on business logic. 
+                    # Here we'll just continue to avoid blocking creation.
+                    pass
+                else:
+                    subcontractor_crud.assign_subcontractor_to_project(
+                        db, 
+                        new_subcontractor.id, 
+                        subcontractor_data.project_id
+                    )
+            elif current_user.role == "admin":
+                subcontractor_crud.assign_subcontractor_to_project(
+                    db, 
+                    new_subcontractor.id, 
+                    subcontractor_data.project_id
+                )
         
         return SubcontractorResponse(
             id=new_subcontractor.id,
@@ -342,6 +382,7 @@ def create_subcontractor(
         
     except Exception as e:
         db.rollback()
+        print(f"Error creating subcontractor: {str(e)}") # For debugging
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating subcontractor: {str(e)}"
@@ -893,3 +934,69 @@ def check_subcontractor_availability(
         "existing_bookings": existing_bookings,
         "conflicts": conflicts
     }
+    
+@router.post("/{subcontractor_id}/projects/{project_id}", response_model=MessageResponse)
+def assign_subcontractor_to_project_endpoint(
+    subcontractor_id: UUID,
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Assign a subcontractor to a specific project.
+    Only Managers and Admins can perform this action.
+    """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can assign subcontractors"
+        )
+
+    # Optional: specific manager check (can they access this project?)
+    if current_user.role == "manager":
+        # Check if manager owns this project
+        project = db.query(SiteProject).filter(
+            SiteProject.id == project_id,
+            SiteProject.managers.any(id=current_user.id)
+        ).first()
+        if not project:
+             raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not a manager of this project"
+            )
+
+    success = subcontractor_crud.assign_subcontractor_to_project(db, subcontractor_id, project_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subcontractor or Project not found"
+        )
+        
+    return MessageResponse(message="Subcontractor assigned to project successfully", success=True)
+
+@router.delete("/{subcontractor_id}/projects/{project_id}", response_model=MessageResponse)
+def remove_subcontractor_from_project_endpoint(
+    subcontractor_id: UUID,
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Remove a subcontractor from a project.
+    """
+    if current_user.role not in ["manager", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    success = subcontractor_crud.remove_subcontractor_from_project(db, subcontractor_id, project_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Assignment not found"
+        )
+        
+    return MessageResponse(message="Subcontractor removed from project successfully", success=True)

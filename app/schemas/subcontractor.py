@@ -21,6 +21,7 @@ class SubcontractorBase(BaseSchema):
 class SubcontractorCreate(SubcontractorBase, PasswordMixin):
     """Subcontractor creation schema"""
     confirm_password: str
+    project_id: Optional[UUID] = None 
     
     @field_validator('confirm_password')
     def passwords_match(cls, v, info):

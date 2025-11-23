@@ -724,3 +724,39 @@ def is_subcontractor_assigned(
     ).first()
     
     return subcontractor_assigned is not None
+
+def assign_subcontractor_to_project(db: Session, subcontractor_id: UUID, project_id: UUID) -> bool:
+    """
+    Assign a subcontractor to a specific project.
+    """
+    subcontractor = get_subcontractor(db, subcontractor_id)
+    # We need to query SiteProject. Ensure you import SiteProject model at the top
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    
+    if not subcontractor or not project:
+        return False
+    
+    # Check if already assigned
+    if project in subcontractor.assigned_projects:
+        return True
+        
+    subcontractor.assigned_projects.append(project)
+    db.commit()
+    return True
+
+def remove_subcontractor_from_project(db: Session, subcontractor_id: UUID, project_id: UUID) -> bool:
+    """
+    Remove a subcontractor from a specific project.
+    """
+    subcontractor = get_subcontractor(db, subcontractor_id)
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    
+    if not subcontractor or not project:
+        return False
+        
+    if project in subcontractor.assigned_projects:
+        subcontractor.assigned_projects.remove(project)
+        db.commit()
+        return True
+        
+    return False
