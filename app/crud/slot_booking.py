@@ -762,7 +762,8 @@ def get_calendar_view(
     date_to: date,
     project_id: Optional[UUID] = None,
     asset_id: Optional[UUID] = None,
-    user_id: Optional[UUID] = None
+    manager_id: Optional[UUID] = None,
+    subcontractor_id: Optional[UUID] = None
 ) -> List[BookingCalendarView]:
     """Get bookings in calendar view format"""
     from collections import defaultdict
@@ -786,8 +787,11 @@ def get_calendar_view(
     if asset_id:
         query = query.filter(SlotBooking.asset_id == asset_id)
     
-    if user_id:
-        query = query.filter(SlotBooking.manager_id == user_id)
+    if manager_id:
+        query = query.filter(SlotBooking.manager_id == manager_id)
+        
+    if subcontractor_id:
+        query = query.filter(SlotBooking.subcontractor_id == subcontractor_id)
     
     # Get bookings and group by date
     bookings = query.order_by(
@@ -795,10 +799,11 @@ def get_calendar_view(
         SlotBooking.start_time
     ).all()
     
+    # (Group bookings by date, create BookingDetailResponse, return BookingCalendarView list)
+    
     # Group bookings by date
     bookings_by_date = defaultdict(list)
     for booking in bookings:
-        # ✅ Create BookingDetailResponse instead of BookingResponse
         booking_detail = BookingDetailResponse(
             id=booking.id,
             project_id=booking.project_id,
@@ -813,7 +818,6 @@ def get_calendar_view(
             notes=booking.notes,
             created_at=booking.created_at,
             updated_at=booking.updated_at,
-            # ✅ Add required relationship data
             project={
                 "id": booking.project.id,
                 "name": booking.project.name,
@@ -853,7 +857,7 @@ def get_calendar_view(
         day_bookings = bookings_by_date.get(current_date, [])
         calendar_view.append(BookingCalendarView(
             date=current_date,
-            bookings=day_bookings  # Now contains BookingDetailResponse objects
+            bookings=day_bookings
         ))
         current_date += timedelta(days=1)
     
