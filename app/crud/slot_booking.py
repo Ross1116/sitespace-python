@@ -762,8 +762,8 @@ def get_calendar_view(
     date_to: date,
     project_id: Optional[UUID] = None,
     asset_id: Optional[UUID] = None,
-    manager_id: Optional[UUID] = None,
-    subcontractor_id: Optional[UUID] = None
+    manager_id: Optional[UUID] = None,      # ✅ Changed from user_id
+    subcontractor_id: Optional[UUID] = None # ✅ Added this
 ) -> List[BookingCalendarView]:
     """Get bookings in calendar view format"""
     from collections import defaultdict
@@ -775,35 +775,36 @@ def get_calendar_view(
         joinedload(SlotBooking.asset)
     )
     
-    # Apply filters
+    # Apply date filters
     query = query.filter(
         SlotBooking.booking_date >= date_from,
         SlotBooking.booking_date <= date_to
     )
     
+    # Apply optional filters
     if project_id:
         query = query.filter(SlotBooking.project_id == project_id)
     
     if asset_id:
         query = query.filter(SlotBooking.asset_id == asset_id)
     
+    # ✅ Apply specific User filters
     if manager_id:
         query = query.filter(SlotBooking.manager_id == manager_id)
         
     if subcontractor_id:
         query = query.filter(SlotBooking.subcontractor_id == subcontractor_id)
     
-    # Get bookings and group by date
+    # Execute Query
     bookings = query.order_by(
         SlotBooking.booking_date,
         SlotBooking.start_time
     ).all()
     
-    # (Group bookings by date, create BookingDetailResponse, return BookingCalendarView list)
-    
     # Group bookings by date
     bookings_by_date = defaultdict(list)
     for booking in bookings:
+        # Create the detailed response object
         booking_detail = BookingDetailResponse(
             id=booking.id,
             project_id=booking.project_id,
