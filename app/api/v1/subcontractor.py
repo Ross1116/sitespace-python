@@ -911,6 +911,8 @@ def assign_subcontractor_to_project_endpoint(
     Assign a subcontractor to a specific project.
     Only Managers and Admins can perform this action.
     """
+    from ...models.site_project import SiteProject 
+    
     if current_user.role not in ["manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
