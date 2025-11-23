@@ -466,7 +466,7 @@ def get_calendar_view(
     project_id: Optional[UUID] = Query(None, description="Filter by project ID"),
     asset_id: Optional[UUID] = Query(None, description="Filter by asset ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> List[BookingCalendarView]:
     """
     Get bookings in calendar view format.
@@ -487,21 +487,39 @@ def get_calendar_view(
                 detail=f"Date range cannot exceed {max_days} days"
             )
         
+        user_id = get_entity_id(current_entity)
+        user_role = get_user_role(current_entity)
         # Check project access if filtering by project
         if project_id:
-            if not project_crud.has_project_access(db, project_id, current_user.id):
+            has_access = False
+            
+            if user_role == UserRole.ADMIN:
+                has_access = True
+            elif user_role == UserRole.SUBCONTRACTOR:
+                # Check if subcontractor is assigned to this project
+                has_access = project_crud.is_subcontractor_assigned(db, project_id, user_id)
+            else:
+                # Check if manager manages this project
+                has_access = project_crud.has_project_access(db, project_id, user_id)
+
+            if not has_access:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have access to this project"
                 )
+        query_user_id = user_id
         
+        # If Admin, pass None to see all. If Manager/Sub, pass ID to filter in CRUD
+        if user_role == UserRole.ADMIN:
+            query_user_id = None
+
         calendar_data = booking_crud.get_calendar_view(
             db,
             date_from=date_from,
             date_to=date_to,
             project_id=project_id,
             asset_id=asset_id,
-            user_id=current_user.id if current_user.role != UserRole.ADMIN else None
+            user_id=query_user_id 
         )
         
         return calendar_data
@@ -513,7 +531,6 @@ def get_calendar_view(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve calendar view: {str(e)}"
         )
-
 
 @router.get("/statistics", response_model=BookingStatistics)
 def get_booking_statistics(
