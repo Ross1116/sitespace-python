@@ -34,6 +34,7 @@ class BookingCreate(BookingBase):
     manager_id: Optional[UUID] = None
     subcontractor_id: Optional[UUID] = None
     asset_id: UUID
+    status: Optional[BookingStatus] = None
     
     
     @field_validator('booking_date')

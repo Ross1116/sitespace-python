@@ -175,6 +175,10 @@ def create_booking(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot create bookings for past dates"
             )
+        if user_role in [UserRole.MANAGER, UserRole.ADMIN]:
+            booking_data.status = BookingStatus.CONFIRMED
+        else:
+            booking_data.status = BookingStatus.PENDING
         
         # Role-specific validations
         if user_role == UserRole.SUBCONTRACTOR:
@@ -916,12 +920,17 @@ def duplicate_booking(
             notes=f"Duplicated from booking {booking_id}. {original.notes or ''}"
         )
         
+        if current_user.role in [UserRole.MANAGER, UserRole.ADMIN]:
+            duplicate_data.status = BookingStatus.CONFIRMED
+        else:
+            duplicate_data.status = BookingStatus.PENDING
+        
         # Create with role-based status
         new_booking = booking_crud.create_booking(
             db, 
             duplicate_data, 
             current_user.id,
-            current_user.role  # ← ADD THIS LINE - Pass the user's role
+            current_user.role
         )
         
         return booking_crud.get_booking_detail(db, new_booking.id)
