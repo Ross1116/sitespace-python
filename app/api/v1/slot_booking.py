@@ -746,7 +746,7 @@ def delete_booking(
     booking_id: UUID = Path(..., description="Booking ID"),
     hard_delete: bool = Query(False, description="Permanently delete the booking"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> MessageResponse:
     """
     Delete a booking.
@@ -763,8 +763,11 @@ def delete_booking(
                 detail="Booking not found"
             )
         
+        # ✅ FIX: Get role safely using the helper function
+        user_role = get_user_role(current_user)
+
         # Check access
-        if hard_delete and current_user.role != UserRole.ADMIN:
+        if hard_delete and user_role != UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only administrators can permanently delete bookings"
@@ -864,14 +867,10 @@ def duplicate_booking(
     booking_id: UUID = Path(..., description="Booking ID to duplicate"),
     new_date: date = Body(..., description="Date for the duplicated booking"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> BookingDetailResponse:
     """
     Duplicate an existing booking for a different date.
-    
-    - Copies all booking details except the date
-    - Checks for conflicts on the new date
-    - Role-based status applied
     """
     try:
         # Get original booking
@@ -881,6 +880,10 @@ def duplicate_booking(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Booking not found"
             )
+        
+        # ✅ FIX: Get role and ID safely
+        user_role = get_user_role(current_user)
+        user_id = get_entity_id(current_user)
         
         # Check access
         check_booking_access(db, original, current_user)
@@ -910,7 +913,7 @@ def duplicate_booking(
         # Create duplicate booking
         duplicate_data = BookingCreate(
             project_id=original.project_id,
-            manager_id=original.manager_id if current_user.role in [UserRole.ADMIN, UserRole.MANAGER] else None,
+            manager_id=original.manager_id if user_role in [UserRole.ADMIN, UserRole.MANAGER] else None,
             subcontractor_id=original.subcontractor_id,
             asset_id=original.asset_id,
             booking_date=new_date,
@@ -919,8 +922,8 @@ def duplicate_booking(
             purpose=original.purpose,
             notes=f"Duplicated from booking {booking_id}. {original.notes or ''}"
         )
-        
-        if current_user.role in [UserRole.MANAGER, UserRole.ADMIN]:
+
+        if user_role in [UserRole.MANAGER, UserRole.ADMIN]:
             duplicate_data.status = BookingStatus.CONFIRMED
         else:
             duplicate_data.status = BookingStatus.PENDING
@@ -929,8 +932,8 @@ def duplicate_booking(
         new_booking = booking_crud.create_booking(
             db, 
             duplicate_data, 
-            current_user.id,
-            current_user.role
+            user_id,
+            user_role
         )
         
         return booking_crud.get_booking_detail(db, new_booking.id)
