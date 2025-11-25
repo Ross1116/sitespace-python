@@ -12,6 +12,7 @@ class BookingStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    DENIED = "denied"
 
 class SlotBooking(Base):
     __tablename__ = "slot_bookings"

@@ -752,7 +752,9 @@ def delete_booking(
     Delete a booking.
     
     - Soft delete (sets status to CANCELLED) by default
-    - Hard delete permanently removes the booking (admin only)
+    - Hard delete permanently removes the booking
+    - Owners can Hard Delete ONLY if status is CANCELLED or DENIED
+    - Admins can Hard Delete anything
     """
     try:
         # Get booking
@@ -763,17 +765,35 @@ def delete_booking(
                 detail="Booking not found"
             )
         
-        # ✅ FIX: Get role safely using the helper function
         user_role = get_user_role(current_user)
+        user_id = get_entity_id(current_user)
 
-        # Check access
-        if hard_delete and user_role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only administrators can permanently delete bookings"
-            )
+        # --- NEW LOGIC FOR HARD DELETE ---
+        if hard_delete:
+            # 1. Admins always allowed
+            if user_role == UserRole.ADMIN:
+                pass
+            
+            # 2. Owners (Manager who created it OR Subcontractor who created it)
+            elif booking.manager_id == user_id or booking.subcontractor_id == user_id:
+                # Owners can only hard delete if the booking is already "dead"
+                if booking.status not in [BookingStatus.CANCELLED, BookingStatus.DENIED]:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You can only permanently delete bookings that are Cancelled or Denied"
+                    )
+            
+            # 3. Block everyone else
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only administrators or the booking owner can permanently delete this booking"
+                )
         
-        check_booking_access(db, booking, current_user, require_owner=True)
+        # Standard access check (ensures they have rights to touch this booking at all)
+        # We don't require_owner=True here because we handled specific hard_delete logic above,
+        # and soft_delete might be allowed for Project Managers who aren't the creator.
+        check_booking_access(db, booking, current_user)
         
         # Delete booking
         success = booking_crud.delete_booking(db, booking_id, hard_delete=hard_delete)
@@ -797,7 +817,7 @@ def delete_booking(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete booking: {str(e)}"
         )
-
+        
 
 @router.post("/check-conflicts", response_model=BookingConflictResponse)
 def check_conflicts(

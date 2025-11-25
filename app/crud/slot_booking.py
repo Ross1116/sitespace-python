@@ -500,7 +500,7 @@ def check_booking_conflicts(
     query = db.query(SlotBooking).filter(
         SlotBooking.asset_id == conflict_check.asset_id,
         SlotBooking.booking_date == conflict_check.booking_date,
-        SlotBooking.status.notin_([BookingStatus.CANCELLED])
+        SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.DENIED])
     )
     
     # Exclude specific booking if updating
