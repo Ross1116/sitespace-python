@@ -54,33 +54,33 @@ def check_booking_access(
     user_role = get_user_role(entity)
     user_id = get_entity_id(entity)
     
-    # Admins always have access
+    # 1. Admins always have access
     if user_role == UserRole.ADMIN:
         return
     
-    # Check if entity is the booking owner (manager)
+    # 2. Check Direct Ownership (Creator)
+    # If I am the Manager who made it OR the Subcontractor who made it, I have full access
     if booking.manager_id == user_id:
         return
-    
-    # Check if subcontractor owns the booking
+        
     if user_role == UserRole.SUBCONTRACTOR and booking.subcontractor_id == user_id:
-        if not require_owner:
-            return
-    
-    # Check if user is a project manager for this booking's project
+        return
+
+    # 3. Check Project Manager Access (Managers only)
+    # Project Managers should be able to edit/delete any booking on their project
     if booking.project_id and user_role == UserRole.MANAGER:
         if project_crud.is_project_manager(db, booking.project_id, user_id):
-            if not require_owner:
-                return
+            return
     
-    # If require_owner is True, only the booking creator can access
-    if require_owner and booking.manager_id != user_id:
+    # 4. If we get here, we haven't matched any access rights
+    if require_owner:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the booking owner can perform this action"
+            detail="Only the booking owner or project manager can perform this action"
         )
     
-    # No access granted
+    # If just reading (require_owner=False), but we didn't match the above checks,
+    # we still deny access (e.g., a Subcontractor trying to view another Sub's booking)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="You don't have access to this booking"
