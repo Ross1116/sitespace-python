@@ -7,12 +7,12 @@ import enum
 from app.core.database import Base
 
 class BookingStatus(str, enum.Enum):
-    PENDING = "PENDING"
-    CONFIRMED = "CONFIRMED"
-    IN_PROGRESS = "IN_PROGRESS"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
-    DENIED = "DENIED"
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    DENIED = "denied"
 
 class SlotBooking(Base):
     __tablename__ = "slot_bookings"
