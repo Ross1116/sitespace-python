@@ -174,4 +174,4 @@ class BookingConflictCheck(BaseSchema):
 class BookingConflictResponse(BaseSchema):
     """Booking conflict response"""
     has_conflict: bool
-    conflicting_bookings: List[BookingResponse] = []
+    conflicting_bookings: List[BookingResponse] = Field(default_factory=list)

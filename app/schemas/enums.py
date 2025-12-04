@@ -24,6 +24,7 @@ class BookingStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    DENIED = "denied"
 
 class TradeSpecialty(str, Enum):
     ELECTRICIAN = "electrician"
