@@ -23,10 +23,10 @@ def create_database_engine():
         engine = create_engine(
             settings.database_url,
             pool_pre_ping=True,
-            pool_recycle=300,
+            pool_recycle=1800,
             pool_timeout=30,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=20,
+            max_overflow=40,
             echo=False  # Set to True for SQL debugging
         )
         logger.info("✅ PostgreSQL engine configured.")
