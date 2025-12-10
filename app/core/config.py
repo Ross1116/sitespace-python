@@ -45,8 +45,14 @@ class Settings(BaseSettings):
     FROM_EMAIL: str = "noreply@sitespace.com"
     FROM_NAME: str = "Sitespace Dev"
     
-    # Frontend URL for email links
-    FRONTEND_URL: str = "http://localhost:3000"
+    # Frontend URL for email links / cookie origin (set in env for prod)
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    
+    # Optional cookie domain (set in production if needed). Example: ".example.com"
+    COOKIE_DOMAIN: Optional[str] = os.getenv("COOKIE_DOMAIN", None)
+    
+    # Is production flag
+    IS_PRODUCTION: bool = os.getenv("IS_PRODUCTION", "False").strip().lower() in ("true", "1", "yes", "on")
     
     # App settings
     APP_NAME: str = "Sitespace"
