@@ -37,13 +37,13 @@ class Settings(BaseSettings):
     ).split(",")
     
     # Email / Mailtrap
-    MAILTRAP_TOKEN: Optional[str] = None
-    MAILTRAP_INBOX_ID: Optional[str] = None
-    MAILTRAP_HOST: Optional[str] = "sandbox.api.mailtrap.io"
+    MAILTRAP_USE_SANDBOX: bool = os.getenv("MAILTRAP_USE_SANDBOX", "True").strip().lower() in ("true", "1", "yes", "on")
+    MAILTRAP_TOKEN: Optional[str] = os.getenv("MAILTRAP_TOKEN")
+    MAILTRAP_INBOX_ID: Optional[str] = os.getenv("MAILTRAP_INBOX_ID")
     
     # Email Sender Info
-    FROM_EMAIL: str = "noreply@sitespace.com"
-    FROM_NAME: str = "Sitespace Dev"
+    FROM_EMAIL: str = os.getenv("FROM_EMAIL", "noreply@sitespace.com")
+    FROM_NAME: str = os.getenv("FROM_NAME", "Sitespace Team")
     
     # Frontend URL for email links / cookie origin (set in env for prod)
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")

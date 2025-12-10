@@ -1,7 +1,7 @@
 import os
 import requests
 import logging
-from typing import Optional
+from typing import Optional, Dict
 from .config import settings
 
 # Configure logging
@@ -14,20 +14,13 @@ class EmailSender:
     """
     
     def __init__(self):
-        # Load configuration from Environment Variables
-        self.api_token = os.getenv("MAILTRAP_TOKEN")
-        self.inbox_id = os.getenv("MAILTRAP_INBOX_ID")
-        
-        # Default to sandbox, but allow override via env var
-        self.api_host = os.getenv("MAILTRAP_HOST", "sandbox.api.mailtrap.io")
-        
-        # Construct the dynamic URL: https://{host}/api/send/{inbox_id}
-        # Note: If inbox_id is missing, this will be caught in send_email validation
-        self.api_url = f"https://{self.api_host}/api/send/{self.inbox_id}"
+        self.api_token = settings.MAILTRAP_TOKEN
+        self.use_sandbox = settings.MAILTRAP_USE_SANDBOX
+        self.inbox_id = settings.MAILTRAP_INBOX_ID
         
         # Sender details
-        self.from_email = os.getenv("FROM_EMAIL", "mailtrap@demomailtrap.com")
-        self.from_name = os.getenv("FROM_NAME", settings.APP_NAME or "My App")
+        self.from_email = settings.FROM_EMAIL
+        self.from_name = settings.FROM_NAME
 
     def send_email(
         self,
@@ -35,23 +28,49 @@ class EmailSender:
         subject: str,
         html_content: str,
         text_content: Optional[str] = None
-    ):
+    ) -> bool:
+        """
+        Sends an email using either Sandbox or Live API based on settings.
+        """
         # 1. Validation
         if not self.api_token:
-            logger.error("Missing Env Var: MAILTRAP_TOKEN")
+            logger.error("❌ Missing Env Var: MAILTRAP_TOKEN")
             return False
-        if not self.inbox_id:
-            logger.error("Missing Env Var: MAILTRAP_INBOX_ID")
+            
+        # Sandbox specific validation
+        if self.use_sandbox and not self.inbox_id:
+            logger.error("❌ Missing Env Var: MAILTRAP_INBOX_ID (Required for Sandbox mode)")
             return False
 
-        # 2. Headers
-        # IMPORTANT: Mailtrap Sandbox uses "Api-Token", NOT "Authorization: Bearer"
-        headers = {
-            "Api-Token": self.api_token,
-            "Content-Type": "application/json"
-        }
+        # 2. Configure Endpoint and Headers based on mode
+        url: str
+        headers: Dict[str, str]
 
-        # 3. Payload
+        if self.use_sandbox:
+            # --- SANDBOX MODE ---
+            # URL includes the Inbox ID
+            url = f"https://sandbox.api.mailtrap.io/api/send/{self.inbox_id}"
+            
+            # Sandbox uses 'Api-Token' header
+            headers = {
+                "Api-Token": self.api_token,
+                "Content-Type": "application/json"
+            }
+            logger.info(f"📧 Preparing to send SANDBOX email to {to_email} (Inbox {self.inbox_id})...")
+        else:
+            # --- LIVE SENDING MODE ---
+            # Standard Sending API URL
+            url = "https://send.api.mailtrap.io/api/send"
+            
+            # Live API uses 'Authorization: Bearer' header
+            headers = {
+                "Authorization": f"Bearer {self.api_token}",
+                "Content-Type": "application/json"
+            }
+            logger.info(f"📧 Preparing to send LIVE email to {to_email} via Mailtrap Sending API...")
+
+        # 3. Payload Construction
+        # Mailtrap Sending API and Sandbox share the same payload structure
         payload = {
             "from": {
                 "email": self.from_email,
@@ -63,31 +82,35 @@ class EmailSender:
             "subject": subject,
             "html": html_content,
             "text": text_content if text_content else "Please view this email in an HTML compatible client.",
-            "category": "Transactional" # Optional tag for Mailtrap
+            "category": "Transactional"
         }
 
+        # 4. Execute Request
         try:
-            logger.info(f"Sending email to {to_email} via {self.api_host} (Inbox {self.inbox_id})...")
-            
-            # 4. Send Request
             response = requests.post(
-                self.api_url, 
+                url, 
                 headers=headers, 
                 json=payload, 
                 timeout=10
             )
 
             # 5. Handle Response
-            if response.status_code == 200:
-                logger.info(f"✅ Email sent successfully to Mailtrap Inbox #{self.inbox_id}")
+            if response.status_code in [200, 201]: # Mailtrap sometimes returns 201 for creation
+                logger.info(f"✅ Email sent successfully to {to_email}")
                 return True
             else:
                 logger.error(f"❌ Failed to send email. Status: {response.status_code}")
                 logger.error(f"Response: {response.text}")
                 return False
 
+        except requests.exceptions.Timeout:
+            logger.error("❌ Email sending timed out.")
+            return False
+        except requests.exceptions.ConnectionError:
+            logger.error("❌ Connection error while contacting Mailtrap.")
+            return False
         except Exception as e:
-            logger.error(f"❌ Exception in email sending: {str(e)}")
+            logger.error(f"❌ Unexpected exception in email sending: {str(e)}")
             return False
 
 # Create email sender instance
