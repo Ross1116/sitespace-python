@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # CORS - Update with your actual frontend domains for production
     cors_origins: list = os.getenv(
         "CORS_ORIGINS", 
-        "http://localhost:3000,http://localhost:5173,https://sitespace.vercel.app"
+        "http://localhost:3000,http://localhost:5173,https://sitespace.vercel.app,http://sitespace.com.au,https://sitespace.com.au"
     ).split(",")
     
     # Email / Mailtrap
