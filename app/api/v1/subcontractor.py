@@ -317,13 +317,13 @@ def create_subcontractor(
     Create a new subcontractor.
     """
     # Import locally to avoid circular dependencies
-    from ...models.site_project import SiteProject
+    from ...models.site_project import SiteProject 
 
     # Check for existing email
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
         db, email=subcontractor_data.email
     )
-
+    
     if existing_subcontractor:
         if subcontractor_data.project_id:
             if current_user.role == "manager":
@@ -342,7 +342,6 @@ def create_subcontractor(
             raise HTTPException(status_code=400, detail="Email already registered")
 
     # Create new subcontractor
-    # The CRUD layer now safely handles trade_specialty strings/enums
     new_subcontractor = subcontractor_crud.create_subcontractor(db, subcontractor_data)
 
     # Immediately assign to project if ID is present
@@ -361,7 +360,7 @@ def create_subcontractor(
             subcontractor_crud.assign_subcontractor_to_project(
                 db, new_subcontractor.id, subcontractor_data.project_id
             )
-
+    
     return new_subcontractor
 
 @router.put("/me", response_model=SubcontractorResponse)
@@ -370,7 +369,6 @@ def update_subcontractor_me(
     db: Session = Depends(get_db),
     current_user: Any = Depends(get_current_active_user)
 ):
-    # ... (code same as previous)
     if not hasattr(current_user, "trade_specialty"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
