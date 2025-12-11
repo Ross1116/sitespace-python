@@ -317,13 +317,13 @@ def create_subcontractor(
     Create a new subcontractor.
     """
     # Import locally to avoid circular dependencies
-    from ...models.site_project import SiteProject 
+    from ...models.site_project import SiteProject
 
     # Check for existing email
     existing_subcontractor = subcontractor_crud.get_subcontractor_by_email(
         db, email=subcontractor_data.email
     )
-    
+
     if existing_subcontractor:
         if subcontractor_data.project_id:
             if current_user.role == "manager":
@@ -341,22 +341,8 @@ def create_subcontractor(
         else:
             raise HTTPException(status_code=400, detail="Email already registered")
 
-    # --- FIX for 'str object has no attribute value' ---
-    # The CRUD layer seemingly expects trade_specialty to be an Enum (accessing .value),
-    # but Pydantic provides a primitive string. We wrap it to prevent the crash.
-    if hasattr(subcontractor_data, 'trade_specialty') and \
-       subcontractor_data.trade_specialty is not None and \
-       isinstance(subcontractor_data.trade_specialty, str):
-        try:
-            # We patch the object attribute to be a wrapper that has a .value property
-            # This satisfies crud logic like: db_obj.trade_specialty = data.trade_specialty.value
-            subcontractor_data.trade_specialty = EnumValueWrapper(subcontractor_data.trade_specialty)
-        except Exception as e:
-            # If Pydantic model prevents assignment, we proceed (the crash might still happen or handled elsewhere)
-            print(f"Warning: Could not patch trade_specialty: {e}")
-    # ---------------------------------------------------
-
     # Create new subcontractor
+    # The CRUD layer now safely handles trade_specialty strings/enums
     new_subcontractor = subcontractor_crud.create_subcontractor(db, subcontractor_data)
 
     # Immediately assign to project if ID is present
@@ -375,10 +361,9 @@ def create_subcontractor(
             subcontractor_crud.assign_subcontractor_to_project(
                 db, new_subcontractor.id, subcontractor_data.project_id
             )
-    
+
     return new_subcontractor
 
-# ... (rest of the file remains unchanged)
 @router.put("/me", response_model=SubcontractorResponse)
 def update_subcontractor_me(
     subcontractor_update: SubcontractorUpdate,
