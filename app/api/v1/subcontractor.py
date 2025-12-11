@@ -76,7 +76,9 @@ def get_my_subcontractors(
     Get subcontractors for the current manager's projects.
     Admins see all subcontractors, managers see only their project subcontractors.
     """
-    if current_user.role == "admin":
+    user_role = getattr(current_user, "role", None)
+
+    if user_role == "admin":
         result = subcontractor_crud.get_all_subcontractors(
             db,
             skip=skip,
@@ -84,7 +86,7 @@ def get_my_subcontractors(
             is_active=is_active,
             trade_specialty=trade_specialty
         )
-    elif current_user.role == "manager":
+    elif user_role == "manager":
         result = subcontractor_crud.get_subcontractors_for_manager(
             db,
             manager_id=current_user.id,
@@ -95,6 +97,7 @@ def get_my_subcontractors(
             project_id=project_id
         )
     else:
+        # This handles Subcontractors (who have no role attribute) gracefully
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can access this endpoint"
@@ -120,7 +123,6 @@ def get_my_subcontractors(
         limit=result["limit"],
         has_more=result["has_more"]
     )
-
 @router.get("/manager-stats", response_model=dict)
 def get_manager_subcontractor_statistics(
     db: Session = Depends(get_db),
