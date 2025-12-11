@@ -18,6 +18,13 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
     # Hash the password
     hashed_password = get_password_hash(subcontractor_data.password)
     
+    trade_value = None
+    if subcontractor_data.trade_specialty:
+        if hasattr(subcontractor_data.trade_specialty, 'value'):
+            trade_value = subcontractor_data.trade_specialty.value
+        else:
+            trade_value = str(subcontractor_data.trade_specialty)
+    
     # Create subcontractor instance
     db_subcontractor = Subcontractor(
         email=subcontractor_data.email,
@@ -25,7 +32,7 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
         first_name=subcontractor_data.first_name,
         last_name=subcontractor_data.last_name,
         company_name=subcontractor_data.company_name,
-        trade_specialty=subcontractor_data.trade_specialty.value if subcontractor_data.trade_specialty else None,
+        trade_specialty=trade_value,
         phone=subcontractor_data.phone
     )
     
