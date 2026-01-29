@@ -1,4 +1,4 @@
-from pydoc import text
+from sqlalchemy import text as sql_text
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -105,36 +105,30 @@ async def root():
 # Health check endpoint
 @app.get("/health")
 async def health_check():
+    health_status = {
+        "status": "healthy",
+        "message": "Sitespace API is healthy",
+        "version": "1.0.0"
+    }
+    
     try:
-        # Basic health check - just return success if app is running
-        health_status = {
-            "status": "healthy",
-            "message": "Sitespace API is healthy",
-            "version": "1.0.0"
-        }
+        # Import engine inside the function to avoid circular import issues
+        from .core.database import engine
         
-        # Optional: Test database connection (non-blocking)
-        try:
-            from .core.database import engine
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            health_status["database"] = "connected"
-        except Exception as db_error:
-            # Don't fail health check if DB is down
-            health_status["database"] = "disconnected"
-            health_status["db_error"] = str(db_error)
-            print(f"⚠️  Database health check failed: {db_error}")
-        
-        return health_status
+        # Connect and run query
+        with engine.connect() as conn:
+            # Use the aliased function 'sql_text'
+            conn.execute(sql_text("SELECT 1"))
+            
+        health_status["database"] = "connected"
         
     except Exception as e:
-        # Even if something goes wrong, return a basic response
-        print(f"❌ Health check error: {e}")
-        return {
-            "status": "degraded",
-            "message": "API is running but with issues",
-            "error": str(e)
-        }
+        health_status["database"] = "disconnected"
+        health_status["db_error"] = str(e)
+        # Print the detailed error to logs
+        print(f"⚠️ Database Check Failed. Type: {type(e).__name__}, Error: {e}")
+
+    return health_status
 
 if __name__ == "__main__":
     uvicorn.run(
