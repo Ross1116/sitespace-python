@@ -25,7 +25,15 @@ class SlotBooking(Base):
     booking_date = Column(Date, nullable=False, index=True)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
-    status = Column(SQLEnum(BookingStatus), default=BookingStatus.PENDING)
+    status = Column(
+        SQLEnum(
+            BookingStatus,
+            name="bookingstatus",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=BookingStatus.PENDING,
+        nullable=False,
+    )
     purpose = Column(Text)
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
