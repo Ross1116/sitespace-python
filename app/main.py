@@ -1,3 +1,4 @@
+from pydoc import text
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -116,7 +117,7 @@ async def health_check():
         try:
             from .core.database import engine
             with engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
             health_status["database"] = "connected"
         except Exception as db_error:
             # Don't fail health check if DB is down
