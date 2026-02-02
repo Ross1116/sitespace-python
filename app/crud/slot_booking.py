@@ -6,7 +6,10 @@ from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session, joinedload
 from collections import defaultdict
 
-from ..models.slot_booking import SlotBooking, BookingStatus
+from ..models.slot_booking import SlotBooking
+# Ensure we import BookingStatus from enums to be safe, or models if they match.
+# Using schemas.enums is usually safer for "Source of Truth"
+from ..schemas.enums import BookingStatus, UserRole
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..models.asset import Asset, AssetStatus
@@ -23,19 +26,15 @@ from ..schemas.slot_booking import (
     BookingDetailResponse,
     BookingResponse
 )
-from ..schemas.enums import UserRole
 
 def create_booking(
     db: Session,
     booking_data: BookingCreate,
     created_by_id: UUID,
-    created_by_role: UserRole  # ADD THIS PARAMETER
+    created_by_role: UserRole
 ) -> SlotBooking:
     """
     Create a new booking in the database with role-based status.
-    
-    - Managers/Admins: Booking is automatically CONFIRMED
-    - Subcontractors: Booking is PENDING (requires manager approval)
     """
     
     # Validate that all referenced entities exist
@@ -130,13 +129,10 @@ def create_bulk_bookings(
     db: Session,
     bulk_data: BulkBookingCreate,
     created_by_id: UUID,
-    created_by_role: UserRole  # ADD THIS PARAMETER
+    created_by_role: UserRole
 ) -> List[SlotBooking]:
     """
     Create multiple bookings at once with role-based status.
-    
-    - Managers/Admins: Bookings are automatically CONFIRMED
-    - Subcontractors: Bookings are PENDING (require manager approval)
     """
     bookings = []
     failed_bookings = []
@@ -148,35 +144,29 @@ def create_bulk_bookings(
     
     # Determine manager_id, subcontractor_id, and status based on role
     if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
-        # Manager/Admin creating booking
         manager_id = bulk_data.manager_id or created_by_id
-        subcontractor_id = bulk_data.subcontractor_id  # Can be None
+        subcontractor_id = bulk_data.subcontractor_id
         booking_status = BookingStatus.CONFIRMED
         
-        # Validate manager exists
         manager = db.query(User).filter(User.id == manager_id).first()
         if not manager:
             raise ValueError(f"Manager with id {manager_id} not found")
         
-        # Validate subcontractor exists (if provided)
         if subcontractor_id:
             subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
             if not subcontractor:
                 raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
         
     elif created_by_role == UserRole.SUBCONTRACTOR:
-        # Subcontractor creating booking - must be for themselves
         subcontractor_id = created_by_id
         
         if bulk_data.subcontractor_id and bulk_data.subcontractor_id != created_by_id:
             raise ValueError("Subcontractors can only create bookings for themselves")
         
-        # Validate subcontractor exists
         subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
         if not subcontractor:
             raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
         
-        # Auto-assign a manager from the project
         if bulk_data.manager_id:
             manager_id = bulk_data.manager_id
         else:
@@ -195,7 +185,6 @@ def create_bulk_bookings(
         raise ValueError(f"Invalid user role: {created_by_role}")
     
     for asset_id in bulk_data.asset_ids:
-        # Validate asset exists and is available
         asset = db.query(Asset).filter(Asset.id == asset_id).first()
         if not asset:
             failed_bookings.append({"asset_id": asset_id, "reason": "Asset not found"})
@@ -206,7 +195,6 @@ def create_bulk_bookings(
             continue
         
         for booking_date in bulk_data.booking_dates:
-            # Check for conflicts for each combination
             conflict_check = BookingConflictCheck(
                 asset_id=asset_id,
                 booking_date=booking_date,
@@ -226,14 +214,14 @@ def create_bulk_bookings(
             db_booking = SlotBooking(
                 project_id=bulk_data.project_id,
                 manager_id=manager_id,
-                subcontractor_id=subcontractor_id,  # Can be None
+                subcontractor_id=subcontractor_id,
                 asset_id=asset_id,
                 booking_date=booking_date,
                 start_time=bulk_data.start_time,
                 end_time=bulk_data.end_time,
                 purpose=bulk_data.purpose,
                 notes=bulk_data.notes,
-                status=booking_status  # Role-based status
+                status=booking_status
             )
             
             db.add(db_booking)
@@ -241,23 +229,18 @@ def create_bulk_bookings(
     
     if bookings:
         db.commit()
-        # Refresh all bookings
         for booking in bookings:
             db.refresh(booking)
     
-    # You might want to return failed_bookings info as well
     if failed_bookings:
-        # Log or handle failed bookings
         print(f"Failed to create {len(failed_bookings)} bookings: {failed_bookings}")
     
     return bookings
 
 def get_booking(db: Session, booking_id: UUID) -> Optional[SlotBooking]:
-    """Get a single booking by ID"""
     return db.query(SlotBooking).filter(SlotBooking.id == booking_id).first()
 
 def get_booking_with_details(db: Session, booking_id: UUID) -> Optional[SlotBooking]:
-    """Get booking with all relationships loaded"""
     return db.query(SlotBooking).options(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
@@ -266,7 +249,6 @@ def get_booking_with_details(db: Session, booking_id: UUID) -> Optional[SlotBook
     ).filter(SlotBooking.id == booking_id).first()
 
 def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailResponse]:
-    """Get detailed booking information with related entities"""
     booking = get_booking_with_details(db, booking_id)
     
     if not booking:
@@ -297,7 +279,7 @@ def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailR
             "email": booking.manager.email,
             "first_name": booking.manager.first_name,
             "last_name": booking.manager.last_name,
-            "role": booking.manager.role,  # ADD THIS LINE
+            "role": booking.manager.role,
             "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
         } if booking.manager else None,
         subcontractor={
@@ -346,7 +328,16 @@ def get_bookings(
             query = query.filter(SlotBooking.asset_id == filter_params.asset_id)
         
         if filter_params.status:
-            query = query.filter(SlotBooking.status == filter_params.status)
+            # FIX: Ensure status is treated as Enum (Uppercase) even if string passed
+            status_val = filter_params.status
+            if isinstance(status_val, str):
+                # Try to convert string to Enum (forces Uppercase)
+                try:
+                    status_val = BookingStatus(status_val.upper())
+                except ValueError:
+                    # Fallback to whatever was passed if not in Enum
+                    pass
+            query = query.filter(SlotBooking.status == status_val)
         
         if filter_params.date_from:
             query = query.filter(SlotBooking.booking_date >= filter_params.date_from)
@@ -418,15 +409,12 @@ def update_booking(
     booking_id: UUID,
     booking_update: BookingUpdate
 ) -> Optional[SlotBooking]:
-    """Update an existing booking"""
     booking = get_booking(db, booking_id)
     if not booking:
         return None
     
-    # Update fields if provided
     update_data = booking_update.dict(exclude_unset=True)
     
-    # Validate new references if being updated
     if 'project_id' in update_data:
         project = db.query(SiteProject).filter(SiteProject.id == update_data['project_id']).first()
         if not project:
@@ -446,6 +434,13 @@ def update_booking(
         asset = db.query(Asset).filter(Asset.id == update_data['asset_id']).first()
         if not asset:
             raise ValueError(f"Asset with id {update_data['asset_id']} not found")
+            
+    # FIX: Handle status update case sensitivity
+    if 'status' in update_data and isinstance(update_data['status'], str):
+        try:
+            update_data['status'] = BookingStatus(update_data['status'].upper())
+        except ValueError:
+            pass
     
     for field, value in update_data.items():
         setattr(booking, field, value)
@@ -462,7 +457,6 @@ def update_booking_status(
     booking_id: UUID,
     status: BookingStatus
 ) -> Optional[SlotBooking]:
-    """Update only the status of a booking"""
     booking = get_booking(db, booking_id)
     if not booking:
         return None
@@ -476,17 +470,14 @@ def update_booking_status(
     return booking
 
 def delete_booking(db: Session, booking_id: UUID, soft_delete: bool = True) -> bool:
-    """Delete a booking (soft or hard delete)"""
     booking = get_booking(db, booking_id)
     if not booking:
         return False
     
     if soft_delete:
-        # Soft delete - set status to cancelled
         booking.status = BookingStatus.CANCELLED
         booking.updated_at = datetime.utcnow()
     else:
-        # Hard delete
         db.delete(booking)
     
     db.commit()
@@ -496,31 +487,25 @@ def check_booking_conflicts(
     db: Session,
     conflict_check: BookingConflictCheck
 ) -> BookingConflictResponse:
-    """Check if a proposed booking would conflict with existing bookings"""
     query = db.query(SlotBooking).filter(
         SlotBooking.asset_id == conflict_check.asset_id,
         SlotBooking.booking_date == conflict_check.booking_date,
         SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.DENIED])
     )
     
-    # Exclude specific booking if updating
     if hasattr(conflict_check, 'exclude_booking_id') and conflict_check.exclude_booking_id:
         query = query.filter(SlotBooking.id != conflict_check.exclude_booking_id)
     
-    # Check for time overlap
     query = query.filter(
         or_(
-            # New booking starts during existing booking
             and_(
                 SlotBooking.start_time <= conflict_check.start_time,
                 SlotBooking.end_time > conflict_check.start_time
             ),
-            # New booking ends during existing booking
             and_(
                 SlotBooking.start_time < conflict_check.end_time,
                 SlotBooking.end_time >= conflict_check.end_time
             ),
-            # New booking completely contains existing booking
             and_(
                 SlotBooking.start_time >= conflict_check.start_time,
                 SlotBooking.end_time <= conflict_check.end_time
@@ -539,12 +524,10 @@ def check_booking_conflicts(
             "status": booking.status,
             "subcontractor_id": booking.subcontractor_id,
             "manager_id": booking.manager_id,
-            # Add the missing required fields
             "booking_date": booking.booking_date,
             "project_id": booking.project_id,
             "asset_id": booking.asset_id,
             "created_at": booking.created_at,
-            # Optional fields that might be expected
             "updated_at": booking.updated_at,
             "purpose": booking.purpose,
             "notes": booking.notes
@@ -563,53 +546,45 @@ def get_booking_statistics(
     date_to: Optional[date] = None,
     user_id: Optional[UUID] = None 
 ) -> BookingStatistics:
-    """Calculate booking statistics"""
     query = db.query(SlotBooking)
     
     if project_id:
         query = query.filter(SlotBooking.project_id == project_id)
-        
     if user_id:
-        status_counts = status_counts.filter(SlotBooking.manager_id == user_id)
-        
+        query = query.filter(SlotBooking.manager_id == user_id)
     if date_from:
         query = query.filter(SlotBooking.booking_date >= date_from)
-    
     if date_to:
         query = query.filter(SlotBooking.booking_date <= date_to)
     
-    # Get counts by status
-    status_counts = db.query(
+    status_counts_query = db.query(
         SlotBooking.status,
         func.count(SlotBooking.id).label('count')
     )
     
     if project_id:
-        status_counts = status_counts.filter(SlotBooking.project_id == project_id)
+        status_counts_query = status_counts_query.filter(SlotBooking.project_id == project_id)
     if user_id:
-        busiest_day_query = busiest_day_query.filter(SlotBooking.manager_id == user_id)
+        status_counts_query = status_counts_query.filter(SlotBooking.manager_id == user_id)
     if date_from:
-        status_counts = status_counts.filter(SlotBooking.booking_date >= date_from)
+        status_counts_query = status_counts_query.filter(SlotBooking.booking_date >= date_from)
     if date_to:
-        status_counts = status_counts.filter(SlotBooking.booking_date <= date_to)
+        status_counts_query = status_counts_query.filter(SlotBooking.booking_date <= date_to)
     
-    status_counts = status_counts.group_by(SlotBooking.status).all()
+    status_counts = status_counts_query.group_by(SlotBooking.status).all()
     
     status_dict = {status.value: count for status, count in status_counts}
-    
-    # Get total bookings
     total_bookings = sum(status_dict.values())
     
-    # Get busiest day
+    # Busiest Day
     busiest_day_query = db.query(
         SlotBooking.booking_date,
         func.count(SlotBooking.id).label('count')
     )
-    
     if project_id:
         busiest_day_query = busiest_day_query.filter(SlotBooking.project_id == project_id)
     if user_id:
-        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.manager_id == user_id)
+        busiest_day_query = busiest_day_query.filter(SlotBooking.manager_id == user_id)
     if date_from:
         busiest_day_query = busiest_day_query.filter(SlotBooking.booking_date >= date_from)
     if date_to:
@@ -621,16 +596,17 @@ def get_booking_statistics(
         func.count(SlotBooking.id).desc()
     ).first()
     
-    # Get most booked asset
+    # Most Booked Asset
     most_booked_asset_query = db.query(
         Asset,
         func.count(SlotBooking.id).label('count')
     ).join(
         SlotBooking, SlotBooking.asset_id == Asset.id
     )
-    
     if project_id:
         most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.project_id == project_id)
+    if user_id:
+        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.manager_id == user_id)
     if date_from:
         most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.booking_date >= date_from)
     if date_to:
@@ -653,7 +629,6 @@ def get_booking_statistics(
             "booking_count": count
         }
     
-    # Calculate utilization rate
     utilized_bookings = (
         status_dict.get(BookingStatus.CONFIRMED.value, 0) +
         status_dict.get(BookingStatus.COMPLETED.value, 0) +
@@ -687,6 +662,8 @@ def get_user_upcoming_bookings(
     today = date.today()
     current_time = datetime.now().time()
     
+    # FIX: Ensure we use Enum types for filtering
+    # This prevents the "invalid input value for enum... 'cancelled'" error
     bookings = db.query(SlotBooking).options(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
@@ -762,12 +739,9 @@ def get_calendar_view(
     date_to: date,
     project_id: Optional[UUID] = None,
     asset_id: Optional[UUID] = None,
-    manager_id: Optional[UUID] = None,      # ✅ Changed from user_id
-    subcontractor_id: Optional[UUID] = None # ✅ Added this
+    manager_id: Optional[UUID] = None,
+    subcontractor_id: Optional[UUID] = None
 ) -> List[BookingCalendarView]:
-    """Get bookings in calendar view format"""
-    from collections import defaultdict
-    
     query = db.query(SlotBooking).options(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
@@ -775,36 +749,30 @@ def get_calendar_view(
         joinedload(SlotBooking.asset)
     )
     
-    # Apply date filters
     query = query.filter(
         SlotBooking.booking_date >= date_from,
         SlotBooking.booking_date <= date_to
     )
     
-    # Apply optional filters
     if project_id:
         query = query.filter(SlotBooking.project_id == project_id)
     
     if asset_id:
         query = query.filter(SlotBooking.asset_id == asset_id)
     
-    # ✅ Apply specific User filters
     if manager_id:
         query = query.filter(SlotBooking.manager_id == manager_id)
         
     if subcontractor_id:
         query = query.filter(SlotBooking.subcontractor_id == subcontractor_id)
     
-    # Execute Query
     bookings = query.order_by(
         SlotBooking.booking_date,
         SlotBooking.start_time
     ).all()
     
-    # Group bookings by date
     bookings_by_date = defaultdict(list)
     for booking in bookings:
-        # Create the detailed response object
         booking_detail = BookingDetailResponse(
             id=booking.id,
             project_id=booking.project_id,
@@ -851,7 +819,6 @@ def get_calendar_view(
         )
         bookings_by_date[booking.booking_date].append(booking_detail)
     
-    # Create calendar view objects
     calendar_view = []
     current_date = date_from
     while current_date <= date_to:
@@ -864,8 +831,6 @@ def get_calendar_view(
     
     return calendar_view
 
-# Additional helper functions
-
 def get_asset_availability(
     db: Session,
     asset_id: UUID,
@@ -873,21 +838,17 @@ def get_asset_availability(
     start_time: Optional[time] = None,
     end_time: Optional[time] = None
 ) -> List[Dict[str, Any]]:
-    """Get availability slots for an asset on a specific date"""
-    # Get all bookings for the asset on the given date
     bookings = db.query(SlotBooking).filter(
         SlotBooking.asset_id == asset_id,
         SlotBooking.booking_date == check_date,
         SlotBooking.status.notin_([BookingStatus.CANCELLED])
     ).order_by(SlotBooking.start_time).all()
     
-    # Calculate available time slots
     available_slots = []
-    work_start = start_time or time(8, 0)  # Default work start
-    work_end = end_time or time(18, 0)  # Default work end
+    work_start = start_time or time(8, 0)
+    work_end = end_time or time(18, 0)
     
     if not bookings:
-        # Entire day is available
         available_slots.append({
             'start_time': work_start,
             'end_time': work_end,
@@ -898,9 +859,8 @@ def get_asset_availability(
         
         for booking in bookings:
             if booking.start_time > current_time:
-                # There's a gap before this booking
                 duration = _calculate_minutes_between(current_time, booking.start_time)
-                if duration >= 30:  # Only show slots of 30 minutes or more
+                if duration >= 30:
                     available_slots.append({
                         'start_time': current_time,
                         'end_time': booking.start_time,
@@ -908,7 +868,6 @@ def get_asset_availability(
                     })
             current_time = max(current_time, booking.end_time)
         
-        # Check if there's time after the last booking
         if current_time < work_end:
             duration = _calculate_minutes_between(current_time, work_end)
             if duration >= 30:
@@ -926,7 +885,6 @@ def get_subcontractor_schedule(
     date_from: date,
     date_to: date
 ) -> List[SlotBooking]:
-    """Get all bookings for a subcontractor in a date range"""
     return db.query(SlotBooking).filter(
         SlotBooking.subcontractor_id == subcontractor_id,
         SlotBooking.booking_date >= date_from,
@@ -941,28 +899,22 @@ def get_project_bookings_summary(
     db: Session,
     project_id: UUID
 ) -> Dict[str, Any]:
-    """Get summary of bookings for a project"""
-    # Get all bookings for the project
     bookings = db.query(SlotBooking).filter(
         SlotBooking.project_id == project_id
     ).all()
     
-    # Calculate summary
     total = len(bookings)
     by_status = {}
     by_asset = {}
     by_subcontractor = {}
     
     for booking in bookings:
-        # Count by status
         status_key = booking.status.value if booking.status else 'unknown'
         by_status[status_key] = by_status.get(status_key, 0) + 1
         
-        # Count by asset
         if booking.asset_id:
             by_asset[str(booking.asset_id)] = by_asset.get(str(booking.asset_id), 0) + 1
         
-        # Count by subcontractor
         if booking.subcontractor_id:
             by_subcontractor[str(booking.subcontractor_id)] = by_subcontractor.get(str(booking.subcontractor_id), 0) + 1
     
@@ -977,12 +929,10 @@ def get_project_bookings_summary(
     }
 
 def cancel_expired_bookings(db: Session) -> int:
-    """Cancel pending bookings that have passed their date/time"""
     now = datetime.now()
     today = now.date()
     current_time = now.time()
     
-    # Find expired pending bookings
     expired_bookings = db.query(SlotBooking).filter(
         SlotBooking.status == BookingStatus.PENDING,
         or_(
@@ -1007,7 +957,6 @@ def cancel_expired_bookings(db: Session) -> int:
     return count
 
 def _calculate_minutes_between(start_time: time, end_time: time) -> int:
-    """Calculate minutes between two time objects"""
     start_delta = timedelta(hours=start_time.hour, minutes=start_time.minute)
     end_delta = timedelta(hours=end_time.hour, minutes=end_time.minute)
     return int((end_delta - start_delta).total_seconds() / 60)
