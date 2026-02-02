@@ -19,12 +19,12 @@ class AssetStatus(str, Enum):
     RETIRED = "retired"
 
 class BookingStatus(str, Enum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    DENIED = "denied"
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    DENIED = "DENIED"
 
 class TradeSpecialty(str, Enum):
     ELECTRICIAN = "electrician"
