@@ -712,41 +712,35 @@ def get_current_projects(
 @router.get("/{subcontractor_id}/bookings", response_model=List[dict])
 def get_subcontractor_bookings(
     subcontractor_id: UUID,
-    project_id: Optional[UUID] = Query(None, description="Filter by project"),
-    start_date: Optional[date] = Query(None, description="Filter bookings from this date"),
-    end_date: Optional[date] = Query(None, description="Filter bookings until this date"),
-    status: Optional[str] = Query(None, description="Filter by booking status"),
+    project_id: Optional[UUID] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    status: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
+    # Check if sub exists
     subcontractor = subcontractor_crud.get_subcontractor(db, subcontractor_id)
-    
     if not subcontractor:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subcontractor not found"
-        )
+        raise HTTPException(status_code=404, detail="Subcontractor not found")
+
+    # USE THE CRUD FUNCTION - It filters in SQL
+    result = subcontractor_crud.get_subcontractor_bookings(
+        db,
+        subcontractor_id=subcontractor_id,
+        project_id=project_id,
+        start_date=start_date,
+        end_date=end_date,
+        status=status,
+        skip=skip,
+        limit=limit
+    )
+
+    bookings = result["bookings"]
     
-    bookings = subcontractor.bookings
-    
-    if project_id:
-        bookings = [b for b in bookings if b.project_id == project_id]
-    
-    if start_date:
-        bookings = [b for b in bookings if b.booking_date >= start_date]
-    
-    if end_date:
-        bookings = [b for b in bookings if b.booking_date <= end_date]
-    
-    if status:
-        bookings = [b for b in bookings if b.status == status]
-    
-    bookings.sort(key=lambda x: (x.booking_date, x.start_time), reverse=True)
-    
-    bookings = bookings[skip:skip + limit]
-    
+    # Map to response format
     return [
         {
             "id": b.id,

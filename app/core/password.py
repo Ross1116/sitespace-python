@@ -3,8 +3,10 @@ from passlib.context import CryptContext
 
 # Update the password context to include argon2
 pwd_context = CryptContext(
-    schemes=["argon2", "bcrypt"],
-    deprecated="auto"
+    schemes=["bcrypt", "argon2"], 
+    deprecated="auto",
+    
+    bcrypt__rounds=12
 )
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

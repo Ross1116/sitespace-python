@@ -7,12 +7,12 @@ import enum
 from app.core.database import Base
 
 class BookingStatus(str, enum.Enum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    DENIED = "denied"
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    DENIED = "DENIED"
 
 class SlotBooking(Base):
     __tablename__ = "slot_bookings"
@@ -29,10 +29,11 @@ class SlotBooking(Base):
         SQLEnum(
             BookingStatus,
             name="bookingstatus",
-            values_callable=lambda enum: [e.value for e in enum],
+            native_enum=True,
+            validate_strings=True
         ),
-        default=BookingStatus.PENDING,
         nullable=False,
+        default=BookingStatus.PENDING
     )
     purpose = Column(Text)
     notes = Column(Text)

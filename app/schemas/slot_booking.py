@@ -36,6 +36,13 @@ class BookingCreate(BookingBase):
     asset_id: UUID
     status: Optional[BookingStatus] = None
     
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v):
+        if isinstance(v, str):
+            return v.upper()
+        return v
     
     @field_validator('booking_date')
     def validate_booking_date(cls, v):
@@ -52,6 +59,13 @@ class BookingUpdate(BaseSchema):
     status: Optional[BookingStatus] = None
     purpose: Optional[str] = Field(None, max_length=500)
     notes: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v):
+        if isinstance(v, str):
+            return v.upper()
+        return v
     
     @field_validator('booking_date')
     def validate_booking_date(cls, v):
