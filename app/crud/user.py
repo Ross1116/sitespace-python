@@ -122,7 +122,7 @@ class UserCRUD:
             first_name=user.first_name,
             last_name=user.last_name,
             phone=user.phone,
-            role=UserRole(user.role),
+            role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None,
             is_active=user.is_active,
             created_at=user.created_at,
             updated_at=user.updated_at,
@@ -323,7 +323,7 @@ class UserCRUD:
                 email=user.email,
                 first_name=user.first_name,
                 last_name=user.last_name,
-                role=UserRole(user.role)
+                role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None
             )
             for user in users
         ]
@@ -436,7 +436,7 @@ class UserCRUD:
                 email=user.email,
                 first_name=user.first_name,
                 last_name=user.last_name,
-                role=UserRole(user.role)
+                role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None
             )
             for user in users
         ]

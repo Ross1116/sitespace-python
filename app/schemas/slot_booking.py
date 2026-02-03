@@ -9,7 +9,8 @@ from .user import UserBriefResponse
 from .subcontractor import SubcontractorBriefResponse
 from .asset import AssetBriefResponse
 from .site_project import SiteProjectBriefResponse
-    
+
+
 class TimeSlot(BaseSchema):
     """Time slot validation"""
     start_time: time
@@ -21,12 +22,13 @@ class TimeSlot(BaseSchema):
             raise ValueError('End time must be after start time')
         return self
 
+
 class BookingBase(TimeSlot):
     """Base booking schema - without date validation"""
     booking_date: date
     purpose: Optional[str] = Field(None, max_length=500)
     notes: Optional[str] = None
-    # REMOVED date validation from here since it's inherited by response schemas
+
 
 class BookingCreate(BookingBase):
     """Booking creation schema"""
@@ -35,7 +37,11 @@ class BookingCreate(BookingBase):
     subcontractor_id: Optional[UUID] = None
     asset_id: UUID
     status: Optional[BookingStatus] = None
-    
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Optional comment for audit trail"
+    )
 
     @field_validator("status", mode="before")
     @classmethod
@@ -51,6 +57,7 @@ class BookingCreate(BookingBase):
             raise ValueError('Cannot book for past dates')
         return v
 
+
 class BookingUpdate(BaseSchema):
     """Booking update schema"""
     booking_date: Optional[date] = None
@@ -59,6 +66,11 @@ class BookingUpdate(BaseSchema):
     status: Optional[BookingStatus] = None
     purpose: Optional[str] = Field(None, max_length=500)
     notes: Optional[str] = None
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Optional comment for audit trail"
+    )
 
     @field_validator("status", mode="before")
     @classmethod
@@ -82,6 +94,54 @@ class BookingUpdate(BaseSchema):
                 raise ValueError('End time must be after start time')
         return self
 
+
+class BookingStatusUpdate(BaseSchema):
+    """Status update with optional comment"""
+    status: BookingStatus
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Reason for status change"
+    )
+    
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v):
+        if isinstance(v, str):
+            return v.upper()
+        return v
+
+
+class BookingDeleteRequest(BaseSchema):
+    """Delete request with optional reason"""
+    hard_delete: bool = Field(
+        default=False, 
+        description="Permanently delete instead of soft delete (cancel)"
+    )
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Reason for deletion/cancellation"
+    )
+
+
+class BookingDuplicateRequest(BaseSchema):
+    """Duplicate booking request"""
+    new_date: date = Field(..., description="Date for the duplicated booking")
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Optional comment for audit trail"
+    )
+    
+    @field_validator('new_date')
+    def validate_new_date(cls, v):
+        """Validate that new date is not in the past"""
+        if v < date.today():
+            raise ValueError('Cannot duplicate to a past date')
+        return v
+
+
 class BookingResponse(BookingBase, TimestampSchema):
     """Booking response schema - no validation, just structure"""
     id: UUID
@@ -91,12 +151,14 @@ class BookingResponse(BookingBase, TimestampSchema):
     asset_id: UUID
     status: BookingStatus
 
+
 class BookingDetailResponse(BookingResponse):
     """Detailed booking response"""
     project: SiteProjectBriefResponse
     manager: UserBriefResponse
     subcontractor: Optional[SubcontractorBriefResponse] = None
     asset: AssetBriefResponse
+
 
 class BookingListResponse(BaseSchema):
     """Booking list response"""
@@ -105,6 +167,7 @@ class BookingListResponse(BaseSchema):
     skip: int
     limit: int
     has_more: bool
+
 
 class BookingFilterParams(BaseSchema):
     """Booking filter parameters"""
@@ -123,32 +186,45 @@ class BookingFilterParams(BaseSchema):
                 raise ValueError('date_to must be after date_from')
         return self
 
+
 class BookingCalendarView(BaseSchema):
     """Calendar view of bookings"""
     date: date
     bookings: List[BookingDetailResponse]
+
 
 class BookingStatistics(BaseSchema):
     """Booking statistics"""
     total_bookings: int
     pending_bookings: int
     confirmed_bookings: int
+    in_progress_bookings: int = 0
     completed_bookings: int
     cancelled_bookings: int
+    denied_bookings: int = 0
     utilization_rate: float
-    busiest_day: Optional[date]
-    most_booked_asset: Optional[AssetBriefResponse]
+    busiest_day: Optional[date] = None
+    busiest_day_count: int = 0
+    most_booked_asset: Optional[Any] = None  # Can be dict or AssetBriefResponse
+    period: Optional[dict] = None
+
 
 class BulkBookingCreate(BaseSchema):
     """Create multiple bookings"""
     project_id: UUID
-    manager_id: UUID
+    manager_id: Optional[UUID] = None
     subcontractor_id: Optional[UUID] = None 
     asset_ids: List[UUID]
     booking_dates: List[date]
     start_time: time
     end_time: time
-    purpose: Optional[str] = None
+    purpose: Optional[str] = Field(None, max_length=500)
+    notes: Optional[str] = None
+    comment: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Optional comment for audit trail (applies to all created bookings)"
+    )
     
     @field_validator('asset_ids')
     def validate_assets(cls, v):
@@ -164,7 +240,6 @@ class BulkBookingCreate(BaseSchema):
             raise ValueError('At least one date must be selected')
         if len(v) != len(set(v)):
             raise ValueError('Duplicate dates not allowed')
-        # Validate that dates are not in the past
         today = date.today()
         for booking_date in v:
             if booking_date < today:
@@ -177,6 +252,7 @@ class BulkBookingCreate(BaseSchema):
             raise ValueError('End time must be after start time')
         return self
 
+
 class BookingConflictCheck(BaseSchema):
     """Check for booking conflicts"""
     asset_id: UUID
@@ -184,8 +260,16 @@ class BookingConflictCheck(BaseSchema):
     start_time: time
     end_time: time
     exclude_booking_id: Optional[UUID] = None
+    
+    @model_validator(mode='after')
+    def validate_time_slot(self) -> 'BookingConflictCheck':
+        if self.end_time <= self.start_time:
+            raise ValueError('End time must be after start time')
+        return self
+
 
 class BookingConflictResponse(BaseSchema):
     """Booking conflict response"""
     has_conflict: bool
     conflicting_bookings: List[BookingResponse] = Field(default_factory=list)
+    conflict_count: int = 0

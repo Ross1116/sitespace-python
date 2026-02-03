@@ -7,9 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from collections import defaultdict
 
 from ..models.slot_booking import SlotBooking
-# Ensure we import BookingStatus from enums to be safe, or models if they match.
-# Using schemas.enums is usually safer for "Source of Truth"
-from ..schemas.enums import BookingStatus, UserRole
+from ..schemas.enums import BookingAuditAction, BookingStatus, UserRole
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..models.asset import Asset, AssetStatus
@@ -26,12 +24,15 @@ from ..schemas.slot_booking import (
     BookingDetailResponse,
     BookingResponse
 )
+from app.crud.booking_audit import log_booking_audit, build_changes_dict
+from app.schemas.enums import BookingAuditAction
 
 def create_booking(
     db: Session,
     booking_data: BookingCreate,
     created_by_id: UUID,
-    created_by_role: UserRole
+    created_by_role: UserRole,
+    comment: Optional[str] = None
 ) -> SlotBooking:
     """
     Create a new booking in the database with role-based status.
@@ -109,17 +110,30 @@ def create_booking(
     db_booking = SlotBooking(
         project_id=booking_data.project_id,
         manager_id=manager_id,
-        subcontractor_id=subcontractor_id,  # Can be None for manager bookings
+        subcontractor_id=subcontractor_id,
         asset_id=booking_data.asset_id,
         booking_date=booking_data.booking_date,
         start_time=booking_data.start_time,
         end_time=booking_data.end_time,
         purpose=booking_data.purpose,
         notes=booking_data.notes,
-        status=booking_status  # Role-based status
+        status=booking_status
+    )
+
+    db.add(db_booking)
+    db.flush()  # Flush to get the ID for audit logging
+
+    # Log the booking creation in audit trail
+    log_booking_audit(
+        db,
+        actor_id=created_by_id,
+        actor_role=created_by_role,
+        action=BookingAuditAction.CREATED,
+        booking_id=db_booking.id,
+        to_status=db_booking.status,
+        comment=comment
     )
     
-    db.add(db_booking)
     db.commit()
     db.refresh(db_booking)
     
@@ -129,7 +143,8 @@ def create_bulk_bookings(
     db: Session,
     bulk_data: BulkBookingCreate,
     created_by_id: UUID,
-    created_by_role: UserRole
+    created_by_role: UserRole,
+    comment: Optional[str] = None
 ) -> List[SlotBooking]:
     """
     Create multiple bookings at once with role-based status.
@@ -225,6 +240,19 @@ def create_bulk_bookings(
             )
             
             db.add(db_booking)
+            db.flush()
+
+            # Log each booking creation
+            log_booking_audit(
+                db,
+                actor_id=created_by_id,
+                actor_role=created_by_role,
+                action=BookingAuditAction.CREATED,
+                booking_id=db_booking.id,
+                to_status=db_booking.status,
+                comment=comment
+            )
+
             bookings.append(db_booking)
     
     if bookings:
@@ -407,11 +435,26 @@ def get_bookings(
 def update_booking(
     db: Session,
     booking_id: UUID,
-    booking_update: BookingUpdate
+    booking_update: BookingUpdate,
+    updated_by_id: UUID,
+    updated_by_role: UserRole,
+    comment: Optional[str] = None
 ) -> Optional[SlotBooking]:
     booking = get_booking(db, booking_id)
     if not booking:
         return None
+    
+    # Capture old values for audit
+    old_values = {
+        'booking_date': booking.booking_date,
+        'start_time': booking.start_time,
+        'end_time': booking.end_time,
+        'purpose': booking.purpose,
+        'notes': booking.notes,
+        'asset_id': booking.asset_id,
+        'subcontractor_id': booking.subcontractor_id,
+        'status': booking.status
+    }
     
     update_data = booking_update.dict(exclude_unset=True)
     
@@ -435,7 +478,6 @@ def update_booking(
         if not asset:
             raise ValueError(f"Asset with id {update_data['asset_id']} not found")
             
-    # FIX: Handle status update case sensitivity
     if 'status' in update_data and isinstance(update_data['status'], str):
         try:
             update_data['status'] = BookingStatus(update_data['status'].upper())
@@ -447,6 +489,38 @@ def update_booking(
     
     booking.updated_at = datetime.utcnow()
     
+    # Build changes dict for audit
+    new_values = {
+        'booking_date': booking.booking_date,
+        'start_time': booking.start_time,
+        'end_time': booking.end_time,
+        'purpose': booking.purpose,
+        'notes': booking.notes,
+        'asset_id': booking.asset_id,
+        'subcontractor_id': booking.subcontractor_id,
+        'status': booking.status
+    }
+    
+    changes = build_changes_dict(old_values, new_values)
+    
+    # Determine action type
+    action = BookingAuditAction.UPDATED
+    if any(key in update_data for key in ['booking_date', 'start_time', 'end_time']):
+        action = BookingAuditAction.RESCHEDULED
+    
+    # Log the update
+    log_booking_audit(
+        db,
+        actor_id=updated_by_id,
+        actor_role=updated_by_role,
+        action=action,
+        booking_id=booking_id,
+        from_status=old_values['status'] if 'status' in update_data else None,
+        to_status=booking.status if 'status' in update_data else None,
+        changes=changes,
+        comment=comment
+    )
+    
     db.commit()
     db.refresh(booking)
     
@@ -455,30 +529,87 @@ def update_booking(
 def update_booking_status(
     db: Session,
     booking_id: UUID,
-    status: BookingStatus
+    new_status: BookingStatus,
+    updated_by_id: UUID,
+    updated_by_role: UserRole,
+    comment: Optional[str] = None
 ) -> Optional[SlotBooking]:
     booking = get_booking(db, booking_id)
     if not booking:
         return None
     
-    booking.status = status
+    old_status = booking.status
+    booking.status = new_status
     booking.updated_at = datetime.utcnow()
+
+    # Determine action based on status transition
+    action = BookingAuditAction.UPDATED
+    if new_status == BookingStatus.CONFIRMED and old_status == BookingStatus.PENDING:
+        action = BookingAuditAction.APPROVED
+    elif new_status == BookingStatus.DENIED:
+        action = BookingAuditAction.DENIED
+    elif new_status == BookingStatus.CANCELLED:
+        action = BookingAuditAction.CANCELLED
+    
+    # Log the status change
+    log_booking_audit(
+        db,
+        actor_id=updated_by_id,
+        actor_role=updated_by_role,
+        action=action,
+        booking_id=booking_id,
+        from_status=old_status,
+        to_status=new_status,
+        comment=comment
+    )
     
     db.commit()
     db.refresh(booking)
     
     return booking
 
-def delete_booking(db: Session, booking_id: UUID, soft_delete: bool = True) -> bool:
+def delete_booking( 
+    db: Session,
+    booking_id: UUID,
+    deleted_by_id: UUID,
+    deleted_by_role: UserRole,
+    hard_delete: bool = False,
+    comment: Optional[str] = None
+    ) -> bool:
+
     booking = get_booking(db, booking_id)
     if not booking:
         return False
     
-    if soft_delete:
+    old_status = booking.status
+    
+    if hard_delete:
+        # Log before hard delete
+        log_booking_audit(
+            db,
+            actor_id=deleted_by_id,
+            actor_role=deleted_by_role,
+            action=BookingAuditAction.DELETED,
+            booking_id=booking_id,
+            from_status=old_status,
+            comment=comment
+        )
+        db.delete(booking)
+    else:
+        # Soft delete (cancel)
         booking.status = BookingStatus.CANCELLED
         booking.updated_at = datetime.utcnow()
-    else:
-        db.delete(booking)
+        
+        log_booking_audit(
+            db,
+            actor_id=deleted_by_id,
+            actor_role=deleted_by_role,
+            action=BookingAuditAction.CANCELLED,
+            booking_id=booking_id,
+            from_status=old_status,
+            to_status=BookingStatus.CANCELLED,
+            comment=comment
+        )
     
     db.commit()
     return True

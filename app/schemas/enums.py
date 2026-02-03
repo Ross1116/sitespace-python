@@ -37,3 +37,12 @@ class TradeSpecialty(str, Enum):
     LANDSCAPER = "landscaper"
     GENERAL = "general"
     OTHER = "other"
+
+class BookingAuditAction(str, Enum):
+    CREATED = "created"
+    APPROVED = "approved"
+    DENIED = "denied"
+    UPDATED = "updated"
+    RESCHEDULED = "rescheduled"
+    CANCELLED = "cancelled"
+    DELETED = "deleted"
