@@ -9,13 +9,13 @@ from ...core.database import get_db
 from ...core.security import get_current_active_user, get_user_role, get_entity_id
 from ...crud import asset as asset_crud
 from ...crud import site_project as project_crud 
-from ...models.user import User, UserRole
+from ...models.user import User
 from ...schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetResponse, AssetDetailResponse, AssetBriefResponse, AssetListResponse,
     AssetAvailabilityCheck, AssetAvailabilityResponse
 )
-from ...schemas.enums import AssetStatus
+from ...schemas.enums import AssetStatus, UserRole
 
 router = APIRouter(prefix="/assets", tags=["Asset Management"])
 
