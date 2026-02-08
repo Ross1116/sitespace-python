@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
     
     # JWT
-    jwt_secret: str = os.getenv("JWT_SECRET", "Paragon$123")
+    jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS512")
     jwt_expiration_ms: int = int(os.getenv("JWT_EXPIRATION_MS", "86400000"))
     
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     PASSWORD_RESET_EXPIRE_HOURS: int = 1
     
     # App
-    secret_key: str = os.getenv("SECRET_KEY", "PARAGON$87654321")
+    secret_key: str = os.getenv("SECRET_KEY", "")
     export_files_absolute_path: str = os.getenv("EXPORT_FILES_ABSOLUTE_PATH", "/app/uploads/")
     export_files_server_path: str = os.getenv("EXPORT_FILES_SERVER_PATH", "getFile")
     

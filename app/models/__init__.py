@@ -4,6 +4,7 @@ from .slot_booking import SlotBooking
 from .site_project import SiteProject
 from .subcontractor import Subcontractor
 from .file_upload import FileUpload
+from .booking_audit import BookingAuditLog, BookingAuditAction
 
 __all__ = [
     "User",
@@ -12,4 +13,6 @@ __all__ = [
     "SiteProject",
     "Subcontractor",
     "FileUpload",
+    "BookingAuditLog",
+    "BookingAuditAction",
 ]

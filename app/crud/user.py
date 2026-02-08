@@ -4,7 +4,8 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 
-from ..models.user import User, UserRole
+from ..models.user import User
+from ..schemas.enums import UserRole
 from ..schemas.user import (
     UserCreate, 
     UserUpdate,
@@ -122,7 +123,7 @@ class UserCRUD:
             first_name=user.first_name,
             last_name=user.last_name,
             phone=user.phone,
-            role=UserRole(user.role),
+            role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None,
             is_active=user.is_active,
             created_at=user.created_at,
             updated_at=user.updated_at,
@@ -244,10 +245,9 @@ class UserCRUD:
     @staticmethod
     def get_user_projects(db: Session, user: User) -> List:
         """Get all projects associated with a user"""
-        if user.role == UserRole.MANAGER.value:
+        if user.role == UserRole.MANAGER.value or user.role == UserRole.ADMIN.value:
             return user.managed_projects
-        else:
-            return user.assigned_projects
+        return []
     
     @staticmethod
     def get_user_bookings(db: Session, user: User) -> List:
@@ -323,7 +323,7 @@ class UserCRUD:
                 email=user.email,
                 first_name=user.first_name,
                 last_name=user.last_name,
-                role=UserRole(user.role)
+                role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None
             )
             for user in users
         ]
@@ -436,7 +436,7 @@ class UserCRUD:
                 email=user.email,
                 first_name=user.first_name,
                 last_name=user.last_name,
-                role=UserRole(user.role)
+                role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None
             )
             for user in users
         ]

@@ -64,6 +64,13 @@ from .enums import (
     BookingStatus, TradeSpecialty
 )
 
+# Booking Audit
+from .booking_audit import (
+    BookingAuditAction, BookingAuditBase,
+    BookingAuditCreate, BookingAuditResponse,
+    BookingAuditTrailResponse
+)
+
 __all__ = [
     # User
     "UserBase", "UserCreate", "UserUpdate", "UserResponse",
@@ -105,4 +112,9 @@ __all__ = [
     # Enums
     "UserRole", "ProjectStatus", "AssetStatus",
     "BookingStatus", "TradeSpecialty"
+
+    #Booking Audit
+    "BookingAuditAction", "BookingAuditBase",
+    "BookingAuditCreate", "BookingAuditResponse",
+    "BookingAuditTrailResponse"
 ]
