@@ -1,5 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, status, BackgroundTasks
 from fastapi.security import HTTPBearer
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
@@ -141,8 +145,10 @@ def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
 # ==================== API Endpoints ====================
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def login(
     request: LoginRequest,
+    http_request: Request,
     db: Session = Depends(get_db)
 ) -> TokenResponse:
     """Authenticate user or subcontractor with email and password"""
@@ -174,7 +180,9 @@ def login(
 
 
 @router.post("/register", response_model=UserResponse)
+@limiter.limit("5/minute")
 async def register(
+    http_request: Request,
     user_data: UserCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -250,7 +258,9 @@ def refresh_token(
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
+@limiter.limit("3/minute")
 async def forgot_password(
+    http_request: Request,
     request: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)

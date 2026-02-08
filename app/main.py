@@ -4,10 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import uvicorn
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .core.config import settings
 from .core.database import engine, Base
-from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, forgot_password, users, booking_audit
+from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit
 
 # Import all models so SQLAlchemy knows about them
 from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model
@@ -44,6 +47,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add CORS middleware
 app.add_middleware(
@@ -91,7 +99,6 @@ app.include_router(slot_booking.router, prefix="/api")
 app.include_router(site_project.router, prefix="/api")
 app.include_router(subcontractor.router, prefix="/api")
 app.include_router(users.router, prefix="/api") 
-app.include_router(forgot_password.router, prefix="/api")
 app.include_router(booking_audit.router, prefix="/api")
 
 # Root endpoint

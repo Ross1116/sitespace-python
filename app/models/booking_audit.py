@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum as SQLEnum, ForeignKey, Text, JSON
+from sqlalchemy import Column, Index, DateTime, Enum as SQLEnum, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -37,5 +37,9 @@ class BookingAuditLog(Base):
 
     # Immutable timestamp
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_audit_actor_created", "actor_id", "created_at"),
+    )
 
     booking = relationship("SlotBooking", backref="audit_logs")

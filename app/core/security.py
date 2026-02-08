@@ -236,25 +236,37 @@ def require_role(allowed_roles: list):
         return current_entity
     return role_checker
 
-# Optional: Token blacklist functionality
+# Token blacklist with expiry cleanup (swap to Redis for multi-instance deployments)
 class TokenBlacklist:
-    """Simple in-memory token blacklist (use Redis in production)"""
     def __init__(self):
-        self._blacklist = set()
-    
+        self._blacklist: dict[str, datetime] = {}  # jti -> expires_at
+
     def add(self, jti: str, expires_at: datetime):
-        """Add token to blacklist"""
-        self._blacklist.add(jti)
-        # In production, use Redis with expiration
-    
+        """Add token to blacklist with its expiry time"""
+        self._blacklist[jti] = expires_at
+        self._cleanup_if_needed()
+
     def is_blacklisted(self, jti: str) -> bool:
-        """Check if token is blacklisted"""
-        return jti in self._blacklist
-    
+        """Check if token is blacklisted (ignores expired entries)"""
+        expires_at = self._blacklist.get(jti)
+        if expires_at is None:
+            return False
+        if datetime.utcnow() > expires_at:
+            del self._blacklist[jti]
+            return False
+        return True
+
     def clear_expired(self):
-        """Clear expired tokens from blacklist"""
-        # In production, Redis handles this automatically
-        pass
+        """Remove all expired tokens from blacklist"""
+        now = datetime.utcnow()
+        self._blacklist = {
+            jti: exp for jti, exp in self._blacklist.items() if exp > now
+        }
+
+    def _cleanup_if_needed(self):
+        """Auto-cleanup when blacklist grows large"""
+        if len(self._blacklist) > 1000:
+            self.clear_expired()
 
 # Initialize token blacklist
 token_blacklist = TokenBlacklist()

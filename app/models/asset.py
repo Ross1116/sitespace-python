@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
+from sqlalchemy import Column, Index, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -27,6 +27,10 @@ class Asset(Base):
     status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_assets_project_status", "project_id", "status"),
+    )
 
     # Relationships
     project = relationship("SiteProject", back_populates="assets")

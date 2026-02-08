@@ -582,24 +582,23 @@ def get_assets_requiring_maintenance(
     if project_id:
         query = query.filter(Asset.project_id == project_id)
     
-    assets = query.all()
-    
-    # Filter assets based on maintenance criteria
-    maintenance_needed = []
     threshold_date = date.today() - timedelta(days=days_threshold)
-    
-    for asset in assets:
-        # Check if asset has been heavily used recently
-        recent_bookings = db.query(func.count(SlotBooking.id)).filter(
-            and_(
-                SlotBooking.asset_id == asset.id,
-                SlotBooking.booking_date >= threshold_date,
-                SlotBooking.status == 'completed'
-            )
-        ).scalar()
-        
-        # You can adjust this threshold based on asset type
-        if recent_bookings > 20:  # More than 20 bookings in the period
-            maintenance_needed.append(asset)
-    
-    return maintenance_needed
+
+    # Single query with subquery instead of N+1 loop
+    from ..schemas.enums import BookingStatus
+    booking_count_subq = db.query(
+        SlotBooking.asset_id,
+        func.count(SlotBooking.id).label("booking_count")
+    ).filter(
+        SlotBooking.booking_date >= threshold_date,
+        SlotBooking.status == BookingStatus.COMPLETED
+    ).group_by(SlotBooking.asset_id).subquery()
+
+    results = query.join(
+        booking_count_subq,
+        Asset.id == booking_count_subq.c.asset_id
+    ).filter(
+        booking_count_subq.c.booking_count > 20
+    ).all()
+
+    return results

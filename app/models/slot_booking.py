@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Text, Date, Time, DateTime, Enum as SQLEnum, ForeignKey
+from sqlalchemy import Column, Index, Text, Date, Time, DateTime, Enum as SQLEnum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -39,6 +39,13 @@ class SlotBooking(Base):
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Composite indexes for common query patterns
+    __table_args__ = (
+        Index("ix_slot_bookings_asset_date_status", "asset_id", "booking_date", "status"),
+        Index("ix_slot_bookings_sub_date", "subcontractor_id", "booking_date"),
+        Index("ix_slot_bookings_manager_date", "manager_id", "booking_date"),
+    )
 
     # Relationships
     project = relationship("SiteProject", back_populates="slot_bookings")
