@@ -787,21 +787,26 @@ def get_booking_statistics(
 def get_user_upcoming_bookings(
     db: Session,
     user_id: UUID,
+    user_role: UserRole = None,
     limit: int = 10
 ) -> List[BookingDetailResponse]:
-    """Get upcoming bookings for a specific user (as manager)"""
+    """Get upcoming bookings for a specific user (manager or subcontractor)"""
     today = date.today()
     current_time = datetime.now().time()
-    
-    # FIX: Ensure we use Enum types for filtering
-    # This prevents the "invalid input value for enum... 'cancelled'" error
+
+    # Determine filter based on user role
+    if user_role == UserRole.SUBCONTRACTOR:
+        user_filter = SlotBooking.subcontractor_id == user_id
+    else:
+        user_filter = SlotBooking.manager_id == user_id
+
     bookings = db.query(SlotBooking).options(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
         joinedload(SlotBooking.subcontractor),
         joinedload(SlotBooking.asset)
     ).filter(
-        SlotBooking.manager_id == user_id,
+        user_filter,
         SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.COMPLETED]),
         or_(
             SlotBooking.booking_date > today,
