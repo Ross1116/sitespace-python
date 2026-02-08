@@ -79,7 +79,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "success": False,
             "message": "Internal server error",
-            "detail": str(exc)
+            "detail": str(exc) if settings.debug else "An unexpected error occurred"
         }
     )
 

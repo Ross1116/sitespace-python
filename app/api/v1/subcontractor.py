@@ -20,6 +20,7 @@ from ...schemas.subcontractor import (
     ProjectAssignmentResponse
 )
 from ...schemas.base import MessageResponse
+from ...schemas.enums import BookingStatus
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
@@ -427,8 +428,8 @@ def get_subcontractor(
         active_projects=sum(1 for p in subcontractor.assigned_projects 
                           if p.status == "active" or p.status is None),
         total_bookings=len(subcontractor.bookings),
-        upcoming_bookings=sum(1 for b in subcontractor.bookings 
-                             if b.status == "confirmed" and b.booking_date >= date.today())
+        upcoming_bookings=sum(1 for b in subcontractor.bookings
+                             if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today())
     )
 
 @router.put("/{subcontractor_id}", response_model=SubcontractorResponse)
@@ -621,9 +622,9 @@ def permanently_delete_subcontractor(
         )
     
     active_bookings = subcontractor_crud.count_subcontractor_bookings_by_status(
-        db, 
-        subcontractor_id, 
-        "confirmed"
+        db,
+        subcontractor_id,
+        BookingStatus.CONFIRMED
     )
     
     if active_bookings > 0:
@@ -778,7 +779,7 @@ def get_upcoming_bookings(
     
     upcoming_bookings = []
     for booking in subcontractor.bookings:
-        if today <= booking.booking_date <= end_date and booking.status != "cancelled":
+        if today <= booking.booking_date <= end_date and booking.status != BookingStatus.CANCELLED:
             upcoming_bookings.append({
                 "id": booking.id,
                 "project_id": booking.project_id,
@@ -810,7 +811,7 @@ def get_booking_counts(
             detail="Subcontractor not found"
         )
     
-    statuses = ["pending", "confirmed", "completed", "cancelled"]
+    statuses = [BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.COMPLETED, BookingStatus.CANCELLED]
     counts = {}
     
     for status_name in statuses:
@@ -845,7 +846,7 @@ def check_subcontractor_availability_detail(
     
     existing_bookings = []
     for booking in subcontractor.bookings:
-        if booking.booking_date == check_date and booking.status != "cancelled":
+        if booking.booking_date == check_date and booking.status != BookingStatus.CANCELLED:
             existing_bookings.append({
                 "booking_id": booking.id,
                 "project_name": booking.project.name if booking.project else None,

@@ -12,6 +12,7 @@ from ..models.user import User
 from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
 
 from ..core.security import get_password_hash, verify_password
+from ..schemas.enums import BookingStatus
 
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
     """Create a new subcontractor"""
@@ -309,7 +310,7 @@ def get_upcoming_bookings(
                 SlotBooking.subcontractor_id == subcontractor_id,
                 SlotBooking.booking_date >= today,
                 SlotBooking.booking_date <= end_date,
-                SlotBooking.status != "cancelled"
+                SlotBooking.status != BookingStatus.CANCELLED
             )
         )\
         .options(
@@ -318,7 +319,7 @@ def get_upcoming_bookings(
         )\
         .order_by(SlotBooking.booking_date.asc(), SlotBooking.start_time.asc())\
         .all()
-    
+
     return bookings
 
 def check_subcontractor_availability(
@@ -329,14 +330,14 @@ def check_subcontractor_availability(
     end_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """Check if a subcontractor is available on a specific date/time"""
-    
+
     # Get existing bookings on that date
     existing_bookings_query = db.query(SlotBooking)\
         .filter(
             and_(
                 SlotBooking.subcontractor_id == subcontractor_id,
                 SlotBooking.booking_date == check_date,
-                SlotBooking.status != "cancelled"
+                SlotBooking.status != BookingStatus.CANCELLED
             )
         )\
         .options(joinedload(SlotBooking.project))
@@ -417,18 +418,18 @@ def get_subcontractor_statistics(
     bookings = bookings_query.all()
     
     total_bookings = len(bookings)
-    completed_bookings = sum(1 for b in bookings if b.status == "completed")
-    cancelled_bookings = sum(1 for b in bookings if b.status == "cancelled")
-    confirmed_bookings = sum(1 for b in bookings if b.status == "confirmed")
+    completed_bookings = sum(1 for b in bookings if b.status == BookingStatus.COMPLETED)
+    cancelled_bookings = sum(1 for b in bookings if b.status == BookingStatus.CANCELLED)
+    confirmed_bookings = sum(1 for b in bookings if b.status == BookingStatus.CONFIRMED)
     upcoming_bookings = sum(
-        1 for b in bookings 
-        if b.status == "confirmed" and b.booking_date >= date.today()
+        1 for b in bookings
+        if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today()
     )
-    
+
     # Calculate total hours if start_time and end_time are stored properly
     total_hours = 0
     for booking in bookings:
-        if booking.start_time and booking.end_time and booking.status != "cancelled":
+        if booking.start_time and booking.end_time and booking.status != BookingStatus.CANCELLED:
             # Assuming times are stored as strings or time objects
             try:
                 start = datetime.strptime(str(booking.start_time), "%H:%M")
@@ -535,7 +536,7 @@ def get_subcontractor_current_projects(
 def count_subcontractor_bookings_by_status(
     db: Session,
     subcontractor_id: UUID,
-    status: str
+    status: BookingStatus
 ) -> int:
     """Count bookings for a subcontractor by status"""
     return db.query(SlotBooking).filter(

@@ -245,10 +245,9 @@ class UserCRUD:
     @staticmethod
     def get_user_projects(db: Session, user: User) -> List:
         """Get all projects associated with a user"""
-        if user.role == UserRole.MANAGER.value:
+        if user.role == UserRole.MANAGER.value or user.role == UserRole.ADMIN.value:
             return user.managed_projects
-        else:
-            return user.assigned_projects
+        return []
     
     @staticmethod
     def get_user_bookings(db: Session, user: User) -> List:
