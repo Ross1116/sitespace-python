@@ -4,7 +4,8 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 
-from ..models.user import User, UserRole
+from ..models.user import User
+from ..schemas.enums import UserRole
 from ..schemas.user import (
     UserCreate, 
     UserUpdate,
