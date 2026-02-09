@@ -9,6 +9,9 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
+import logging
+
+logger = logging.getLogger(__name__)
 
 from ...core.database import get_db
 from ...core.security import (
@@ -256,43 +259,53 @@ def refresh_token(
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("3/minute")
-async def forgot_password(
+def forgot_password(
     request: Request,
     forgot_data: ForgotPasswordRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> ForgotPasswordResponse:
     """Request password reset email for user or subcontractor"""
-    
+
+    logger.info(f"Password reset requested for email: {forgot_data.email}")
+
     # Get entity but don't reveal if it exists
     entity = get_entity_by_email(db, forgot_data.email)
-    
-    # Always return success for security (don't reveal if email exists)
-    response = ForgotPasswordResponse(
-        message="If the email exists, password reset instructions have been sent",
-        email=forgot_data.email,
-        success=True,
-        reset_token_sent=bool(entity),
-        expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
-    )
-    
+
     if entity:
+        logger.info(f"Entity found for password reset: {entity.email} (type: {'subcontractor' if isinstance(entity, Subcontractor) else 'user'})")
+
         reset_token = create_password_reset_token(entity.email)
-        
+
         # Determine name for email
         if isinstance(entity, Subcontractor) and entity.company_name:
             name = entity.company_name
         else:
             name = f"{entity.first_name} {entity.last_name}"
-        
-        background_tasks.add_task(
-            send_password_reset_email,
-            entity.email,
-            name,
-            reset_token
-        )
-    
-    return response
+
+        # Send email directly (not as background task) so errors are caught
+        try:
+            email_sent = send_password_reset_email(
+                entity.email,
+                name,
+                reset_token
+            )
+            if email_sent:
+                logger.info(f"Password reset email sent successfully to {entity.email}")
+            else:
+                logger.error(f"Failed to send password reset email to {entity.email}")
+        except Exception as e:
+            logger.error(f"Exception sending password reset email to {entity.email}: {str(e)}")
+    else:
+        logger.warning(f"No entity found for password reset email: {forgot_data.email}")
+
+    # Always return success for security (don't reveal if email exists)
+    return ForgotPasswordResponse(
+        message="If the email exists, password reset instructions have been sent",
+        email=forgot_data.email,
+        success=True,
+        reset_token_sent=True,
+        expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
+    )
 
 
 @router.post("/reset-password", response_model=ResetPasswordResponse)
