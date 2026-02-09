@@ -52,11 +52,6 @@ TEST_MODULES = {
         "module": "tests.test_file_upload",
         "function": "run_file_upload_tests",
         "description": "File upload functionality"
-    },
-    "forgot_password": {
-        "module": "tests.test_forgot_password", 
-        "function": "run_forgot_password_tests",
-        "description": "Password reset functionality"
     }
 }
 

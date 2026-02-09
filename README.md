@@ -1,352 +1,361 @@
-# 🚀 Sitespace FastAPI - Complete Spring Boot to FastAPI Conversion
+# Sitespace API
 
-A complete conversion of a Spring Boot construction site management application to FastAPI with modern Python features.
+Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, and subcontractor management.
 
-## ✨ **Complete Conversion Achieved!**
+## Quick Start
 
-### **✅ All Original Spring Boot Features Converted:**
+### Prerequisites
 
-1. **🔐 Authentication System**
-   - JWT token-based authentication
-   - User registration and login
-   - Password hashing with bcrypt
-   - Forgot password functionality
+- Python 3.11+
+- PostgreSQL 15+
 
-2. **🏗️ Asset Management**
-   - CRUD operations for construction assets
-   - Asset tracking and status management
-   - Project-based asset organization
+### Setup
 
-3. **📅 Slot Booking System**
-   - Resource booking and scheduling
-   - Asset allocation for time slots
-   - Booking status management
-
-4. **🏢 Site Project Management**
-   - Contractor project tracking
-   - Project assignment and management
-   - Contractor information management
-
-5. **👷 Subcontractor Management**
-   - Subcontractor registration and management
-   - Trade-specific contractor tracking
-   - Project assignment to subcontractors
-
-6. **📁 File Upload System**
-   - Secure file upload functionality
-   - File storage and retrieval
-   - Async file handling
-
-7. **🔑 Forgot Password**
-   - Password reset via email
-   - Token-based reset verification
-   - Secure password update
-
----
-
-## **🛠️ Technology Stack**
-
-### **Backend Framework**
-- **FastAPI** - Modern, fast web framework for building APIs
-- **SQLAlchemy** - SQL toolkit and ORM
-- **Pydantic** - Data validation using Python type annotations
-
-### **Database**
-- **PostgreSQL** - Primary database
-- **Alembic** - Database migrations (ready for setup)
-
-### **Authentication & Security**
-- **JWT** - JSON Web Tokens for authentication
-- **Bcrypt** - Password hashing
-- **PyCryptodome** - Encryption/decryption utilities
-
-### **File Handling**
-- **Aiofiles** - Async file operations
-- **Python-multipart** - File upload handling
-
-### **Development & Deployment**
-- **Uvicorn** - ASGI server
-- **Docker** - Containerization
-- **Docker Compose** - Multi-service orchestration
-
----
-
-## **📁 Project Structure**
-
-```
-sitespace-fastapi/
-├── app/
-│   ├── api/v1/
-│   │   ├── auth.py              # Authentication endpoints
-│   │   ├── assets.py            # Asset management
-│   │   ├── slot_booking.py      # Slot booking system
-│   │   ├── site_project.py      # Site project management
-│   │   ├── subcontractor.py     # Subcontractor management
-│   │   ├── file_upload.py       # File upload handling
-│   │   └── forgot_password.py   # Password reset
-│   ├── core/
-│   │   ├── config.py            # Application settings
-│   │   ├── database.py          # Database configuration
-│   │   └── security.py          # Security utilities
-│   ├── crud/
-│   │   ├── user.py              # User CRUD operations
-│   │   ├── asset.py             # Asset CRUD operations
-│   │   ├── slot_booking.py      # Slot booking CRUD
-│   │   ├── site_project.py      # Site project CRUD
-│   │   └── subcontractor.py     # Subcontractor CRUD
-│   ├── models/
-│   │   ├── user.py              # User database model
-│   │   ├── asset.py             # Asset database model
-│   │   ├── slot_booking.py      # Slot booking model
-│   │   ├── site_project.py      # Site project model
-│   │   ├── subcontractor.py     # Subcontractor model
-│   │   └── file_upload.py       # File upload model
-│   ├── schemas/
-│   │   ├── base.py              # Base response schemas
-│   │   ├── user.py              # User data schemas
-│   │   ├── asset.py             # Asset data schemas
-│   │   ├── slot_booking.py      # Slot booking schemas
-│   │   ├── site_project.py      # Site project schemas
-│   │   ├── subcontractor.py     # Subcontractor schemas
-│   │   └── forgot_password.py   # Password reset schemas
-│   └── utils/
-│       ├── password.py          # Password utilities
-│       └── file_upload.py       # File upload utilities
-├── requirements.txt              # Python dependencies
-├── run.py                       # Application entry point
-├── Dockerfile                   # Docker configuration
-├── docker-compose.yml           # Docker Compose setup
-├── test_app.py                  # Basic test script
-├── test_complete_app.py         # Comprehensive test script
-└── README.md                    # This file
-```
-
----
-
-## **🚀 Quick Start**
-
-### **1. Clone and Setup**
 ```bash
-cd sitespace-fastapi
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### **2. Environment Configuration**
-```bash
-# Copy environment template
+# Configure environment
 cp env.example .env
+# Edit .env with your database URL and secrets
 
-# Edit .env with your database credentials
-# DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-```
+# Run database migrations
+alembic upgrade head
 
-### **3. Run the Application**
-```bash
-# Development mode
-python run.py
-
-# Or with uvicorn directly
+# Start the server
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-### **4. Access the API**
-- **API Documentation**: http://localhost:8080/docs
-- **ReDoc Documentation**: http://localhost:8080/redoc
-- **Health Check**: http://localhost:8080/health
+### Docker
 
----
-
-## **🧪 Testing**
-
-### **Basic Tests**
 ```bash
-python test_app.py
-```
-
-### **Complete Tests**
-```bash
-python test_complete_app.py
-```
-
-### **Manual Testing**
-```bash
-# Test health endpoint
-curl http://localhost:8080/health
-
-# Test authentication
-curl -X POST "http://localhost:8080/api/auth/signup" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"testuser","email":"test@example.com","password":"testpass123"}'
-```
-
----
-
-## **📚 API Endpoints**
-
-### **Authentication**
-- `POST /api/auth/signup` - User registration
-- `POST /api/auth/signin` - User login
-- `GET /api/auth/me` - Get current user info
-- `POST /api/auth/signout` - User logout
-
-### **Asset Management**
-- `POST /api/Asset/saveAsset` - Create asset
-- `GET /api/Asset/getAssetList` - List assets
-- `PUT /api/Asset/updateAsset/{id}` - Update asset
-- `DELETE /api/Asset/deleteAsset/{id}` - Delete asset
-
-### **Slot Booking**
-- `POST /api/SlotBooking/saveSlotBooking` - Create booking
-- `GET /api/SlotBooking/getSlotBookingList` - List bookings
-- `PUT /api/SlotBooking/updateSlotBooking/{id}` - Update booking
-- `DELETE /api/SlotBooking/deleteSlotBooking/{id}` - Delete booking
-
-### **Site Projects**
-- `POST /api/SiteProject/saveSiteProject` - Create project
-- `GET /api/SiteProject/getSiteProjectList` - List projects
-- `PUT /api/SiteProject/updateSiteProject/{id}` - Update project
-- `DELETE /api/SiteProject/deleteSiteProject/{id}` - Delete project
-
-### **Subcontractors**
-- `POST /api/Subcontractor/saveSubcontractor` - Create subcontractor
-- `GET /api/Subcontractor/getSubcontractorList` - List subcontractors
-- `PUT /api/Subcontractor/updateSubcontractor/{id}` - Update subcontractor
-- `DELETE /api/Subcontractor/deleteSubcontractor/{id}` - Delete subcontractor
-
-### **File Upload**
-- `POST /api/uploadfile` - Upload files
-
-### **Password Reset**
-- `POST /api/forgot-password/request-reset` - Request password reset
-- `POST /api/forgot-password/reset-password` - Reset password with token
-
----
-
-## **🔧 Key Features**
-
-### **✅ Complete Feature Parity**
-- All original Spring Boot functionality converted
-- Database operations with PostgreSQL
-- JWT authentication system
-- File upload capabilities
-- Password reset functionality
-
-### **🚀 Performance Benefits**
-- **Async/Await Support** - Non-blocking I/O operations
-- **Automatic API Documentation** - OpenAPI/Swagger integration
-- **Type Safety** - Full validation with Pydantic
-- **Modern Python** - Latest features and best practices
-
-### **🛡️ Security Features**
-- JWT token-based authentication
-- Password hashing with bcrypt
-- Protected endpoints requiring authentication
-- Input validation and sanitization
-
-### **📊 Database Features**
-- SQLAlchemy ORM for database operations
-- Automatic table creation
-- PostgreSQL with array support
-- Transaction management
-
----
-
-## **🐳 Docker Deployment**
-
-### **Build and Run**
-```bash
-# Build the image
-docker build -t sitespace-fastapi .
-
-# Run with Docker Compose
 docker-compose up -d
 ```
 
-### **Docker Compose Services**
-- **FastAPI Application** - Port 8080
-- **PostgreSQL Database** - Port 5432
+This starts the FastAPI app on port `8080` and PostgreSQL on port `5432`. The startup script (`start.sh`) waits for the database, runs migrations, then launches Uvicorn.
+
+### API Docs
+
+- Swagger UI: http://localhost:8080/docs
+- ReDoc: http://localhost:8080/redoc
+- Health check: http://localhost:8080/health
 
 ---
 
-## **🔍 Migration Comparison**
+## Project Structure
 
-| Feature | Spring Boot | FastAPI | Status |
-|---------|-------------|---------|---------|
-| Authentication | Spring Security | JWT + FastAPI | ✅ Complete |
-| Database | Spring Data JPA | SQLAlchemy | ✅ Complete |
-| API Documentation | Swagger | OpenAPI/Swagger | ✅ Complete |
-| File Upload | MultipartFile | UploadFile | ✅ Complete |
-| Validation | Bean Validation | Pydantic | ✅ Complete |
-| Configuration | application.properties | Pydantic Settings | ✅ Complete |
-| Password Hashing | BCrypt | BCrypt | ✅ Complete |
-| Encryption | Custom AES | PyCryptodome | ✅ Complete |
-
----
-
-## **🎯 Benefits Achieved**
-
-### **Development Benefits**
-- **Faster Development** - Automatic API documentation
-- **Better IDE Support** - Type hints and validation
-- **Modern Python** - Latest language features
-- **Async Support** - Better performance
-
-### **Operational Benefits**
-- **Automatic Documentation** - Self-documenting APIs
-- **Type Safety** - Runtime validation
-- **Better Testing** - Built-in test support
-- **Easy Deployment** - Docker ready
-
-### **Performance Benefits**
-- **Async Operations** - Non-blocking I/O
-- **Fast Startup** - No JVM overhead
-- **Memory Efficient** - Python vs Java
-- **Better Scalability** - Async architecture
+```
+app/
+  api/v1/              Route handlers
+    auth.py              Authentication & authorization
+    assets.py            Asset CRUD & availability
+    slot_booking.py      Booking lifecycle & scheduling
+    site_project.py      Project management & team assignments
+    subcontractor.py     Subcontractor management & availability
+    users.py             User profile management
+    file_upload.py       File upload with validation
+    booking_audit.py     Immutable audit trail
+  core/
+    config.py            Settings & environment variables
+    database.py          SQLAlchemy engine & session
+    security.py          JWT, password hashing, rate limiting
+    email.py             Mailtrap email integration
+  crud/                  Database access layer
+  models/                SQLAlchemy ORM models
+  schemas/               Pydantic request/response schemas
+  utils/                 File upload & password utilities
+alembic/                 Database migrations
+tests/                   Test suite
+```
 
 ---
 
-## **📈 Performance Metrics**
+## API Endpoints
 
-- **Startup Time**: ~2 seconds (vs ~30 seconds for Spring Boot)
-- **Memory Usage**: ~50MB (vs ~200MB for Spring Boot)
-- **API Response Time**: <10ms average
-- **Concurrent Requests**: 1000+ requests/second
+### Authentication (`/api/auth`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/login` | Authenticate user or subcontractor (10/min) |
+| POST | `/register` | Create new user account |
+| POST | `/refresh` | Refresh access token |
+| GET | `/me` | Get current user info |
+| POST | `/change-password` | Change password (authenticated) |
+| POST | `/forgot-password` | Request password reset email (3/min) |
+| POST | `/reset-password` | Reset password with token |
+| POST | `/verify-email` | Verify email address |
+| POST | `/resend-verification` | Resend verification email |
+| POST | `/logout` | Logout |
+
+### Assets (`/api/assets`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Create new asset |
+| GET | `/` | List assets (filterable by project, status, type) |
+| GET | `/brief` | Lightweight asset list for dropdowns |
+| GET | `/{asset_id}` | Get asset details |
+| GET | `/code/{asset_code}` | Get asset by code |
+| PUT | `/{asset_id}` | Update asset |
+| POST | `/{asset_id}/transfer` | Transfer asset to another project |
+| POST | `/check-availability` | Check asset availability for time slot |
+| DELETE | `/{asset_id}` | Delete asset |
+
+### Bookings (`/api/bookings`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Create booking (auto-CONFIRMED for managers, PENDING for subcontractors) |
+| POST | `/bulk` | Bulk create bookings across assets/dates |
+| GET | `/` | List bookings with role-based filtering |
+| GET | `/calendar` | Calendar view (max 90-day range) |
+| GET | `/statistics` | Booking analytics |
+| GET | `/my/upcoming` | Current user's upcoming bookings |
+| GET | `/{booking_id}` | Booking details |
+| PUT | `/{booking_id}` | Update booking with conflict checking |
+| PATCH | `/{booking_id}/status` | Update status with optional comment |
+| DELETE | `/{booking_id}` | Delete booking |
+| POST | `/check-conflicts` | Check for scheduling conflicts |
+| POST | `/{booking_id}/duplicate` | Duplicate booking to a new date |
+
+### Projects (`/api/projects`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Create project |
+| GET | `/` | List projects (filterable by status, name, date range) |
+| GET | `/{project_id}` | Project details |
+| PATCH | `/{project_id}` | Update project |
+| DELETE | `/{project_id}` | Delete project (lead manager or admin) |
+| POST | `/{project_id}/managers` | Add manager |
+| DELETE | `/{project_id}/managers/{manager_id}` | Remove manager |
+| POST | `/{project_id}/subcontractors` | Add subcontractor |
+| PATCH | `/{project_id}/subcontractors/{sub_id}` | Update subcontractor assignment |
+| DELETE | `/{project_id}/subcontractors/{sub_id}` | Remove subcontractor |
+| GET | `/{project_id}/available-subcontractors` | List unassigned subcontractors |
+| GET | `/{project_id}/statistics` | Project statistics |
+
+### Subcontractors (`/api/subcontractors`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Create subcontractor |
+| GET | `/` | List all with pagination and filters |
+| GET | `/my-subcontractors` | Subcontractors in current manager's projects |
+| GET | `/manager-stats` | Manager's subcontractor statistics |
+| GET | `/search` | Search by name, company, email, trade |
+| GET | `/available` | Available subcontractors for a date/time |
+| GET | `/by-trade/{trade}` | Filter by trade specialty |
+| PUT | `/me` | Update own profile (subcontractor auth) |
+| GET | `/{sub_id}` | Subcontractor details |
+| PUT | `/{sub_id}` | Update subcontractor (manager/admin) |
+| PUT | `/{sub_id}/password` | Update password |
+| DELETE | `/{sub_id}` | Deactivate subcontractor |
+| POST | `/{sub_id}/activate` | Reactivate subcontractor |
+| DELETE | `/{sub_id}/permanent` | Permanent delete (admin only) |
+| POST | `/{sub_id}/send-welcome-email` | Send invite/welcome email |
+| GET | `/{sub_id}/projects` | Assigned projects |
+| GET | `/{sub_id}/projects/current` | Active projects only |
+| GET | `/{sub_id}/bookings` | Booking history |
+| GET | `/{sub_id}/bookings/upcoming` | Upcoming bookings |
+| GET | `/{sub_id}/bookings/count-by-status` | Booking counts by status |
+| GET | `/{sub_id}/availability` | Check availability |
+| POST | `/{sub_id}/projects/{project_id}` | Assign to project |
+| DELETE | `/{sub_id}/projects/{project_id}` | Remove from project |
+
+### Booking Audit (`/api/bookings`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/{booking_id}/audit` | Full audit trail for a booking |
+| GET | `/audit/my-activity` | Current user's audit activity |
+| GET | `/audit/project/{project_id}` | Project audit logs (manager/admin) |
+
+### File Upload (`/api/uploadfile`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Upload file (max 10 MB, restricted types) |
+
+Allowed types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.csv`, `.txt`, `.json`
+
+### Users (`/api/users`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/me` | Get current user profile |
+| PUT | `/me` | Update own profile |
+| GET | `/` | List all users (admin only) |
+| PUT | `/{user_id}` | Update any user (admin only) |
 
 ---
 
-## **✅ Conversion Status: COMPLETE**
+## Authentication
 
-**All original Spring Boot functionality has been successfully converted to FastAPI with modern Python features and improved performance!**
+JWT-based with dual entity support (Users and Subcontractors).
 
-### **🎉 Key Achievements:**
-- ✅ **100% Feature Parity** - All original functionality preserved
-- ✅ **Modern Architecture** - Async/await, type safety, automatic docs
-- ✅ **Better Performance** - Faster startup, lower memory usage
-- ✅ **Production Ready** - Docker, security, testing included
-- ✅ **Developer Friendly** - Automatic documentation, type hints
+| Token | Expiry | Purpose |
+|-------|--------|---------|
+| Access token | 30 min | API access |
+| Refresh token | 7 days | Get new access tokens |
+| Email verification | 24 hours | Confirm email |
+| Password reset | 1 hour | Reset password |
 
----
+Algorithm: HS512
 
-## **🤝 Contributing**
+### Role-Based Access
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
+| Role | Access |
+|------|--------|
+| **Admin** | Full access to all resources |
+| **Manager** | Project-scoped access, approve subcontractor bookings |
+| **Subcontractor** | Own bookings, assigned projects |
 
----
+### Rate Limits
 
-## **📄 License**
-
-This project is licensed under the MIT License.
-
----
-
-## **📞 Support**
-
-For questions or support, please open an issue in the repository.
+| Endpoint | Limit |
+|----------|-------|
+| `/auth/login` | 10 requests/min |
+| `/auth/forgot-password` | 3 requests/min |
 
 ---
 
-**🎉 Congratulations! Your Spring Boot to FastAPI conversion is complete and ready for production!**
+## Database
+
+PostgreSQL with SQLAlchemy ORM. All primary keys are UUIDs.
+
+### Models
+
+| Table | Key Relationships |
+|-------|-------------------|
+| `users` | M2M with projects (via `manager_site_project`) |
+| `subcontractors` | M2M with projects (via `subcontractor_site_project`) |
+| `site_projects` | Has many assets, bookings, managers, subcontractors |
+| `assets` | Belongs to project, has many bookings |
+| `slot_bookings` | Belongs to project, manager, subcontractor, asset |
+| `booking_audit_logs` | Belongs to booking, immutable |
+
+### Enums
+
+| Enum | Values |
+|------|--------|
+| `BookingStatus` | `PENDING`, `CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`, `DENIED` |
+| `AssetStatus` | `available`, `in_use`, `maintenance`, `retired` |
+| `ProjectStatus` | `active`, `pending`, `completed`, `cancelled`, `on_hold` |
+| `UserRole` | `manager`, `admin`, `subcontractor` |
+| `TradeSpecialty` | `electrician`, `plumber`, `carpenter`, `mason`, `painter`, `hvac`, `roofer`, `landscaper`, `general`, `other` |
+
+### Connection Pool
+
+```
+pool_size: 20, max_overflow: 40, pool_recycle: 1800s, pool_pre_ping: true
+```
+
+### Migrations
+
+```bash
+alembic upgrade head              # Apply all migrations
+alembic revision --autogenerate -m "description"  # Generate migration
+alembic downgrade -1              # Revert last migration
+alembic history                   # Show migration history
+```
+
+---
+
+## Environment Variables
+
+```bash
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/sitespace
+
+# JWT (required - no defaults)
+JWT_SECRET=your-secret-key
+JWT_ALGORITHM=HS512
+JWT_EXPIRATION_MS=86400000
+
+# App (required - no defaults)
+SECRET_KEY=your-app-secret
+
+# Server
+HOST=0.0.0.0
+PORT=8080
+DEBUG=False
+
+# CORS
+CORS_ORIGINS=http://localhost:3000,https://your-frontend.com
+
+# Email (Mailtrap)
+MAILTRAP_USE_SANDBOX=True
+MAILTRAP_TOKEN=your-token
+MAILTRAP_INBOX_ID=your-inbox-id
+FROM_EMAIL=noreply@sitespace.com
+FROM_NAME=Sitespace Team
+
+# Frontend
+FRONTEND_URL=http://localhost:3000
+COOKIE_DOMAIN=                    # Optional, e.g. ".example.com"
+IS_PRODUCTION=False
+```
+
+---
+
+## Testing
+
+```bash
+# Run all tests
+python tests/run_tests.py
+
+# Run specific test module
+pytest tests/test_auth.py -v
+
+# Load testing with Locust
+locust -f locustfile.py --host=http://localhost:8080
+```
+
+Test modules: `test_auth`, `test_assets`, `test_slot_booking`, `test_site_project`, `test_subcontractor`, `test_file_upload`, `test_forgot_password`
+
+---
+
+## Deployment
+
+### Docker Compose
+
+```bash
+docker-compose up -d
+```
+
+Services:
+- **app** (port 8080) - FastAPI with Uvicorn
+- **db** (port 5432) - PostgreSQL 15
+
+The [start.sh](start.sh) script handles:
+1. Waiting for PostgreSQL readiness (retries with backoff)
+2. Running Alembic migrations
+3. Validating Python imports
+4. Starting Uvicorn
+
+### Manual
+
+```bash
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Framework | FastAPI 0.104.1 |
+| ORM | SQLAlchemy 2.0.23 |
+| Database | PostgreSQL 15 |
+| Migrations | Alembic 1.12.1 |
+| Auth | JWT (python-jose, HS512) |
+| Password hashing | bcrypt + argon2 |
+| Validation | Pydantic 2.5.0 |
+| Rate limiting | slowapi 0.1.9 |
+| Email | Mailtrap API |
+| Server | Uvicorn 0.24.0 |
+| Container | Docker + Docker Compose |
