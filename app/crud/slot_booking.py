@@ -199,70 +199,71 @@ def create_bulk_bookings(
     else:
         raise ValueError(f"Invalid user role: {created_by_role}")
     
-    for asset_id in bulk_data.asset_ids:
-        asset = db.query(Asset).filter(Asset.id == asset_id).first()
-        if not asset:
-            failed_bookings.append({"asset_id": asset_id, "reason": "Asset not found"})
-            continue
-        
-        if asset.status != AssetStatus.AVAILABLE:
-            failed_bookings.append({"asset_id": asset_id, "reason": f"Asset status is {asset.status}"})
-            continue
-        
-        for booking_date in bulk_data.booking_dates:
-            conflict_check = BookingConflictCheck(
-                asset_id=asset_id,
-                booking_date=booking_date,
-                start_time=bulk_data.start_time,
-                end_time=bulk_data.end_time
-            )
-            
-            conflicts = check_booking_conflicts(db, conflict_check)
-            if conflicts.has_conflict:
-                failed_bookings.append({
-                    "asset_id": asset_id,
-                    "date": booking_date,
-                    "reason": "Scheduling conflict"
-                })
+    try:
+        for asset_id in bulk_data.asset_ids:
+            asset = db.query(Asset).filter(Asset.id == asset_id).first()
+            if not asset:
+                failed_bookings.append({"asset_id": asset_id, "reason": "Asset not found"})
                 continue
-            
-            db_booking = SlotBooking(
-                project_id=bulk_data.project_id,
-                manager_id=manager_id,
-                subcontractor_id=subcontractor_id,
-                asset_id=asset_id,
-                booking_date=booking_date,
-                start_time=bulk_data.start_time,
-                end_time=bulk_data.end_time,
-                purpose=bulk_data.purpose,
-                notes=bulk_data.notes,
-                status=booking_status
-            )
-            
-            db.add(db_booking)
-            db.flush()
 
-            # Log each booking creation
-            log_booking_audit(
-                db,
-                actor_id=created_by_id,
-                actor_role=created_by_role,
-                action=BookingAuditAction.CREATED,
-                booking_id=db_booking.id,
-                to_status=db_booking.status,
-                comment=comment
-            )
+            if asset.status != AssetStatus.AVAILABLE:
+                failed_bookings.append({"asset_id": asset_id, "reason": f"Asset status is {asset.status}"})
+                continue
 
-            bookings.append(db_booking)
-    
-    if bookings:
-        db.commit()
-        for booking in bookings:
-            db.refresh(booking)
-    
-    if failed_bookings:
-        print(f"Failed to create {len(failed_bookings)} bookings: {failed_bookings}")
-    
+            for booking_date in bulk_data.booking_dates:
+                conflict_check = BookingConflictCheck(
+                    asset_id=asset_id,
+                    booking_date=booking_date,
+                    start_time=bulk_data.start_time,
+                    end_time=bulk_data.end_time
+                )
+
+                conflicts = check_booking_conflicts(db, conflict_check)
+                if conflicts.has_conflict:
+                    failed_bookings.append({
+                        "asset_id": asset_id,
+                        "date": booking_date,
+                        "reason": "Scheduling conflict"
+                    })
+                    continue
+
+                db_booking = SlotBooking(
+                    project_id=bulk_data.project_id,
+                    manager_id=manager_id,
+                    subcontractor_id=subcontractor_id,
+                    asset_id=asset_id,
+                    booking_date=booking_date,
+                    start_time=bulk_data.start_time,
+                    end_time=bulk_data.end_time,
+                    purpose=bulk_data.purpose,
+                    notes=bulk_data.notes,
+                    status=booking_status
+                )
+
+                db.add(db_booking)
+                db.flush()
+
+                log_booking_audit(
+                    db,
+                    actor_id=created_by_id,
+                    actor_role=created_by_role,
+                    action=BookingAuditAction.CREATED,
+                    booking_id=db_booking.id,
+                    to_status=db_booking.status,
+                    comment=comment
+                )
+
+                bookings.append(db_booking)
+
+        if bookings:
+            db.commit()
+            for booking in bookings:
+                db.refresh(booking)
+
+    except Exception:
+        db.rollback()
+        raise
+
     return bookings
 
 def get_booking(db: Session, booking_id: UUID) -> Optional[SlotBooking]:

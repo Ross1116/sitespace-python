@@ -492,30 +492,40 @@ def get_available_subcontractors_for_date(
     end_time: Optional[str] = None
 ) -> List[Subcontractor]:
     """Get all available subcontractors for a specific date/time"""
-    
+
     # Start with all active subcontractors
     query = db.query(Subcontractor).filter(Subcontractor.is_active == True)
-    
+
     # Filter by trade if specified
     if trade_specialty:
         query = query.filter(Subcontractor.trade_specialty == trade_specialty)
-    
-    all_subcontractors = query.all()
-    available_subcontractors = []
-    
-    for subcontractor in all_subcontractors:
-        availability = check_subcontractor_availability(
-            db, 
-            subcontractor.id, 
-            check_date, 
-            start_time, 
-            end_time
+
+    # Find busy subcontractor IDs in a single query instead of N+1 loop
+    busy_filter = and_(
+        SlotBooking.booking_date == check_date,
+        SlotBooking.status != BookingStatus.CANCELLED
+    )
+
+    if start_time and end_time:
+        busy_filter = and_(
+            busy_filter,
+            SlotBooking.start_time < end_time,
+            SlotBooking.end_time > start_time
         )
-        
-        if availability["is_available"]:
-            available_subcontractors.append(subcontractor)
-    
-    return available_subcontractors
+
+    busy_sub_ids = db.query(SlotBooking.subcontractor_id).filter(
+        busy_filter,
+        SlotBooking.subcontractor_id.isnot(None)
+    ).distinct().subquery()
+
+    # Exclude busy subcontractors
+    if start_time and end_time:
+        query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
+    else:
+        # Without specific times, anyone with any booking on that date is unavailable
+        query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
+
+    return query.all()
 
 def get_subcontractor_current_projects(
     db: Session,

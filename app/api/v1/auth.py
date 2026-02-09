@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, status, BackgroundTasks
 from fastapi.security import HTTPBearer
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 
-
-# Import all dependencies at the top
 from ...core.database import get_db
 from ...core.security import (
     create_access_token,
@@ -95,7 +97,6 @@ def get_entity_password_hash(entity: Union[User, Subcontractor]) -> str:
 def update_entity_password(db: Session, entity: Union[User, Subcontractor], new_password: str) -> None:
     """Update password for user or subcontractor"""
     if isinstance(entity, Subcontractor):
-        # FIXED: Pass entity.id instead of entity object
         subcontractor_crud.update_password(db, entity.id, new_password)
     else:
         user_crud.update_password(db, entity, new_password)
@@ -141,13 +142,15 @@ def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
 # ==================== API Endpoints ====================
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def login(
-    request: LoginRequest,
+    request: Request,
+    login_data: LoginRequest,
     db: Session = Depends(get_db)
 ) -> TokenResponse:
     """Authenticate user or subcontractor with email and password"""
     
-    entity = get_entity_by_email(db, request.email)
+    entity = get_entity_by_email(db, login_data.email)
     
     if not entity:
         raise HTTPException(
@@ -157,7 +160,7 @@ def login(
     
     # Verify password
     password_hash = get_entity_password_hash(entity)
-    if not verify_password(request.password, password_hash):
+    if not verify_password(login_data.password, password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
@@ -174,7 +177,9 @@ def login(
 
 
 @router.post("/register", response_model=UserResponse)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -216,13 +221,13 @@ async def register(
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_token(
-    request: RefreshTokenRequest,
+    refresh_data: RefreshTokenRequest,
     db: Session = Depends(get_db)
 ) -> TokenResponse:
     """Refresh access token using refresh token"""
     
     try:
-        payload = verify_refresh_token(request.refresh_token)
+        payload = verify_refresh_token(refresh_data.refresh_token)
         entity_id = payload.get("sub")
         user_type = payload.get("user_type", "user")
         
@@ -250,20 +255,22 @@ def refresh_token(
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
+@limiter.limit("3/minute")
 async def forgot_password(
-    request: ForgotPasswordRequest,
+    request: Request,
+    forgot_data: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> ForgotPasswordResponse:
     """Request password reset email for user or subcontractor"""
     
     # Get entity but don't reveal if it exists
-    entity = get_entity_by_email(db, request.email)
+    entity = get_entity_by_email(db, forgot_data.email)
     
     # Always return success for security (don't reveal if email exists)
     response = ForgotPasswordResponse(
         message="If the email exists, password reset instructions have been sent",
-        email=request.email,
+        email=forgot_data.email,
         success=True,
         reset_token_sent=bool(entity),
         expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
@@ -290,13 +297,13 @@ async def forgot_password(
 
 @router.post("/reset-password", response_model=ResetPasswordResponse)
 def reset_password(
-    request: ResetPasswordRequest,
+    reset_data: ResetPasswordRequest,
     db: Session = Depends(get_db)
 ) -> ResetPasswordResponse:
     """Reset password for user or subcontractor using reset token"""
     
     # Validate password strength
-    is_valid, error_message = validate_password_strength(request.password)
+    is_valid, error_message = validate_password_strength(reset_data.password)
     if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -304,7 +311,7 @@ def reset_password(
         )
     
     # Verify reset token and get email
-    email = verify_password_reset_token(request.token)
+    email = verify_password_reset_token(reset_data.token)
     if not email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -320,7 +327,7 @@ def reset_password(
             detail="Account not found"
         )
     
-    update_entity_password(db, entity, request.password)
+    update_entity_password(db, entity, reset_data.password)
     
     if not entity.is_active:
         entity.is_active = True
@@ -335,14 +342,14 @@ def reset_password(
 
 @router.post("/change-password", response_model=ChangePasswordResponse)
 def change_password(
-    request: ChangePasswordRequest,
+    change_data: ChangePasswordRequest,
     current_entity: Union[User, Subcontractor] = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> ChangePasswordResponse:
     """Change password for authenticated user or subcontractor"""
     
     # Validate new password strength
-    is_valid, error_message = validate_password_strength(request.new_password)
+    is_valid, error_message = validate_password_strength(change_data.new_password)
     if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -353,21 +360,21 @@ def change_password(
     current_password_hash = get_entity_password_hash(current_entity)
     
     # Verify current password
-    if not verify_password(request.current_password, current_password_hash):
+    if not verify_password(change_data.current_password, current_password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect"
         )
     
     # Check if new password is different from current
-    if request.current_password == request.new_password:
+    if change_data.current_password == change_data.new_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="New password must be different from current password"
         )
     
     # Update password
-    update_entity_password(db, current_entity, request.new_password)
+    update_entity_password(db, current_entity, change_data.new_password)
     
     return ChangePasswordResponse(
         message="Password has been changed successfully",
@@ -377,13 +384,13 @@ def change_password(
 
 @router.post("/verify-email", response_model=VerifyEmailResponse)
 def verify_email(
-    request: VerifyEmailRequest,
+    verify_data: VerifyEmailRequest,
     db: Session = Depends(get_db)
 ) -> VerifyEmailResponse:
     """Verify email address using verification token"""
     
     # Verify token and get email
-    email = verify_email_token(request.token)
+    email = verify_email_token(verify_data.token)
     if not email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -416,20 +423,20 @@ def verify_email(
 
 @router.post("/resend-verification", response_model=ResendVerificationResponse)
 async def resend_verification(
-    request: ResendVerificationRequest,
+    resend_data: ResendVerificationRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> ResendVerificationResponse:
     """Resend email verification link"""
     
-    user = user_crud.get_user_by_email(db, email=request.email)
+    user = user_crud.get_user_by_email(db, email=resend_data.email)
     
     # Don't reveal if user exists for security
     if not user:
         return ResendVerificationResponse(
             message="If the email exists, verification email has been sent",
             success=True,
-            email=request.email
+            email=resend_data.email
         )
     
     if user.email_verified:
@@ -501,6 +508,4 @@ def logout(
     Logout endpoint (mainly for client-side token clearing)
     Note: JWT tokens are stateless, actual invalidation happens client-side
     """
-    # You could implement token blacklisting here if needed
-    # For now, just return success and let client clear tokens
     return {"message": "Successfully logged out"}
