@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from sqlalchemy.sql import func
 import uuid
 import enum
 from app.core.database import Base
@@ -18,8 +18,8 @@ class User(Base):
     role = Column(String, nullable=False)    
     is_active = Column(Boolean, default=True)
     email_verified = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships - using the association tables
     managed_projects = relationship(

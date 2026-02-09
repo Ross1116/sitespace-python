@@ -444,9 +444,9 @@ def get_upcoming_projects(
     limit: int = 100
 ) -> List[SiteProject]:
     """Get projects starting in the next N days"""
-    from datetime import datetime, timedelta
-    
-    today = datetime.now().date()
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
     future_date = today + timedelta(days=days_ahead)
     
     query = db.query(SiteProject).filter(

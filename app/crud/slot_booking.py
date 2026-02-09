@@ -1,6 +1,6 @@
 # crud/slot_booking.py
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session, joinedload
@@ -488,7 +488,7 @@ def update_booking(
     for field, value in update_data.items():
         setattr(booking, field, value)
     
-    booking.updated_at = datetime.utcnow()
+    booking.updated_at = datetime.now(timezone.utc)
     
     # Build changes dict for audit
     new_values = {
@@ -541,7 +541,7 @@ def update_booking_status(
     
     old_status = booking.status
     booking.status = new_status
-    booking.updated_at = datetime.utcnow()
+    booking.updated_at = datetime.now(timezone.utc)
 
     # Determine action based on status transition
     action = BookingAuditAction.UPDATED
@@ -599,7 +599,7 @@ def delete_booking(
     else:
         # Soft delete (cancel)
         booking.status = BookingStatus.CANCELLED
-        booking.updated_at = datetime.utcnow()
+        booking.updated_at = datetime.now(timezone.utc)
         
         log_booking_audit(
             db,
@@ -793,7 +793,7 @@ def get_user_upcoming_bookings(
 ) -> List[BookingDetailResponse]:
     """Get upcoming bookings for a specific user (manager or subcontractor)"""
     today = date.today()
-    current_time = datetime.now().time()
+    current_time = datetime.now(timezone.utc).time()
 
     # Determine filter based on user role
     if user_role == UserRole.SUBCONTRACTOR:
@@ -1066,7 +1066,7 @@ def get_project_bookings_summary(
     }
 
 def cancel_expired_bookings(db: Session) -> int:
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     today = now.date()
     current_time = now.time()
     

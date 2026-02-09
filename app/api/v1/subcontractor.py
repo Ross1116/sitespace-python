@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 from typing import Optional, List, Union, Any
 from uuid import UUID
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from ...core.database import get_db
 from ...core.security import get_current_active_user, create_password_reset_token, verify_password
@@ -774,7 +774,7 @@ def get_upcoming_bookings(
             detail="Subcontractor not found"
         )
     
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()
     end_date = today + timedelta(days=days_ahead)
     
     upcoming_bookings = []

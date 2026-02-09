@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Index, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from sqlalchemy.sql import func
 import uuid
 import enum
 from app.core.database import Base
@@ -25,8 +25,8 @@ class Asset(Base):
     purchase_value = Column(DECIMAL(12, 2))
     current_value = Column(DECIMAL(12, 2))
     status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         Index("ix_assets_project_status", "project_id", "status"),
