@@ -65,10 +65,5 @@ ENDPOINTS = {
     },
     "file_upload": {
         "upload": "/api/uploadfile"
-    },
-    "forgot_password": {
-        "request_reset": "/api/forgot-password/request-reset",
-        "verify_reset": "/api/forgot-password/verify-reset",
-        "reset_password": "/api/forgot-password/reset-password"
     }
 }

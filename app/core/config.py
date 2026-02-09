@@ -56,11 +56,7 @@ class Settings(BaseSettings):
     
     # App settings
     APP_NAME: str = "Sitespace"
-    
-    # Token expiry settings
-    EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
-    PASSWORD_RESET_EXPIRE_HOURS: int = 1
-    
+
     class Config:
         env_file = ".env"
 
