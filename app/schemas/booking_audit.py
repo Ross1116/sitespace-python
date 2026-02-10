@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 
-from pydantic import Field, field_serializer
+from pydantic import Field, field_serializer, field_validator
 
 from .base import BaseSchema
 from .enums import BookingStatus, UserRole, BookingAuditAction
@@ -39,10 +39,15 @@ class BookingAuditResponse(BaseSchema):
     changes: Optional[Dict[str, Any]] = None
     comment: Optional[str] = None
 
-    created_at: datetime
+    created_at: Optional[datetime] = None
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def default_created_at(cls, v):
+        return v if v is not None else datetime.now(timezone.utc)
 
     @field_serializer("created_at")
-    def serialize_created_at(self, value: datetime, _info) -> str:
+    def serialize_created_at(self, value: Optional[datetime], _info) -> Optional[str]:
         """
         Guarantee the ISO string always includes timezone info.
         Naive datetimes (from old rows) are assumed UTC.

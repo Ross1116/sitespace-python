@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Optional
 
@@ -17,6 +17,16 @@ class TimestampSchema(BaseSchema):
     """Schema with timestamp fields"""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def default_created_at(cls, v):
+        return v if v is not None else datetime.now(timezone.utc)
+
+    @field_validator("updated_at", mode="before")
+    @classmethod
+    def default_updated_at(cls, v):
+        return v if v is not None else datetime.now(timezone.utc)
 
 class PaginationParams(BaseModel):
     """Pagination parameters"""
