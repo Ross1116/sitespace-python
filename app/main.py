@@ -3,8 +3,8 @@ sentry_sdk.init(
     dsn="https://e05be6c669904356ca622e757e89d76e@o4510859309875200.ingest.de.sentry.io/4510859336155216",
     send_default_pii=True,
     enable_logs=True,
-    traces_sample_rate=1.0,
-    profile_session_sample_rate=1.0,
+    traces_sample_rate=0.4,
+    profile_session_sample_rate=0.2,
     profile_lifecycle="trace",
 )
 
@@ -57,11 +57,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
-
-# ✅ Add Sentry test route (remove after verifying)
-@app.get("/sentry-debug")
-async def trigger_error():
-    division_by_zero = 1 / 0
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
