@@ -1,6 +1,7 @@
+import os
 import sentry_sdk
 sentry_sdk.init(
-    dsn="https://e05be6c669904356ca622e757e89d76e@o4510859309875200.ingest.de.sentry.io/4510859336155216",
+    dsn=os.getenv("SENTRY_DSN"),
     send_default_pii=True,
     enable_logs=True,
     traces_sample_rate=0.4,
