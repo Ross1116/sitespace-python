@@ -1,3 +1,14 @@
+import os
+import sentry_sdk
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    send_default_pii=True,
+    enable_logs=True,
+    traces_sample_rate=0.4,
+    profile_session_sample_rate=0.2,
+    profile_lifecycle="trace",
+)
+
 from sqlalchemy import text as sql_text
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +92,8 @@ async def global_exception_handler(request: Request, exc: Exception):
     import traceback
     print(f"❌ Unhandled exception: {exc}")
     print(traceback.format_exc())
+
+    sentry_sdk.capture_exception(exc)  # Capture the exception in Sentry
     
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -120,12 +133,9 @@ async def health_check():
     }
     
     try:
-        # Import engine inside the function to avoid circular import issues
         from .core.database import engine
         
-        # Connect and run query
         with engine.connect() as conn:
-            # Use the aliased function 'sql_text'
             conn.execute(sql_text("SELECT 1"))
             
         health_status["database"] = "connected"
@@ -133,7 +143,6 @@ async def health_check():
     except Exception as e:
         health_status["database"] = "disconnected"
         health_status["db_error"] = str(e)
-        # Print the detailed error to logs
         print(f"⚠️ Database Check Failed. Type: {type(e).__name__}, Error: {e}")
 
     return health_status
