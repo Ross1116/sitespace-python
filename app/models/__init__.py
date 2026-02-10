@@ -4,15 +4,14 @@ from .slot_booking import SlotBooking
 from .site_project import SiteProject
 from .subcontractor import Subcontractor
 from .file_upload import FileUpload
-from .booking_audit import BookingAuditLog, BookingAuditAction
+from .booking_audit import BookingAuditLog
 
 __all__ = [
     "User",
-    "Asset", 
+    "Asset",
     "SlotBooking",
     "SiteProject",
     "Subcontractor",
     "FileUpload",
     "BookingAuditLog",
-    "BookingAuditAction",
 ]
