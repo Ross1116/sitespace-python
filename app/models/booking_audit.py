@@ -23,13 +23,13 @@ class BookingAuditLog(Base):
 
     # Actor snapshot (no FK on purpose)
     actor_id = Column(UUID(as_uuid=True), nullable=False)
-    actor_role = Column(SQLEnum(UserRole), nullable=False)
+    actor_role = Column(SQLEnum(UserRole, values_callable=lambda e: [m.value for m in e]), nullable=False)
     actor_name = Column(Text, nullable=False)
 
     # Action + state
-    action = Column(SQLEnum(BookingAuditAction), nullable=False)
-    from_status = Column(SQLEnum(BookingStatus), nullable=True)
-    to_status = Column(SQLEnum(BookingStatus), nullable=True)
+    action = Column(SQLEnum(BookingAuditAction, values_callable=lambda e: [m.value for m in e]), nullable=False)
+    from_status = Column(SQLEnum(BookingStatus, values_callable=lambda e: [m.value for m in e]), nullable=True)
+    to_status = Column(SQLEnum(BookingStatus, values_callable=lambda e: [m.value for m in e]), nullable=True)
 
     # Details
     changes = Column(JSON, nullable=True)
