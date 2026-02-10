@@ -69,11 +69,11 @@ def log_booking_audit(
     audit_log = BookingAuditLog(
         booking_id=booking_id,
         actor_id=actor_id,
-        actor_role=actor_role.value if isinstance(actor_role, UserRole) else actor_role,
+        actor_role=actor_role,
         actor_name=actor_name,
-        action=action.value if isinstance(action, BookingAuditAction) else action,
-        from_status=from_status.value if isinstance(from_status, BookingStatus) else from_status,
-        to_status=to_status.value if isinstance(to_status, BookingStatus) else to_status,
+        action=action,
+        from_status=from_status,
+        to_status=to_status,
         changes=changes,
         comment=comment  # Pass through as-is (can be None)
     )
