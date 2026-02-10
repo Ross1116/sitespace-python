@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, field_serializer
 
 from .base import BaseSchema
 from .enums import BookingStatus, UserRole, BookingAuditAction
@@ -33,13 +33,25 @@ class BookingAuditResponse(BaseSchema):
     actor_name: str
 
     action: BookingAuditAction
-    from_status: Optional[BookingStatus]
-    to_status: Optional[BookingStatus]
+    from_status: Optional[BookingStatus] = None
+    to_status: Optional[BookingStatus] = None
 
-    changes: Optional[Dict[str, Any]]
-    comment: Optional[str]
+    changes: Optional[Dict[str, Any]] = None
+    comment: Optional[str] = None
 
     created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime, _info) -> str:
+        """
+        Guarantee the ISO string always includes timezone info.
+        Naive datetimes (from old rows) are assumed UTC.
+        """
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
 
 
 class BookingAuditTrailResponse(BaseSchema):

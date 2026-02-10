@@ -3,12 +3,13 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func, cast, Date
 from typing import List, Optional, Tuple, Dict, Any
 from uuid import UUID
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from decimal import Decimal
 
 from ..models.asset import Asset, AssetStatus
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
+from ..schemas.enums import BookingStatus
 from ..schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetDetailResponse, AssetAvailabilityCheck,
@@ -112,8 +113,8 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
     
     # Calculate statistics
     total_bookings = len(asset.bookings)
-    active_bookings = len([b for b in asset.bookings if b.status == 'confirmed'])
-    completed_bookings = len([b for b in asset.bookings if b.status == 'completed'])
+    active_bookings = len([b for b in asset.bookings if b.status == BookingStatus.CONFIRMED])
+    completed_bookings = len([b for b in asset.bookings if b.status == BookingStatus.COMPLETED])
     
     # Calculate utilization rate
     utilization_rate = 0.0
@@ -126,7 +127,7 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
             ).filter(
                 and_(
                     SlotBooking.asset_id == asset_id,
-                    SlotBooking.status.in_(['confirmed', 'completed'])
+                    SlotBooking.status.in_([BookingStatus.CONFIRMED, BookingStatus.COMPLETED])
                 )
             ).scalar() or 0
             utilization_rate = min((booked_days / days_owned) * 100, 100.0)
@@ -202,7 +203,7 @@ def update_asset(
     for field, value in update_data.items():
         setattr(db_asset, field, value)
     
-    db_asset.updated_at = datetime.utcnow()
+    db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
     return db_asset
@@ -230,7 +231,7 @@ def transfer_asset(
         and_(
             SlotBooking.asset_id == asset_id,
             SlotBooking.booking_date >= date.today(),
-            SlotBooking.status == 'confirmed'
+            SlotBooking.status == BookingStatus.CONFIRMED
         )
     ).count()
     
@@ -244,7 +245,7 @@ def transfer_asset(
     db_asset.project_id = transfer.new_project_id
     if transfer.update_status:
         db_asset.status = transfer.update_status
-    db_asset.updated_at = datetime.utcnow()
+    db_asset.updated_at = datetime.now(timezone.utc)
     
     # Update related bookings if needed
     if transfer.update_bookings:
@@ -294,7 +295,7 @@ def check_asset_availability(
         and_(
             SlotBooking.asset_id == check.asset_id,
             SlotBooking.booking_date == check.date,
-            SlotBooking.status.in_(['confirmed', 'pending']),
+            SlotBooking.status.in_([BookingStatus.CONFIRMED, BookingStatus.PENDING]),
             or_(
                 # New booking starts during existing booking
                 and_(
@@ -346,7 +347,7 @@ def delete_asset(db: Session, asset_id: UUID, user_id: UUID = None) -> bool:
     if has_bookings:
         # Soft delete - change status to retired
         db_asset.status = AssetStatus.RETIRED
-        db_asset.updated_at = datetime.utcnow()
+        db_asset.updated_at = datetime.now(timezone.utc)
         db.commit()
     else:
         # Hard delete if no bookings
@@ -403,7 +404,7 @@ def update_asset_value(
         return None
     
     db_asset.current_value = new_value
-    db_asset.updated_at = datetime.utcnow()
+    db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
     return db_asset
@@ -433,7 +434,7 @@ def update_asset_status(
             raise ValueError("Cannot reactivate asset with future bookings")
     
     db_asset.status = new_status
-    db_asset.updated_at = datetime.utcnow()
+    db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
     return db_asset
@@ -484,14 +485,14 @@ def get_asset_statistics(
     
     # Calculate statistics
     total_bookings = len(bookings)
-    confirmed_bookings = sum(1 for b in bookings if b.status == 'confirmed')
-    completed_bookings = sum(1 for b in bookings if b.status == 'completed')
-    cancelled_bookings = sum(1 for b in bookings if b.status == 'cancelled')
+    confirmed_bookings = sum(1 for b in bookings if b.status == BookingStatus.CONFIRMED)
+    completed_bookings = sum(1 for b in bookings if b.status == BookingStatus.COMPLETED)
+    cancelled_bookings = sum(1 for b in bookings if b.status == BookingStatus.CANCELLED)
     
     # Calculate total hours booked
     total_hours = 0
     for booking in bookings:
-        if booking.start_time and booking.end_time and booking.status in ['confirmed', 'completed']:
+        if booking.start_time and booking.end_time and booking.status in [BookingStatus.CONFIRMED, BookingStatus.COMPLETED]:
             start_dt = datetime.combine(booking.booking_date, booking.start_time)
             end_dt = datetime.combine(booking.booking_date, booking.end_time)
             hours = (end_dt - start_dt).total_seconds() / 3600
@@ -512,7 +513,7 @@ def get_asset_statistics(
     # Calculate utilization rate for the period
     if start_date and end_date:
         total_days = (end_date - start_date).days + 1
-        booked_days = len(set(b.booking_date for b in bookings if b.status in ['confirmed', 'completed']))
+        booked_days = len(set(b.booking_date for b in bookings if b.status in [BookingStatus.CONFIRMED, BookingStatus.COMPLETED]))
         utilization_rate = (booked_days / total_days) * 100 if total_days > 0 else 0
     else:
         utilization_rate = 0

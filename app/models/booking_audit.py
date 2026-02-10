@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, Index, DateTime, Enum as SQLEnum, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
@@ -35,8 +35,12 @@ class BookingAuditLog(Base):
     changes = Column(JSON, nullable=True)
     comment = Column(Text, nullable=True)
 
-    # Immutable timestamp
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Immutable timestamp — timezone-aware
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
 
     __table_args__ = (
         Index("ix_audit_actor_created", "actor_id", "created_at"),

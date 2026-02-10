@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 from ..models.subcontractor import Subcontractor
 from ..models.site_project import SiteProject
@@ -123,7 +123,7 @@ def update_subcontractor(
             value = value.value if hasattr(value, 'value') else value
         setattr(db_subcontractor, field, value)
     
-    db_subcontractor.updated_at = datetime.utcnow()
+    db_subcontractor.updated_at = datetime.now(timezone.utc)
     
     db.commit()
     db.refresh(db_subcontractor)
@@ -140,7 +140,7 @@ def update_password(db: Session, subcontractor_id: UUID, password: str) -> bool:
         
     hashed_password = get_password_hash(password)
     db_subcontractor.password_hash = hashed_password
-    db_subcontractor.updated_at = datetime.utcnow()
+    db_subcontractor.updated_at = datetime.now(timezone.utc)
     
     db.commit()
     db.refresh(db_subcontractor)
@@ -155,7 +155,7 @@ def delete_subcontractor(db: Session, subcontractor_id: UUID) -> bool:
     
     # Soft delete
     db_subcontractor.is_active = False
-    db_subcontractor.updated_at = datetime.utcnow()
+    db_subcontractor.updated_at = datetime.now(timezone.utc)
     
     db.commit()
     return True
@@ -168,7 +168,7 @@ def activate_subcontractor(db: Session, subcontractor_id: UUID) -> bool:
         return False
     
     db_subcontractor.is_active = True
-    db_subcontractor.updated_at = datetime.utcnow()
+    db_subcontractor.updated_at = datetime.now(timezone.utc)
     
     db.commit()
     return True

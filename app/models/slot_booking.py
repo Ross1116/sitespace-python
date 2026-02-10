@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Index, Text, Date, Time, DateTime, Enum as SQLEnum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from sqlalchemy.sql import func
 import uuid
 import enum
 from app.core.database import Base
@@ -37,8 +37,8 @@ class SlotBooking(Base):
     )
     purpose = Column(Text)
     notes = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Composite indexes for common query patterns
     __table_args__ = (

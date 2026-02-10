@@ -1,6 +1,6 @@
 # app/core/security.py
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 from jose import JWTError, jwt
@@ -31,14 +31,14 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Create JWT access token"""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({
         "exp": expire,
         "type": TOKEN_TYPE_ACCESS,
-        "iat": datetime.utcnow()
+        "iat": datetime.now(timezone.utc)
     })
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return encoded_jwt
@@ -47,14 +47,14 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Create JWT refresh token"""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
     to_encode.update({
         "exp": expire,
         "type": TOKEN_TYPE_REFRESH,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "jti": secrets.token_urlsafe(32)  # JWT ID for tracking
     })
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
@@ -62,7 +62,7 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 def create_verification_token(email: str) -> str:
     """Create email verification token"""
-    expire = datetime.utcnow() + timedelta(hours=settings.EMAIL_VERIFICATION_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_EXPIRE_HOURS)
     to_encode = {
         "email": email,
         "exp": expire,
@@ -73,7 +73,7 @@ def create_verification_token(email: str) -> str:
 
 def create_password_reset_token(email: str) -> str:
     """Create password reset token"""
-    expire = datetime.utcnow() + timedelta(hours=settings.PASSWORD_RESET_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.PASSWORD_RESET_EXPIRE_HOURS)
     to_encode = {
         "email": email,
         "exp": expire,
@@ -251,14 +251,14 @@ class TokenBlacklist:
         expires_at = self._blacklist.get(jti)
         if expires_at is None:
             return False
-        if datetime.utcnow() > expires_at:
+        if datetime.now(timezone.utc) > expires_at:
             del self._blacklist[jti]
             return False
         return True
 
     def clear_expired(self):
         """Remove all expired tokens from blacklist"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         self._blacklist = {
             jti: exp for jti, exp in self._blacklist.items() if exp > now
         }

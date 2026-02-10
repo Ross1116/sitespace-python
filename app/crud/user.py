@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..models.user import User
 from ..schemas.enums import UserRole
@@ -172,7 +172,7 @@ class UserCRUD:
             else:
                 setattr(user, field, value)
         
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         
@@ -182,7 +182,7 @@ class UserCRUD:
     def update_password(db: Session, user: User, new_password: str) -> User:
         """Update user password"""
         user.password = get_password_hash(new_password)
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -191,7 +191,7 @@ class UserCRUD:
     def verify_email(db: Session, user: User) -> User:
         """Mark user email as verified"""
         user.email_verified = True
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -200,7 +200,7 @@ class UserCRUD:
     def update_user_role(db: Session, user: User, new_role: UserRole) -> User:
         """Update user role"""
         user.role = new_role.value
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -209,7 +209,7 @@ class UserCRUD:
     def toggle_user_status(db: Session, user: User) -> User:
         """Toggle user active status"""
         user.is_active = not user.is_active
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -218,7 +218,7 @@ class UserCRUD:
     def deactivate_user(db: Session, user: User) -> User:
         """Deactivate user account"""
         user.is_active = False
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -227,7 +227,7 @@ class UserCRUD:
     def activate_user(db: Session, user: User) -> User:
         """Activate user account"""
         user.is_active = True
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
         return user
@@ -346,7 +346,7 @@ class UserCRUD:
         count = db.query(User).filter(
             User.id.in_(user_ids)
         ).update(
-            {**update_data, "updated_at": datetime.utcnow()},
+            {**update_data, "updated_at": datetime.now(timezone.utc)},
             synchronize_session=False
         )
         db.commit()
