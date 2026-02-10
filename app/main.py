@@ -1,5 +1,7 @@
 import os
+import logging
 import sentry_sdk
+
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
     send_default_pii=True,
@@ -7,6 +9,13 @@ sentry_sdk.init(
     traces_sample_rate=0.4,
     profile_session_sample_rate=0.2,
     profile_lifecycle="trace",
+)
+
+# Structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 from sqlalchemy import text as sql_text
@@ -21,6 +30,7 @@ from slowapi.errors import RateLimitExceeded
 
 from .core.config import settings
 from .core.database import engine, Base
+from .core.middleware import RequestLoggingMiddleware
 from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit
 
 # Import all models so SQLAlchemy knows about them
@@ -73,6 +83,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request logging + Sentry user context
+app.add_middleware(RequestLoggingMiddleware)
+
 # Global exception handler for HTTPException
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -86,15 +99,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 # Global exception handler for all other exceptions
+logger = logging.getLogger("sitespace.errors")
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    # Log the full error for debugging
-    import traceback
-    print(f"❌ Unhandled exception: {exc}")
-    print(traceback.format_exc())
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    sentry_sdk.capture_exception(exc)
 
-    sentry_sdk.capture_exception(exc)  # Capture the exception in Sentry
-    
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
