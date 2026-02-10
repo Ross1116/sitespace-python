@@ -69,13 +69,13 @@ def log_booking_audit(
     audit_log = BookingAuditLog(
         booking_id=booking_id,
         actor_id=actor_id,
-        actor_role=actor_role,
+        actor_role=actor_role.value if hasattr(actor_role, 'value') else actor_role,
         actor_name=actor_name,
-        action=action,
-        from_status=from_status,
-        to_status=to_status,
+        action=action.value if hasattr(action, 'value') else action,
+        from_status=from_status.value if hasattr(from_status, 'value') else from_status,
+        to_status=to_status.value if hasattr(to_status, 'value') else to_status,
         changes=changes,
-        comment=comment  # Pass through as-is (can be None)
+        comment=comment
     )
     
     db.add(audit_log)
@@ -114,7 +114,8 @@ def get_actor_audit_history(
         .filter(BookingAuditLog.actor_id == actor_id)
     
     if action_filter:
-        query = query.filter(BookingAuditLog.action == action_filter)
+        filter_val = action_filter.value if hasattr(action_filter, 'value') else action_filter
+        query = query.filter(BookingAuditLog.action == filter_val)
     
     return query.order_by(desc(BookingAuditLog.created_at))\
         .offset(skip)\
