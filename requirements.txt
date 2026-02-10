@@ -17,4 +17,4 @@ pycryptodome==3.19.0
 requests==2.31.0
 argon2-cffi==23.1.0
 slowapi==0.1.9
-sentry-sdk[fastapi]==2.29.1
+sentry-sdk[fastapi]==2.52.0
