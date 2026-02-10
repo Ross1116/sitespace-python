@@ -15,7 +15,7 @@ class BaseSchema(BaseModel):
 
 class TimestampSchema(BaseSchema):
     """Schema with timestamp fields"""
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
 class PaginationParams(BaseModel):
