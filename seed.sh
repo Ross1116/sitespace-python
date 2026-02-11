@@ -25,12 +25,13 @@ PY
     elif command -v perl >/dev/null 2>&1; then
       perl -MPOSIX -e 'use Time::Piece; print((localtime(time()+7*24*60*60))->strftime("%F"))'
     else
-      date +%F
+      echo "❌ Unable to compute booking date (+7 days). Install python3 or perl." >&2
+      return 1
     fi
   fi
 }
 
-BOOKING_DATE="$(get_booking_date)"
+BOOKING_DATE="$(get_booking_date)" || exit 1
 
 echo "➡️ Registering admin (ignore errors if exists)..."
 REGISTER_RESPONSE=$(curl -s -X POST "$BASE/api/auth/register" \
