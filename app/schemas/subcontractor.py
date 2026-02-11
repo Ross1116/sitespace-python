@@ -109,5 +109,29 @@ class SubcontractorListResponse(BaseSchema):
     limit: int
     has_more: bool
 
+class ManagerSubcontractorStatsResponse(BaseSchema):
+    """Manager subcontractor statistics response"""
+    total_subcontractors: int
+    active_subcontractors: int
+    inactive_subcontractors: int
+    by_trade: dict
+
+
+class BookingCountsByStatusResponse(BaseSchema):
+    """Booking counts by status response"""
+    subcontractor_id: UUID
+    booking_counts: dict
+    total: int
+
+
+class SubcontractorAvailabilityResponse(BaseSchema):
+    """Subcontractor availability check response"""
+    subcontractor_id: UUID
+    date: date
+    is_available: bool
+    existing_bookings: List[dict]
+    conflicts: List[dict]
+
+
 # Avoid circular imports
 SubcontractorDetailResponse.model_rebuild()

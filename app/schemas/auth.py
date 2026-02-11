@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Literal
 from datetime import datetime
 from uuid import UUID
 import re
@@ -168,3 +168,29 @@ class ResendVerificationResponse(BaseModel):
             }
         }
     }
+
+
+class CurrentUserResponse(BaseModel):
+    """Response for /auth/me endpoint — User variant"""
+    id: UUID
+    email: str
+    first_name: str
+    last_name: str
+    phone: Optional[str] = None
+    role: str
+    is_active: bool
+    email_verified: bool = False
+    user_type: Literal["user"] = "user"
+
+class CurrentSubcontractorResponse(BaseModel):
+    """Response for /auth/me endpoint — Subcontractor variant"""
+    id: UUID
+    email: str
+    first_name: str
+    last_name: str
+    company_name: Optional[str] = None
+    trade_specialty: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool
+    role: Literal["subcontractor"] = "subcontractor"
+    user_type: Literal["subcontractor"] = "subcontractor"

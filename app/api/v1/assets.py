@@ -15,6 +15,7 @@ from ...schemas.asset import (
     AssetResponse, AssetDetailResponse, AssetBriefResponse, AssetListResponse,
     AssetAvailabilityCheck, AssetAvailabilityResponse
 )
+from ...schemas.base import MessageResponse
 from ...schemas.enums import AssetStatus, UserRole
 
 router = APIRouter(prefix="/assets", tags=["Asset Management"])
@@ -256,12 +257,12 @@ def check_asset_availability(
             detail=f"Error checking availability: {str(e)}"
         )
 
-@router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{asset_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def delete_asset(
     asset_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
-):
+) -> MessageResponse:
     """Delete an asset (soft delete if asset has bookings)"""
     try:
         success = asset_crud.delete_asset(db, asset_id, current_user.id)
@@ -270,6 +271,7 @@ def delete_asset(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
+        return MessageResponse(message="Asset deleted successfully")
     except HTTPException:
         raise
     except Exception as e:

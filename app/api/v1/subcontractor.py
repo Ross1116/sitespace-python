@@ -17,7 +17,10 @@ from ...schemas.subcontractor import (
     SubcontractorResponse,
     SubcontractorDetailResponse,
     SubcontractorListResponse,
-    ProjectAssignmentResponse
+    ProjectAssignmentResponse,
+    ManagerSubcontractorStatsResponse,
+    BookingCountsByStatusResponse,
+    SubcontractorAvailabilityResponse
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import BookingStatus, UserRole
@@ -135,7 +138,7 @@ def get_my_subcontractors(
         has_more=result["has_more"]
     )
 
-@router.get("/manager-stats", response_model=dict)
+@router.get("/manager-stats", response_model=ManagerSubcontractorStatsResponse)
 def get_manager_subcontractor_statistics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -797,7 +800,7 @@ def get_upcoming_bookings(
     
     return upcoming_bookings
 
-@router.get("/{subcontractor_id}/bookings/count-by-status", response_model=dict)
+@router.get("/{subcontractor_id}/bookings/count-by-status", response_model=BookingCountsByStatusResponse)
 def get_booking_counts(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
@@ -827,7 +830,7 @@ def get_booking_counts(
         "total": sum(counts.values())
     }
 
-@router.get("/{subcontractor_id}/availability", response_model=dict)
+@router.get("/{subcontractor_id}/availability", response_model=SubcontractorAvailabilityResponse)
 def check_subcontractor_availability_detail(
     subcontractor_id: UUID,
     check_date: date = Query(..., description="Date to check availability"),

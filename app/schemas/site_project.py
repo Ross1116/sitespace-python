@@ -113,3 +113,14 @@ class ProjectSubcontractorResponse(ProjectSubcontractorBase, TimestampSchema):
     subcontractor: SubcontractorBriefResponse  # Changed from UserBriefResponse
     assigned_date: date
     end_date: Optional[date] = None
+
+
+class ProjectStatisticsResponse(BaseSchema):
+    """Project statistics response"""
+    project_id: str
+    project_name: str
+    total_managers: int
+    total_subcontractors: int
+    total_assets: int = 0
+    total_bookings: int = 0
+    status: Optional[str] = None

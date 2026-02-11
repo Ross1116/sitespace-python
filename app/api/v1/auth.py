@@ -50,9 +50,12 @@ from ...schemas.auth import (
     VerifyEmailRequest,
     VerifyEmailResponse,
     ResendVerificationRequest,
-    ResendVerificationResponse
+    ResendVerificationResponse,
+    CurrentUserResponse,
+    CurrentSubcontractorResponse
 )
 from ...schemas.user import UserCreate, UserResponse
+from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -438,48 +441,45 @@ async def resend_verification(
     )
 
 
-@router.get("/me", response_model=Dict[str, Any])
+@router.get("/me", response_model=Union[CurrentUserResponse, CurrentSubcontractorResponse])
 def get_current_user_info(
     current_entity: Union[User, Subcontractor] = Depends(get_current_user),
     db: Session = Depends(get_db)
-) -> Dict[str, Any]:
+) -> Union[CurrentUserResponse, CurrentSubcontractorResponse]:
     """Get current authenticated user or subcontractor information"""
-    
+
     # Check if it's a Subcontractor
     if isinstance(current_entity, Subcontractor):
-        return {
-            "id": current_entity.id,
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "company_name": current_entity.company_name,
-            "trade_specialty": current_entity.trade_specialty,
-            "phone": current_entity.phone,
-            "is_active": current_entity.is_active,
-            "role": "subcontractor",
-            "user_type": "subcontractor"
-        }
-    
+        return CurrentSubcontractorResponse(
+            id=current_entity.id,
+            email=current_entity.email,
+            first_name=current_entity.first_name,
+            last_name=current_entity.last_name,
+            company_name=current_entity.company_name,
+            trade_specialty=current_entity.trade_specialty,
+            phone=current_entity.phone,
+            is_active=current_entity.is_active,
+        )
+
     # It's a User
-    return {
-        "id": current_entity.id,
-        "email": current_entity.email,
-        "first_name": current_entity.first_name,
-        "last_name": current_entity.last_name,
-        "phone": current_entity.phone,
-        "role": current_entity.role,
-        "is_active": current_entity.is_active,
-        "email_verified": getattr(current_entity, 'email_verified', False),
-        "user_type": "user"
-    }
+    return CurrentUserResponse(
+        id=current_entity.id,
+        email=current_entity.email,
+        first_name=current_entity.first_name,
+        last_name=current_entity.last_name,
+        phone=current_entity.phone,
+        role=current_entity.role,
+        is_active=current_entity.is_active,
+        email_verified=getattr(current_entity, 'email_verified', False),
+    )
 
 
-@router.post("/logout", status_code=status.HTTP_200_OK)
+@router.post("/logout", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def logout(
     current_entity: Union[User, Subcontractor] = Depends(get_current_user)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """
     Logout endpoint (mainly for client-side token clearing)
     Note: JWT tokens are stateless, actual invalidation happens client-side
     """
-    return {"message": "Successfully logged out"}
+    return MessageResponse(message="Successfully logged out")
