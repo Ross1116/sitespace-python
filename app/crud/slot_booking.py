@@ -25,7 +25,6 @@ from ..schemas.slot_booking import (
     BookingResponse
 )
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
-from app.schemas.enums import BookingAuditAction
 
 def create_booking(
     db: Session,
@@ -357,15 +356,12 @@ def get_bookings(
             query = query.filter(SlotBooking.asset_id == filter_params.asset_id)
         
         if filter_params.status:
-            # FIX: Ensure status is treated as Enum (Uppercase) even if string passed
             status_val = filter_params.status
             if isinstance(status_val, str):
-                # Try to convert string to Enum (forces Uppercase)
                 try:
-                    status_val = BookingStatus(status_val.upper())
-                except ValueError:
-                    # Fallback to whatever was passed if not in Enum
-                    pass
+                    status_val = BookingStatus(status_val.lower())
+                except ValueError as exc:
+                    raise ValueError(f"Invalid booking status: {status_val}") from exc
             query = query.filter(SlotBooking.status == status_val)
         
         if filter_params.date_from:
@@ -480,10 +476,11 @@ def update_booking(
             raise ValueError(f"Asset with id {update_data['asset_id']} not found")
             
     if 'status' in update_data and isinstance(update_data['status'], str):
+        raw_status = update_data['status']
         try:
-            update_data['status'] = BookingStatus(update_data['status'].upper())
-        except ValueError:
-            pass
+            update_data['status'] = BookingStatus(raw_status.lower())
+        except ValueError as exc:
+            raise ValueError(f"Invalid booking status: {raw_status}") from exc
     
     for field, value in update_data.items():
         setattr(booking, field, value)
@@ -585,17 +582,10 @@ def delete_booking(
     old_status = booking.status
     
     if hard_delete:
-        # Log before hard delete
-        log_booking_audit(
-            db,
-            actor_id=deleted_by_id,
-            actor_role=deleted_by_role,
-            action=BookingAuditAction.DELETED,
-            booking_id=booking_id,
-            from_status=old_status,
-            comment=comment
+        raise ValueError(
+            "Hard delete is disabled to preserve booking audit history. "
+            "Use soft delete instead."
         )
-        db.delete(booking)
     else:
         # Soft delete (cancel)
         booking.status = BookingStatus.CANCELLED
@@ -788,7 +778,7 @@ def get_booking_statistics(
 def get_user_upcoming_bookings(
     db: Session,
     user_id: UUID,
-    user_role: UserRole = None,
+    user_role: Optional[UserRole] = None,
     limit: int = 10
 ) -> List[BookingDetailResponse]:
     """Get upcoming bookings for a specific user (manager or subcontractor)"""

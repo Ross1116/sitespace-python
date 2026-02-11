@@ -15,7 +15,7 @@ class BookingAuditLog(Base):
 
     booking_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("slot_bookings.id", ondelete="CASCADE"),
+        ForeignKey("slot_bookings.id", ondelete="RESTRICT"),
         nullable=False,
         index=True
     )

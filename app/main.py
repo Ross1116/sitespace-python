@@ -2,9 +2,16 @@ import os
 import logging
 import sentry_sdk
 
+send_default_pii = os.getenv("SENTRY_SEND_PII", "false").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
+
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
-    send_default_pii=True,
+    send_default_pii=send_default_pii,
     enable_logs=True,
     traces_sample_rate=0.4,
     profile_session_sample_rate=0.2,
@@ -17,6 +24,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import text as sql_text
 from fastapi import FastAPI, HTTPException, Request, status
@@ -40,26 +48,26 @@ from .models import user, asset, slot_booking as slot_booking_model, site_projec
 def create_tables_if_possible():
     try:
         Base.metadata.create_all(bind=engine)
-        print("✅ Database tables created successfully")
+        logger.info("Database tables created successfully")
         return True
     except Exception as e:
-        print(f"⚠️  Database connection failed: {e}")
-        print("📝 Application will run without database for testing")
+        logger.warning("Database connection failed: %s", e)
+        logger.info("Application will run without database for testing")
         return False
 
 # Try to create tables but don't block startup
 try:
     create_tables_if_possible()
 except Exception as e:
-    print(f"⚠️  Table creation skipped: {e}")
+    logger.warning("Table creation skipped: %s", e)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting Sitespace FastAPI application...")
+    logger.info("Starting Sitespace FastAPI application...")
     yield
     # Shutdown
-    print("Shutting down Sitespace FastAPI application...")
+    logger.info("Shutting down Sitespace FastAPI application...")
 
 # Create FastAPI app
 app = FastAPI(
@@ -77,10 +85,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=settings.effective_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
 )
 
 # Request logging + Sentry user context
@@ -99,11 +107,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 # Global exception handler for all other exceptions
-logger = logging.getLogger("sitespace.errors")
+error_logger = logging.getLogger("sitespace.errors")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    error_logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
     sentry_sdk.capture_exception(exc)
 
     return JSONResponse(
@@ -154,7 +162,7 @@ async def health_check():
     except Exception as e:
         health_status["database"] = "disconnected"
         health_status["db_error"] = str(e)
-        print(f"⚠️ Database Check Failed. Type: {type(e).__name__}, Error: {e}")
+        logger.warning("Database check failed. Type: %s, Error: %s", type(e).__name__, e)
 
     return health_status
 
@@ -163,5 +171,10 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug
+        reload=settings.debug,
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv(
+            "FORWARDED_ALLOW_IPS",
+            "127.0.0.1,10.0.0.0/8",
+        ),
     )

@@ -17,8 +17,10 @@ from ...schemas.site_project import (
     SiteProjectListResponse,
     ProjectManagerCreate,
     ProjectSubcontractorCreate,
-    ProjectSubcontractorUpdate
+    ProjectSubcontractorUpdate,
+    ProjectStatisticsResponse
 )
+from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole, ProjectStatus
 from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
@@ -284,30 +286,31 @@ def update_project(
         )
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def delete_project(
     project_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> None:
+) -> MessageResponse:
     """Delete project (admin or lead manager only)"""
-    
+
     try:
         project = project_crud.get_project(db, project_id=project_id)
-        
+
         if not project:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found"
             )
-        
+
         # Check if user is admin or lead manager
         if current_user.role != UserRole.ADMIN:
             check_project_access(db, project_id, current_user, require_lead=True)
-        
+
         # Delete project
         project_crud.delete_project(db, project=project)
-        
+        return MessageResponse(message="Project deleted successfully")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -320,13 +323,13 @@ def delete_project(
 
 # ==================== Manager Management Endpoints ====================
 
-@router.post("/{project_id}/managers", response_model=Dict[str, str])
+@router.post("/{project_id}/managers", response_model=MessageResponse)
 def add_manager(
     project_id: UUID,
     manager_data: ProjectManagerCreate,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """Add manager to project"""
     
     try:
@@ -359,7 +362,7 @@ def add_manager(
             is_lead=manager_data.is_lead_manager
         )
         
-        return {"message": "Manager added successfully"}
+        return MessageResponse(message="Manager added successfully")
         
     except HTTPException:
         raise
@@ -371,13 +374,13 @@ def add_manager(
         )
 
 
-@router.delete("/{project_id}/managers/{manager_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{project_id}/managers/{manager_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def remove_manager(
     project_id: UUID,
     manager_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """Remove manager from project"""
     
     try:
@@ -412,7 +415,7 @@ def remove_manager(
         # Remove manager
         project_crud.remove_manager_from_project(db, project_id=project_id, manager_id=manager_id)
         
-        return {"message": "Manager removed successfully"}
+        return MessageResponse(message="Manager removed successfully")
         
     except HTTPException:
         raise
@@ -426,13 +429,13 @@ def remove_manager(
 
 # ==================== Subcontractor Management Endpoints ====================
 
-@router.post("/{project_id}/subcontractors", response_model=Dict[str, str])
+@router.post("/{project_id}/subcontractors", response_model=MessageResponse)
 def add_subcontractor(
     project_id: UUID,
     subcontractor_data: ProjectSubcontractorCreate,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """Add subcontractor to project"""
     
     try:
@@ -478,7 +481,7 @@ def add_subcontractor(
             hourly_rate=subcontractor_data.hourly_rate
         )
         
-        return {"message": "Subcontractor added successfully"}
+        return MessageResponse(message="Subcontractor added successfully")
         
     except HTTPException:
         raise
@@ -490,14 +493,14 @@ def add_subcontractor(
         )
 
 
-@router.patch("/{project_id}/subcontractors/{subcontractor_id}", response_model=Dict[str, str])
+@router.patch("/{project_id}/subcontractors/{subcontractor_id}", response_model=MessageResponse)
 def update_subcontractor(
     project_id: UUID,
     subcontractor_id: UUID,
     update_data: ProjectSubcontractorUpdate,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """Update subcontractor details in project"""
     
     try:
@@ -519,7 +522,7 @@ def update_subcontractor(
             update_data=update_data
         )
         
-        return {"message": "Subcontractor updated successfully"}
+        return MessageResponse(message="Subcontractor updated successfully")
         
     except HTTPException:
         raise
@@ -531,13 +534,13 @@ def update_subcontractor(
         )
 
 
-@router.delete("/{project_id}/subcontractors/{subcontractor_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{project_id}/subcontractors/{subcontractor_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def remove_subcontractor(
     project_id: UUID,
     subcontractor_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, str]:
+) -> MessageResponse:
     """Remove subcontractor from project"""
     
     try:
@@ -558,7 +561,7 @@ def remove_subcontractor(
             subcontractor_id=subcontractor_id
         )
         
-        return {"message": "Subcontractor removed successfully"}
+        return MessageResponse(message="Subcontractor removed successfully")
         
     except HTTPException:
         raise
@@ -600,12 +603,12 @@ def get_available_subcontractors(
         )
 
 
-@router.get("/{project_id}/statistics", response_model=Dict[str, Any])
+@router.get("/{project_id}/statistics", response_model=ProjectStatisticsResponse)
 def get_project_statistics(
     project_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> Dict[str, Any]:
+) -> ProjectStatisticsResponse:
     """Get project statistics and summary"""
     
     try:

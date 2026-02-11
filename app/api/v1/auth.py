@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,12 @@ from ...schemas.auth import (
     VerifyEmailRequest,
     VerifyEmailResponse,
     ResendVerificationRequest,
-    ResendVerificationResponse
+    ResendVerificationResponse,
+    CurrentUserResponse,
+    CurrentSubcontractorResponse
 )
 from ...schemas.user import UserCreate, UserResponse
+from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -60,6 +64,10 @@ security = HTTPBearer()
 
 
 # ==================== Helper Functions ====================
+
+def hash_identifier(value: str) -> str:
+    normalized = value.strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 def get_entity_by_email(db: Session, email: str) -> Union[User, Subcontractor, None]:
     """Get user or subcontractor by email"""
@@ -105,24 +113,9 @@ def update_entity_password(db: Session, entity: Union[User, Subcontractor], new_
         user_crud.update_password(db, entity, new_password)
 
 
-def validate_password_strength(password: str) -> tuple[bool, str]:
-    """
-    Validate password meets security requirements
-    Returns: (is_valid, error_message)
-    """
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long"
-    
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    
-    if not any(c.islower() for c in password):
-        return False, "Password must contain at least one lowercase letter"
-    
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one number"
-    
-    return True, ""
+
+# Password validation is handled by Pydantic schemas (PasswordMixin, ChangePasswordRequest, etc.)
+# No endpoint-level validation needed.
 
 
 def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
@@ -188,14 +181,6 @@ async def register(
     db: Session = Depends(get_db)
 ) -> UserResponse:
     """Register a new user account"""
-    
-    # Validate password strength
-    is_valid, error_message = validate_password_strength(user_data.password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
     
     try:
         # Create new user (let database handle uniqueness constraint)
@@ -266,13 +251,19 @@ def forgot_password(
 ) -> ForgotPasswordResponse:
     """Request password reset email for user or subcontractor"""
 
-    logger.info(f"Password reset requested for email: {forgot_data.email}")
+    request_id = hash_identifier(forgot_data.email)
+    logger.info("Password reset requested for email hash: %s", request_id)
 
     # Get entity but don't reveal if it exists
     entity = get_entity_by_email(db, forgot_data.email)
 
     if entity:
-        logger.info(f"Entity found for password reset: {entity.email} (type: {'subcontractor' if isinstance(entity, Subcontractor) else 'user'})")
+        entity_id = hash_identifier(entity.email)
+        logger.info(
+            "Entity found for password reset: %s (type: %s)",
+            entity_id,
+            "subcontractor" if isinstance(entity, Subcontractor) else "user",
+        )
 
         reset_token = create_password_reset_token(entity.email)
 
@@ -290,13 +281,13 @@ def forgot_password(
                 reset_token
             )
             if email_sent:
-                logger.info(f"Password reset email sent successfully to {entity.email}")
+                logger.info("Password reset email sent successfully to %s", entity_id)
             else:
-                logger.error(f"Failed to send password reset email to {entity.email}")
+                logger.error("Failed to send password reset email to %s", entity_id)
         except Exception as e:
-            logger.error(f"Exception sending password reset email to {entity.email}: {str(e)}")
+            logger.error("Exception sending password reset email to %s: %s", entity_id, str(e))
     else:
-        logger.warning(f"No entity found for password reset email: {forgot_data.email}")
+        logger.warning("No entity found for password reset email hash: %s", request_id)
 
     # Always return success for security (don't reveal if email exists)
     return ForgotPasswordResponse(
@@ -314,14 +305,6 @@ def reset_password(
     db: Session = Depends(get_db)
 ) -> ResetPasswordResponse:
     """Reset password for user or subcontractor using reset token"""
-    
-    # Validate password strength
-    is_valid, error_message = validate_password_strength(reset_data.password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
     
     # Verify reset token and get email
     email = verify_password_reset_token(reset_data.token)
@@ -360,14 +343,6 @@ def change_password(
     db: Session = Depends(get_db)
 ) -> ChangePasswordResponse:
     """Change password for authenticated user or subcontractor"""
-    
-    # Validate new password strength
-    is_valid, error_message = validate_password_strength(change_data.new_password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
     
     # Get current password hash
     current_password_hash = get_entity_password_hash(current_entity)
@@ -477,48 +452,44 @@ async def resend_verification(
     )
 
 
-@router.get("/me", response_model=Dict[str, Any])
+@router.get("/me", response_model=Union[CurrentUserResponse, CurrentSubcontractorResponse])
 def get_current_user_info(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user),
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
+    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
+) -> Union[CurrentUserResponse, CurrentSubcontractorResponse]:
     """Get current authenticated user or subcontractor information"""
-    
+
     # Check if it's a Subcontractor
     if isinstance(current_entity, Subcontractor):
-        return {
-            "id": current_entity.id,
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "company_name": current_entity.company_name,
-            "trade_specialty": current_entity.trade_specialty,
-            "phone": current_entity.phone,
-            "is_active": current_entity.is_active,
-            "role": "subcontractor",
-            "user_type": "subcontractor"
-        }
-    
+        return CurrentSubcontractorResponse(
+            id=current_entity.id,
+            email=current_entity.email,
+            first_name=current_entity.first_name,
+            last_name=current_entity.last_name,
+            company_name=current_entity.company_name,
+            trade_specialty=current_entity.trade_specialty,
+            phone=current_entity.phone,
+            is_active=current_entity.is_active,
+        )
+
     # It's a User
-    return {
-        "id": current_entity.id,
-        "email": current_entity.email,
-        "first_name": current_entity.first_name,
-        "last_name": current_entity.last_name,
-        "phone": current_entity.phone,
-        "role": current_entity.role,
-        "is_active": current_entity.is_active,
-        "email_verified": getattr(current_entity, 'email_verified', False),
-        "user_type": "user"
-    }
+    return CurrentUserResponse(
+        id=current_entity.id,
+        email=current_entity.email,
+        first_name=current_entity.first_name,
+        last_name=current_entity.last_name,
+        phone=current_entity.phone,
+        role=current_entity.role,
+        is_active=current_entity.is_active,
+        email_verified=getattr(current_entity, 'email_verified', False),
+    )
 
 
-@router.post("/logout", status_code=status.HTTP_200_OK)
+@router.post("/logout", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def logout(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
-) -> Dict[str, str]:
+    _current_entity: Union[User, Subcontractor] = Depends(get_current_user)
+) -> MessageResponse:
     """
     Logout endpoint (mainly for client-side token clearing)
     Note: JWT tokens are stateless, actual invalidation happens client-side
     """
-    return {"message": "Successfully logged out"}
+    return MessageResponse(message="Successfully logged out")

@@ -176,7 +176,7 @@ def build_changes_dict(
         if isinstance(new_val, UUID):
             new_val = str(new_val)
         
-        if old_val != new_val and new_val is not None:
+        if old_val != new_val:
             changes[field] = {"old": old_val, "new": new_val}
     
     return changes if changes else None

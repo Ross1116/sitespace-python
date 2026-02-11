@@ -30,11 +30,18 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8080"))
     debug: bool = os.getenv("DEBUG", "False").strip().lower() in ("true", "1", "yes", "on")
     
-    # CORS - Update with your actual frontend domains for production
+    # CORS — production origins only; dev origins included when DEBUG=True
     cors_origins: list = os.getenv(
-        "CORS_ORIGINS", 
-        "http://localhost:3000,http://localhost:5173,https://sitespace.vercel.app,http://sitespace.com.au,https://sitespace.com.au,https://www.sitespace.com.au"
+        "CORS_ORIGINS",
+        "https://sitespace.vercel.app,https://sitespace.com.au,https://www.sitespace.com.au"
     ).split(",")
+
+    @property
+    def effective_cors_origins(self) -> list:
+        origins = [o.strip() for o in self.cors_origins if o.strip()]
+        if self.debug:
+            origins += ["http://localhost:3000", "http://localhost:5173"]
+        return origins
     
     # Email / Mailtrap
     MAILTRAP_USE_SANDBOX: bool = os.getenv("MAILTRAP_USE_SANDBOX", "True").strip().lower() in ("true", "1", "yes", "on")
@@ -61,3 +68,8 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
+if settings.IS_PRODUCTION and (not settings.jwt_secret or not settings.secret_key):
+    raise ValueError(
+        "Production configuration error: jwt_secret and secret_key must be set."
+    )

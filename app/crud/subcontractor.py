@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, time, timedelta, timezone
 
 from ..models.subcontractor import Subcontractor
 from ..models.site_project import SiteProject
@@ -331,12 +331,23 @@ def check_subcontractor_availability(
 ) -> Dict[str, Any]:
     """Check if a subcontractor is available on a specific date/time"""
 
-    # Get existing bookings on that date
+    # Convert string times to time objects
+    if isinstance(start_time, str):
+        start_time = time.fromisoformat(start_time)
+    if isinstance(end_time, str):
+        end_time = time.fromisoformat(end_time)
+
+    # Get existing bookings around that date to catch overnight spans
+    date_window = [
+        check_date - timedelta(days=1),
+        check_date,
+        check_date + timedelta(days=1),
+    ]
     existing_bookings_query = db.query(SlotBooking)\
         .filter(
             and_(
                 SlotBooking.subcontractor_id == subcontractor_id,
-                SlotBooking.booking_date == check_date,
+                SlotBooking.booking_date.in_(date_window),
                 SlotBooking.status != BookingStatus.CANCELLED
             )
         )\
@@ -361,10 +372,20 @@ def check_subcontractor_availability(
         
         # Check for conflicts if time range provided
         if start_time and end_time:
-            # Check for time overlap
-            if (booking.start_time <= start_time < booking.end_time or
-                booking.start_time < end_time <= booking.end_time or
-                (start_time <= booking.start_time and end_time >= booking.end_time)):
+            # Normalize requested range to datetime to handle overnight spans
+            req_start = datetime.combine(check_date, start_time)
+            req_end = datetime.combine(check_date, end_time)
+            if req_end <= req_start:
+                req_end += timedelta(days=1)
+
+            # Normalize existing booking range based on its booking date
+            bk_start = datetime.combine(booking.booking_date, booking.start_time)
+            bk_end = datetime.combine(booking.booking_date, booking.end_time)
+            if bk_end <= bk_start:
+                bk_end += timedelta(days=1)
+
+            # Two intervals overlap iff each starts before the other ends
+            if bk_start < req_end and req_start < bk_end:
                 is_available = False
                 conflicts.append(booking_info)
     
@@ -426,18 +447,18 @@ def get_subcontractor_statistics(
         if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today()
     )
 
-    # Calculate total hours if start_time and end_time are stored properly
-    total_hours = 0
+    # Calculate total hours from Time columns
+    total_hours = 0.0
     for booking in bookings:
         if booking.start_time and booking.end_time and booking.status != BookingStatus.CANCELLED:
-            # Assuming times are stored as strings or time objects
-            try:
-                start = datetime.strptime(str(booking.start_time), "%H:%M")
-                end = datetime.strptime(str(booking.end_time), "%H:%M")
-                hours = (end - start).total_seconds() / 3600
+            start_dt = datetime.combine(date.today(), booking.start_time)
+            end_dt = datetime.combine(date.today(), booking.end_time)
+            # Handle overnight bookings (e.g., 22:00 → 02:00)
+            if end_dt <= start_dt:
+                end_dt += timedelta(days=1)
+            hours = (end_dt - start_dt).total_seconds() / 3600
+            if hours > 0:
                 total_hours += hours
-            except:
-                pass  # Handle time parsing errors
     
     return {
         "subcontractor_id": subcontractor_id,
@@ -493,6 +514,12 @@ def get_available_subcontractors_for_date(
 ) -> List[Subcontractor]:
     """Get all available subcontractors for a specific date/time"""
 
+    # Convert string times to time objects
+    if isinstance(start_time, str):
+        start_time = time.fromisoformat(start_time)
+    if isinstance(end_time, str):
+        end_time = time.fromisoformat(end_time)
+
     # Start with all active subcontractors
     query = db.query(Subcontractor).filter(Subcontractor.is_active == True)
 
@@ -500,29 +527,44 @@ def get_available_subcontractors_for_date(
     if trade_specialty:
         query = query.filter(Subcontractor.trade_specialty == trade_specialty)
 
-    # Find busy subcontractor IDs in a single query instead of N+1 loop
-    busy_filter = and_(
-        SlotBooking.booking_date == check_date,
-        SlotBooking.status != BookingStatus.CANCELLED
-    )
-
     if start_time and end_time:
-        busy_filter = and_(
-            busy_filter,
-            SlotBooking.start_time < end_time,
-            SlotBooking.end_time > start_time
-        )
+        req_start = datetime.combine(check_date, start_time)
+        req_end = datetime.combine(check_date, end_time)
+        if req_end <= req_start:
+            req_end += timedelta(days=1)
 
-    busy_sub_ids = db.query(SlotBooking.subcontractor_id).filter(
-        busy_filter,
-        SlotBooking.subcontractor_id.isnot(None)
-    ).distinct().subquery()
+        date_window = [
+            check_date - timedelta(days=1),
+            check_date,
+            check_date + timedelta(days=1),
+        ]
 
-    # Exclude busy subcontractors
-    if start_time and end_time:
-        query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
+        bookings = db.query(SlotBooking).filter(
+            SlotBooking.booking_date.in_(date_window),
+            SlotBooking.status != BookingStatus.CANCELLED,
+            SlotBooking.subcontractor_id.isnot(None),
+        ).all()
+
+        busy_ids = set()
+        for booking in bookings:
+            bk_start = datetime.combine(booking.booking_date, booking.start_time)
+            bk_end = datetime.combine(booking.booking_date, booking.end_time)
+            if bk_end <= bk_start:
+                bk_end += timedelta(days=1)
+
+            if bk_start < req_end and req_start < bk_end:
+                busy_ids.add(booking.subcontractor_id)
+
+        if busy_ids:
+            query = query.filter(Subcontractor.id.notin_(busy_ids))
     else:
-        # Without specific times, anyone with any booking on that date is unavailable
+        busy_sub_ids = db.query(SlotBooking.subcontractor_id).filter(
+            SlotBooking.booking_date == check_date,
+            SlotBooking.status != BookingStatus.CANCELLED,
+            SlotBooking.subcontractor_id.isnot(None)
+        ).distinct().subquery()
+
+        # Exclude busy subcontractors
         query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
 
     return query.all()

@@ -17,10 +17,13 @@ from ...schemas.subcontractor import (
     SubcontractorResponse,
     SubcontractorDetailResponse,
     SubcontractorListResponse,
-    ProjectAssignmentResponse
+    ProjectAssignmentResponse,
+    ManagerSubcontractorStatsResponse,
+    BookingCountsByStatusResponse,
+    SubcontractorAvailabilityResponse
 )
 from ...schemas.base import MessageResponse
-from ...schemas.enums import BookingStatus
+from ...schemas.enums import BookingStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
@@ -48,10 +51,10 @@ async def verify_manager_access(
 ) -> bool:
     """Verify that the current user can access this subcontractor"""
     
-    if current_user.role == "admin":
+    if current_user.role == UserRole.ADMIN:
         return True
     
-    if current_user.role == "manager":
+    if current_user.role == UserRole.MANAGER:
         has_access = subcontractor_crud.check_manager_can_access_subcontractor(
             db,
             manager_id=current_user.id,
@@ -89,7 +92,7 @@ def get_my_subcontractors(
     """
     user_role = getattr(current_user, "role", None)
 
-    if user_role == "admin":
+    if user_role == UserRole.ADMIN:
         result = subcontractor_crud.get_all_subcontractors(
             db,
             skip=skip,
@@ -97,7 +100,7 @@ def get_my_subcontractors(
             is_active=is_active,
             trade_specialty=trade_specialty
         )
-    elif user_role == "manager":
+    elif user_role == UserRole.MANAGER:
         result = subcontractor_crud.get_subcontractors_for_manager(
             db,
             manager_id=current_user.id,
@@ -135,7 +138,7 @@ def get_my_subcontractors(
         has_more=result["has_more"]
     )
 
-@router.get("/manager-stats", response_model=dict)
+@router.get("/manager-stats", response_model=ManagerSubcontractorStatsResponse)
 def get_manager_subcontractor_statistics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -143,7 +146,7 @@ def get_manager_subcontractor_statistics(
     """
     Get statistics about subcontractors under the current manager.
     """
-    if current_user.role not in ["manager", "admin"]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can access this endpoint"
@@ -327,7 +330,7 @@ def create_subcontractor(
     
     if existing_subcontractor:
         if subcontractor_data.project_id:
-            if current_user.role == "manager":
+            if current_user.role == UserRole.MANAGER:
                 project = db.query(SiteProject).filter(
                     SiteProject.id == subcontractor_data.project_id,
                     SiteProject.managers.any(id=current_user.id)
@@ -347,7 +350,7 @@ def create_subcontractor(
 
     # Immediately assign to project if ID is present
     if subcontractor_data.project_id:
-        if current_user.role == "manager":
+        if current_user.role == UserRole.MANAGER:
             project = db.query(SiteProject).filter(
                 SiteProject.id == subcontractor_data.project_id,
                 SiteProject.managers.any(id=current_user.id)
@@ -357,7 +360,7 @@ def create_subcontractor(
                 subcontractor_crud.assign_subcontractor_to_project(
                     db, new_subcontractor.id, subcontractor_data.project_id
                 )
-        elif current_user.role == "admin":
+        elif current_user.role == UserRole.ADMIN:
             subcontractor_crud.assign_subcontractor_to_project(
                 db, new_subcontractor.id, subcontractor_data.project_id
             )
@@ -439,7 +442,7 @@ def update_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if current_user.role not in ["manager", "admin"]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.ADMIN]:
         if getattr(current_user, 'id', None) != subcontractor_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -480,7 +483,7 @@ def update_subcontractor_password(
         )
 
     can_update = False
-    if getattr(current_user, 'role', None) in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) in [UserRole.MANAGER, UserRole.ADMIN]:
         can_update = True
     elif getattr(current_user, 'id', None) == subcontractor_id:
         can_update = True
@@ -507,7 +510,7 @@ def delete_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can delete subcontractors"
@@ -533,7 +536,7 @@ def send_welcome_email_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can send welcome emails"
@@ -567,7 +570,7 @@ def activate_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can activate subcontractors"
@@ -601,7 +604,7 @@ def permanently_delete_subcontractor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if getattr(current_user, 'role', None) != "admin":
+    if getattr(current_user, 'role', None) != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can permanently delete subcontractors"
@@ -797,7 +800,7 @@ def get_upcoming_bookings(
     
     return upcoming_bookings
 
-@router.get("/{subcontractor_id}/bookings/count-by-status", response_model=dict)
+@router.get("/{subcontractor_id}/bookings/count-by-status", response_model=BookingCountsByStatusResponse)
 def get_booking_counts(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
@@ -827,7 +830,7 @@ def get_booking_counts(
         "total": sum(counts.values())
     }
 
-@router.get("/{subcontractor_id}/availability", response_model=dict)
+@router.get("/{subcontractor_id}/availability", response_model=SubcontractorAvailabilityResponse)
 def check_subcontractor_availability_detail(
     subcontractor_id: UUID,
     check_date: date = Query(..., description="Date to check availability"),
@@ -857,19 +860,21 @@ def check_subcontractor_availability_detail(
     
     is_available = True
     conflicts = []
-    
+
     if start_time and end_time and existing_bookings:
+        req_start = datetime.combine(check_date, datetime.strptime(start_time, "%H:%M").time())
+        req_end = datetime.combine(check_date, datetime.strptime(end_time, "%H:%M").time())
+        if req_end <= req_start:
+            req_end += timedelta(days=1)
         for booking in existing_bookings:
-            b_start = booking["start_time"]
-            b_end = booking["end_time"]
-            
-            if (b_start <= start_time < b_end or
-                b_start < end_time <= b_end or
-                (start_time <= b_start and end_time >= b_end)):
+            b_start = datetime.combine(check_date, datetime.strptime(booking["start_time"], "%H:%M:%S").time())
+            b_end = datetime.combine(check_date, datetime.strptime(booking["end_time"], "%H:%M:%S").time())
+            if b_end <= b_start:
+                b_end += timedelta(days=1)
+
+            if b_start < req_end and req_start < b_end:
                 is_available = False
                 conflicts.append(booking)
-    elif existing_bookings and not (start_time and end_time):
-        pass 
     
     return {
         "subcontractor_id": subcontractor_id,
@@ -888,13 +893,13 @@ def assign_subcontractor_to_project_endpoint(
 ):
     from ...models.site_project import SiteProject 
     
-    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can assign subcontractors"
         )
 
-    if getattr(current_user, 'role', None) == "manager":
+    if getattr(current_user, 'role', None) == UserRole.MANAGER:
         project = db.query(SiteProject).filter(
             SiteProject.id == project_id,
             SiteProject.managers.any(id=current_user.id)
@@ -922,7 +927,7 @@ def remove_subcontractor_from_project_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    if getattr(current_user, 'role', None) not in ["manager", "admin"]:
+    if getattr(current_user, 'role', None) not in [UserRole.MANAGER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
