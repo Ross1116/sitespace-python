@@ -105,24 +105,9 @@ def update_entity_password(db: Session, entity: Union[User, Subcontractor], new_
         user_crud.update_password(db, entity, new_password)
 
 
-def validate_password_strength(password: str) -> tuple[bool, str]:
-    """
-    Validate password meets security requirements
-    Returns: (is_valid, error_message)
-    """
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long"
-    
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    
-    if not any(c.islower() for c in password):
-        return False, "Password must contain at least one lowercase letter"
-    
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one number"
-    
-    return True, ""
+
+# Password validation is handled by Pydantic schemas (PasswordMixin, ChangePasswordRequest, etc.)
+# No endpoint-level validation needed.
 
 
 def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
@@ -188,14 +173,6 @@ async def register(
     db: Session = Depends(get_db)
 ) -> UserResponse:
     """Register a new user account"""
-    
-    # Validate password strength
-    is_valid, error_message = validate_password_strength(user_data.password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
     
     try:
         # Create new user (let database handle uniqueness constraint)
@@ -315,14 +292,6 @@ def reset_password(
 ) -> ResetPasswordResponse:
     """Reset password for user or subcontractor using reset token"""
     
-    # Validate password strength
-    is_valid, error_message = validate_password_strength(reset_data.password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
-    
     # Verify reset token and get email
     email = verify_password_reset_token(reset_data.token)
     if not email:
@@ -360,14 +329,6 @@ def change_password(
     db: Session = Depends(get_db)
 ) -> ChangePasswordResponse:
     """Change password for authenticated user or subcontractor"""
-    
-    # Validate new password strength
-    is_valid, error_message = validate_password_strength(change_data.new_password)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
     
     # Get current password hash
     current_password_hash = get_entity_password_hash(current_entity)

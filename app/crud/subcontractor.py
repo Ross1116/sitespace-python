@@ -426,18 +426,15 @@ def get_subcontractor_statistics(
         if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today()
     )
 
-    # Calculate total hours if start_time and end_time are stored properly
-    total_hours = 0
+    # Calculate total hours from Time columns
+    total_hours = 0.0
     for booking in bookings:
         if booking.start_time and booking.end_time and booking.status != BookingStatus.CANCELLED:
-            # Assuming times are stored as strings or time objects
-            try:
-                start = datetime.strptime(str(booking.start_time), "%H:%M")
-                end = datetime.strptime(str(booking.end_time), "%H:%M")
-                hours = (end - start).total_seconds() / 3600
+            start_dt = datetime.combine(date.today(), booking.start_time)
+            end_dt = datetime.combine(date.today(), booking.end_time)
+            hours = (end_dt - start_dt).total_seconds() / 3600
+            if hours > 0:
                 total_hours += hours
-            except:
-                pass  # Handle time parsing errors
     
     return {
         "subcontractor_id": subcontractor_id,

@@ -90,12 +90,12 @@ class ResetPasswordResponse(BaseModel):
         }
     }
 
-class ChangePasswordRequest(PasswordMixin):
+class ChangePasswordRequest(BaseModel):
     """Change password request"""
     current_password: str
     new_password: str = Field(..., min_length=8, max_length=100)
     confirm_password: str
-    
+
     @field_validator('new_password')
     @classmethod
     def validate_new_password(cls, v: str) -> str:
@@ -108,7 +108,7 @@ class ChangePasswordRequest(PasswordMixin):
         if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
             raise ValueError("Password must contain at least one special character")
         return v
-    
+
     @model_validator(mode='after')
     def passwords_match(self) -> 'ChangePasswordRequest':
         if self.new_password != self.confirm_password:
