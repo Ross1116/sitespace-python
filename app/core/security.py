@@ -1,4 +1,5 @@
 # app/core/security.py
+import logging
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, Dict, Any
@@ -10,6 +11,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import secrets
 import hashlib
+logger = logging.getLogger(__name__)
 from .config import settings
 from .database import get_db
 from ..models.user import User
@@ -301,7 +303,7 @@ def decrypt_password(encrypted_text: str) -> str:
         
         return decrypted_text.replace('"', '')
     except Exception as e:
-        print(f"Decryption error: {e}")
+        logger.error("Decryption error: %s", e)
         return encrypted_text
 
 def generate_key_and_iv(key_length: int, iv_length: int, iterations: int, salt: bytes, password: bytes):

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, time, timedelta, timezone
 
 from ..models.subcontractor import Subcontractor
 from ..models.site_project import SiteProject
@@ -331,6 +331,12 @@ def check_subcontractor_availability(
 ) -> Dict[str, Any]:
     """Check if a subcontractor is available on a specific date/time"""
 
+    # Convert string times to time objects
+    if isinstance(start_time, str):
+        start_time = time.fromisoformat(start_time)
+    if isinstance(end_time, str):
+        end_time = time.fromisoformat(end_time)
+
     # Get existing bookings on that date
     existing_bookings_query = db.query(SlotBooking)\
         .filter(
@@ -502,6 +508,12 @@ def get_available_subcontractors_for_date(
     end_time: Optional[str] = None
 ) -> List[Subcontractor]:
     """Get all available subcontractors for a specific date/time"""
+
+    # Convert string times to time objects
+    if isinstance(start_time, str):
+        start_time = time.fromisoformat(start_time)
+    if isinstance(end_time, str):
+        end_time = time.fromisoformat(end_time)
 
     # Start with all active subcontractors
     query = db.query(Subcontractor).filter(Subcontractor.is_active == True)

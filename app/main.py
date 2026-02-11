@@ -17,6 +17,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import text as sql_text
 from fastapi import FastAPI, HTTPException, Request, status
@@ -40,26 +41,26 @@ from .models import user, asset, slot_booking as slot_booking_model, site_projec
 def create_tables_if_possible():
     try:
         Base.metadata.create_all(bind=engine)
-        print("✅ Database tables created successfully")
+        logger.info("Database tables created successfully")
         return True
     except Exception as e:
-        print(f"⚠️  Database connection failed: {e}")
-        print("📝 Application will run without database for testing")
+        logger.warning("Database connection failed: %s", e)
+        logger.info("Application will run without database for testing")
         return False
 
 # Try to create tables but don't block startup
 try:
     create_tables_if_possible()
 except Exception as e:
-    print(f"⚠️  Table creation skipped: {e}")
+    logger.warning("Table creation skipped: %s", e)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting Sitespace FastAPI application...")
+    logger.info("Starting Sitespace FastAPI application...")
     yield
     # Shutdown
-    print("Shutting down Sitespace FastAPI application...")
+    logger.info("Shutting down Sitespace FastAPI application...")
 
 # Create FastAPI app
 app = FastAPI(
@@ -154,7 +155,7 @@ async def health_check():
     except Exception as e:
         health_status["database"] = "disconnected"
         health_status["db_error"] = str(e)
-        print(f"⚠️ Database Check Failed. Type: {type(e).__name__}, Error: {e}")
+        logger.warning("Database check failed. Type: %s, Error: %s", type(e).__name__, e)
 
     return health_status
 

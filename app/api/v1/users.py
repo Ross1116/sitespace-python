@@ -6,6 +6,7 @@ from uuid import UUID
 
 from ...core.database import get_db
 from ...core.security import get_current_active_user
+from ...schemas.enums import UserRole
 from ...crud import user as user_crud
 from ...models.user import User
 from ...schemas.user import (
@@ -67,7 +68,7 @@ def read_users(
     """
     Retrieve all users. (Admin Only)
     """
-    if current_user.role != "admin":
+    if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
@@ -85,7 +86,7 @@ def update_user_by_admin(
     Update any user's information, including Role and Active status.
     (Admin Only)
     """
-    if current_user.role != "admin":
+    if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"

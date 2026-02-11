@@ -1,5 +1,8 @@
-# app/core/security.py
+# app/core/password.py
+import logging
 from passlib.context import CryptContext
+
+logger = logging.getLogger(__name__)
 
 # Update the password context to include argon2
 pwd_context = CryptContext(
@@ -17,7 +20,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
-        print(f"Password verification error: {e}")
+        logger.error("Password verification error: %s", e)
         return False
 
 def get_password_hash(password: str) -> str:
