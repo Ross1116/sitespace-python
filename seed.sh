@@ -1,9 +1,36 @@
 #!/usr/bin/env bash
 set -e
 
-BASE="https://sitespace-python-staging-d244.up.railway.app"
-EMAIL="admin@staging.com"
-PASS="StagingPassword123!"
+BASE="${BASE_URL:-}"
+EMAIL="${ADMIN_EMAIL:-}"
+PASS="${ADMIN_PASS:-}"
+
+if [ -z "$BASE" ] || [ -z "$EMAIL" ] || [ -z "$PASS" ]; then
+  echo "❌ Missing required env vars: BASE_URL, ADMIN_EMAIL, ADMIN_PASS"
+  exit 1
+fi
+
+get_booking_date() {
+  os_name="$(uname -s)"
+  if [ "$os_name" = "Darwin" ]; then
+    date -v +7d +%F
+  elif [ "$os_name" = "Linux" ]; then
+    date -d '+7 days' +%F
+  else
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY'
+from datetime import date, timedelta
+print((date.today() + timedelta(days=7)).strftime("%Y-%m-%d"))
+PY
+    elif command -v perl >/dev/null 2>&1; then
+      perl -MPOSIX -e 'use Time::Piece; print((localtime(time()+7*24*60*60))->strftime("%F"))'
+    else
+      date +%F
+    fi
+  fi
+}
+
+BOOKING_DATE="$(get_booking_date)"
 
 echo "➡️ Registering admin (ignore errors if exists)..."
 REGISTER_RESPONSE=$(curl -s -X POST "$BASE/api/auth/register" \
@@ -107,7 +134,7 @@ BOOKING_RESPONSE=$(curl -s -X POST "$BASE/api/bookings/" \
   -d "{
     \"project_id\": \"$PROJECT_ID\",
     \"asset_id\": \"$ASSET1_ID\",
-    \"booking_date\": \"$(date -d '+7 days' +%F)\",
+    \"booking_date\": \"$BOOKING_DATE\",
     \"start_time\": \"09:00\",
     \"end_time\": \"17:00\",
     \"purpose\": \"Seed booking\",

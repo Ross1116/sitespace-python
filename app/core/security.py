@@ -1,5 +1,6 @@
 # app/core/security.py
 import logging
+import threading
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, Dict, Any
@@ -242,33 +243,41 @@ def require_role(allowed_roles: list):
 class TokenBlacklist:
     def __init__(self):
         self._blacklist: dict[str, datetime] = {}  # jti -> expires_at
+        self._lock = threading.Lock()
 
     def add(self, jti: str, expires_at: datetime):
         """Add token to blacklist with its expiry time"""
-        self._blacklist[jti] = expires_at
+        with self._lock:
+            self._blacklist[jti] = expires_at
         self._cleanup_if_needed()
 
     def is_blacklisted(self, jti: str) -> bool:
         """Check if token is blacklisted (ignores expired entries)"""
-        expires_at = self._blacklist.get(jti)
-        if expires_at is None:
-            return False
-        if datetime.now(timezone.utc) > expires_at:
-            del self._blacklist[jti]
-            return False
-        return True
+        with self._lock:
+            expires_at = self._blacklist.get(jti)
+            if expires_at is None:
+                return False
+            if datetime.now(timezone.utc) > expires_at:
+                del self._blacklist[jti]
+                return False
+            return True
 
     def clear_expired(self):
         """Remove all expired tokens from blacklist"""
+        with self._lock:
+            self._clear_expired_locked()
+
+    def _cleanup_if_needed(self):
+        """Auto-cleanup when blacklist grows large"""
+        with self._lock:
+            if len(self._blacklist) > 1000:
+                self._clear_expired_locked()
+
+    def _clear_expired_locked(self):
         now = datetime.now(timezone.utc)
         self._blacklist = {
             jti: exp for jti, exp in self._blacklist.items() if exp > now
         }
-
-    def _cleanup_if_needed(self):
-        """Auto-cleanup when blacklist grows large"""
-        if len(self._blacklist) > 1000:
-            self.clear_expired()
 
 # Initialize token blacklist
 token_blacklist = TokenBlacklist()

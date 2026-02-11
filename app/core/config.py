@@ -68,3 +68,8 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
+if settings.IS_PRODUCTION and (not settings.jwt_secret or not settings.secret_key):
+    raise ValueError(
+        "Production configuration error: jwt_secret and secret_key must be set."
+    )

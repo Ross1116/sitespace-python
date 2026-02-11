@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, Union, Dict, Any
 from uuid import UUID
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,10 @@ security = HTTPBearer()
 
 
 # ==================== Helper Functions ====================
+
+def hash_identifier(value: str) -> str:
+    normalized = value.strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 def get_entity_by_email(db: Session, email: str) -> Union[User, Subcontractor, None]:
     """Get user or subcontractor by email"""
@@ -246,13 +251,19 @@ def forgot_password(
 ) -> ForgotPasswordResponse:
     """Request password reset email for user or subcontractor"""
 
-    logger.info(f"Password reset requested for email: {forgot_data.email}")
+    request_id = hash_identifier(forgot_data.email)
+    logger.info("Password reset requested for email hash: %s", request_id)
 
     # Get entity but don't reveal if it exists
     entity = get_entity_by_email(db, forgot_data.email)
 
     if entity:
-        logger.info(f"Entity found for password reset: {entity.email} (type: {'subcontractor' if isinstance(entity, Subcontractor) else 'user'})")
+        entity_id = hash_identifier(entity.email)
+        logger.info(
+            "Entity found for password reset: %s (type: %s)",
+            entity_id,
+            "subcontractor" if isinstance(entity, Subcontractor) else "user",
+        )
 
         reset_token = create_password_reset_token(entity.email)
 
@@ -270,13 +281,13 @@ def forgot_password(
                 reset_token
             )
             if email_sent:
-                logger.info(f"Password reset email sent successfully to {entity.email}")
+                logger.info("Password reset email sent successfully to %s", entity_id)
             else:
-                logger.error(f"Failed to send password reset email to {entity.email}")
+                logger.error("Failed to send password reset email to %s", entity_id)
         except Exception as e:
-            logger.error(f"Exception sending password reset email to {entity.email}: {str(e)}")
+            logger.error("Exception sending password reset email to %s: %s", entity_id, str(e))
     else:
-        logger.warning(f"No entity found for password reset email: {forgot_data.email}")
+        logger.warning("No entity found for password reset email hash: %s", request_id)
 
     # Always return success for security (don't reveal if email exists)
     return ForgotPasswordResponse(
@@ -443,8 +454,7 @@ async def resend_verification(
 
 @router.get("/me", response_model=Union[CurrentUserResponse, CurrentSubcontractorResponse])
 def get_current_user_info(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
 ) -> Union[CurrentUserResponse, CurrentSubcontractorResponse]:
     """Get current authenticated user or subcontractor information"""
 
@@ -476,7 +486,7 @@ def get_current_user_info(
 
 @router.post("/logout", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def logout(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
+    _current_entity: Union[User, Subcontractor] = Depends(get_current_user)
 ) -> MessageResponse:
     """
     Logout endpoint (mainly for client-side token clearing)

@@ -2,9 +2,16 @@ import os
 import logging
 import sentry_sdk
 
+send_default_pii = os.getenv("SENTRY_SEND_PII", "false").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
+
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
-    send_default_pii=True,
+    send_default_pii=send_default_pii,
     enable_logs=True,
     traces_sample_rate=0.4,
     profile_session_sample_rate=0.2,
@@ -100,11 +107,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 # Global exception handler for all other exceptions
-logger = logging.getLogger("sitespace.errors")
+error_logger = logging.getLogger("sitespace.errors")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    error_logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
     sentry_sdk.capture_exception(exc)
 
     return JSONResponse(
@@ -164,5 +171,10 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug
+        reload=settings.debug,
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv(
+            "FORWARDED_ALLOW_IPS",
+            "127.0.0.1,10.0.0.0/8",
+        ),
     )

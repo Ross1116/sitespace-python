@@ -337,12 +337,17 @@ def check_subcontractor_availability(
     if isinstance(end_time, str):
         end_time = time.fromisoformat(end_time)
 
-    # Get existing bookings on that date
+    # Get existing bookings around that date to catch overnight spans
+    date_window = [
+        check_date - timedelta(days=1),
+        check_date,
+        check_date + timedelta(days=1),
+    ]
     existing_bookings_query = db.query(SlotBooking)\
         .filter(
             and_(
                 SlotBooking.subcontractor_id == subcontractor_id,
-                SlotBooking.booking_date == check_date,
+                SlotBooking.booking_date.in_(date_window),
                 SlotBooking.status != BookingStatus.CANCELLED
             )
         )\
@@ -373,9 +378,9 @@ def check_subcontractor_availability(
             if req_end <= req_start:
                 req_end += timedelta(days=1)
 
-            # Normalize existing booking range
-            bk_start = datetime.combine(check_date, booking.start_time)
-            bk_end = datetime.combine(check_date, booking.end_time)
+            # Normalize existing booking range based on its booking date
+            bk_start = datetime.combine(booking.booking_date, booking.start_time)
+            bk_end = datetime.combine(booking.booking_date, booking.end_time)
             if bk_end <= bk_start:
                 bk_end += timedelta(days=1)
 
@@ -522,60 +527,45 @@ def get_available_subcontractors_for_date(
     if trade_specialty:
         query = query.filter(Subcontractor.trade_specialty == trade_specialty)
 
-    # Find busy subcontractor IDs in a single query instead of N+1 loop
-    busy_filter = and_(
-        SlotBooking.booking_date == check_date,
-        SlotBooking.status != BookingStatus.CANCELLED
-    )
-
     if start_time and end_time:
-        if end_time > start_time:
-            # Normal (non-overnight) requested range
-            busy_filter = and_(
-                busy_filter,
-                or_(
-                    # Case 1: existing booking is normal (start < end) — standard overlap
-                    and_(
-                        SlotBooking.start_time < SlotBooking.end_time,
-                        SlotBooking.start_time < end_time,
-                        SlotBooking.end_time > start_time,
-                    ),
-                    # Case 2: existing booking is overnight (start >= end) —
-                    # overlaps if its start is before our end OR its end is after our start
-                    and_(
-                        SlotBooking.start_time >= SlotBooking.end_time,
-                        or_(
-                            SlotBooking.start_time < end_time,
-                            SlotBooking.end_time > start_time,
-                        ),
-                    ),
-                )
-            )
-        else:
-            # Requested range is itself overnight
-            busy_filter = and_(
-                busy_filter,
-                or_(
-                    # Case 1: existing normal booking falls in the overnight window
-                    and_(
-                        SlotBooking.start_time < SlotBooking.end_time,
-                        or_(
-                            SlotBooking.end_time > start_time,
-                            SlotBooking.start_time < end_time,
-                        ),
-                    ),
-                    # Case 2: existing overnight booking — always overlaps another overnight
-                    SlotBooking.start_time >= SlotBooking.end_time,
-                )
-            )
+        req_start = datetime.combine(check_date, start_time)
+        req_end = datetime.combine(check_date, end_time)
+        if req_end <= req_start:
+            req_end += timedelta(days=1)
 
-    busy_sub_ids = db.query(SlotBooking.subcontractor_id).filter(
-        busy_filter,
-        SlotBooking.subcontractor_id.isnot(None)
-    ).distinct().subquery()
+        date_window = [
+            check_date - timedelta(days=1),
+            check_date,
+            check_date + timedelta(days=1),
+        ]
 
-    # Exclude busy subcontractors
-    query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
+        bookings = db.query(SlotBooking).filter(
+            SlotBooking.booking_date.in_(date_window),
+            SlotBooking.status != BookingStatus.CANCELLED,
+            SlotBooking.subcontractor_id.isnot(None),
+        ).all()
+
+        busy_ids = set()
+        for booking in bookings:
+            bk_start = datetime.combine(booking.booking_date, booking.start_time)
+            bk_end = datetime.combine(booking.booking_date, booking.end_time)
+            if bk_end <= bk_start:
+                bk_end += timedelta(days=1)
+
+            if bk_start < req_end and req_start < bk_end:
+                busy_ids.add(booking.subcontractor_id)
+
+        if busy_ids:
+            query = query.filter(Subcontractor.id.notin_(busy_ids))
+    else:
+        busy_sub_ids = db.query(SlotBooking.subcontractor_id).filter(
+            SlotBooking.booking_date == check_date,
+            SlotBooking.status != BookingStatus.CANCELLED,
+            SlotBooking.subcontractor_id.isnot(None)
+        ).distinct().subquery()
+
+        # Exclude busy subcontractors
+        query = query.filter(Subcontractor.id.notin_(db.query(busy_sub_ids)))
 
     return query.all()
 

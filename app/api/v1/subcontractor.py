@@ -862,16 +862,17 @@ def check_subcontractor_availability_detail(
     conflicts = []
 
     if start_time and end_time and existing_bookings:
-        from datetime import time as dt_time
-        req_start = dt_time.fromisoformat(start_time)
-        req_end = dt_time.fromisoformat(end_time)
+        req_start = datetime.combine(check_date, datetime.strptime(start_time, "%H:%M").time())
+        req_end = datetime.combine(check_date, datetime.strptime(end_time, "%H:%M").time())
+        if req_end <= req_start:
+            req_end += timedelta(days=1)
         for booking in existing_bookings:
-            b_start = dt_time.fromisoformat(booking["start_time"])
-            b_end = dt_time.fromisoformat(booking["end_time"])
+            b_start = datetime.combine(check_date, datetime.strptime(booking["start_time"], "%H:%M:%S").time())
+            b_end = datetime.combine(check_date, datetime.strptime(booking["end_time"], "%H:%M:%S").time())
+            if b_end <= b_start:
+                b_end += timedelta(days=1)
 
-            if (b_start <= req_start < b_end or
-                b_start < req_end <= b_end or
-                (req_start <= b_start and req_end >= b_end)):
+            if b_start < req_end and req_start < b_end:
                 is_available = False
                 conflicts.append(booking)
     

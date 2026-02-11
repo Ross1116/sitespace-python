@@ -47,7 +47,7 @@ class BookingCreate(BookingBase):
     @classmethod
     def normalize_status(cls, v):
         if isinstance(v, str):
-            return v.upper()
+            return v.lower()
         return v
     
     @field_validator('booking_date')
@@ -76,7 +76,7 @@ class BookingUpdate(BaseSchema):
     @classmethod
     def normalize_status(cls, v):
         if isinstance(v, str):
-            return v.upper()
+            return v.lower()
         return v
     
     @field_validator('booking_date')
@@ -108,7 +108,7 @@ class BookingStatusUpdate(BaseSchema):
     @classmethod
     def normalize_status(cls, v):
         if isinstance(v, str):
-            return v.upper()
+            return v.lower()
         return v
 
 
