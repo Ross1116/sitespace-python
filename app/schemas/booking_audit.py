@@ -41,29 +41,27 @@ class BookingAuditResponse(BaseSchema):
 
     created_at: Optional[datetime] = None
 
+    @staticmethod
+    def _lowercase_if_str(v):
+        return v.lower() if isinstance(v, str) else v
+
     @field_validator("from_status", "to_status", mode="before")
     @classmethod
     def normalize_status(cls, v):
         """Old audit rows may have UPPERCASE status values (e.g. 'CONFIRMED')."""
-        if isinstance(v, str):
-            return v.lower()
-        return v
+        return cls._lowercase_if_str(v)
 
     @field_validator("actor_role", mode="before")
     @classmethod
     def normalize_role(cls, v):
         """Old audit rows may have UPPERCASE role values."""
-        if isinstance(v, str):
-            return v.lower()
-        return v
+        return cls._lowercase_if_str(v)
 
     @field_validator("action", mode="before")
     @classmethod
     def normalize_action(cls, v):
         """Old audit rows may have UPPERCASE action values."""
-        if isinstance(v, str):
-            return v.lower()
-        return v
+        return cls._lowercase_if_str(v)
 
     @field_validator("created_at", mode="before")
     @classmethod

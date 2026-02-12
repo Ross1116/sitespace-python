@@ -1,6 +1,7 @@
 # app/core/password.py
 import logging
 from passlib.context import CryptContext
+from passlib.exc import UnknownHashError, PasswordValueError, InternalBackendError
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
     try:
-        return pwd_context.verify(_truncate_for_bcrypt(plain_password), hashed_password)
-    except Exception as e:
-        logger.error("Password verification error: %s", e)
+        scheme = pwd_context.identify(hashed_password)
+        secret = _truncate_for_bcrypt(plain_password) if scheme == "bcrypt" else plain_password
+        return pwd_context.verify(secret, hashed_password)
+    except (UnknownHashError, PasswordValueError, InternalBackendError):
+        logger.exception("Password verification error")
         return False
 
 def get_password_hash(password: str) -> str:
     """Hash a password"""
-    return pwd_context.hash(_truncate_for_bcrypt(password))
+    secret = _truncate_for_bcrypt(password) if pwd_context.default_scheme() == "bcrypt" else password
+    return pwd_context.hash(secret)
