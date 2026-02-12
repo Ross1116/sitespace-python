@@ -41,6 +41,30 @@ class BookingAuditResponse(BaseSchema):
 
     created_at: Optional[datetime] = None
 
+    @field_validator("from_status", "to_status", mode="before")
+    @classmethod
+    def normalize_status(cls, v):
+        """Old audit rows may have UPPERCASE status values (e.g. 'CONFIRMED')."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @field_validator("actor_role", mode="before")
+    @classmethod
+    def normalize_role(cls, v):
+        """Old audit rows may have UPPERCASE role values."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def normalize_action(cls, v):
+        """Old audit rows may have UPPERCASE action values."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
     @field_validator("created_at", mode="before")
     @classmethod
     def default_created_at(cls, v):
