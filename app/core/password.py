@@ -1,6 +1,7 @@
 # app/core/password.py
 import logging
 from passlib.context import CryptContext
+from passlib.exc import UnknownHashError, PasswordValueError, InternalBackendError
 
 logger = logging.getLogger(__name__)
 
@@ -12,17 +13,28 @@ pwd_context = CryptContext(
     bcrypt__rounds=12
 )
 
+def _truncate_for_bcrypt(password: str) -> str:
+    """Truncate password to 72 bytes (bcrypt's hard limit)."""
+    encoded = password.encode("utf-8")
+    if len(encoded) > 72:
+        encoded = encoded[:72]
+    return encoded.decode("utf-8", errors="ignore")
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plain password against a hashed password"""
     if not plain_password or not hashed_password:
         return False
-    
+
     try:
-        return pwd_context.verify(plain_password, hashed_password)
-    except Exception as e:
-        logger.error("Password verification error: %s", e)
+        scheme = pwd_context.identify(hashed_password)
+        secret = _truncate_for_bcrypt(plain_password) if scheme == "bcrypt" else plain_password
+        return pwd_context.verify(secret, hashed_password)
+    except (UnknownHashError, PasswordValueError, InternalBackendError):
+        logger.exception("Password verification error")
         return False
 
 def get_password_hash(password: str) -> str:
     """Hash a password"""
-    return pwd_context.hash(password)
+    secret = _truncate_for_bcrypt(password) if pwd_context.default_scheme() == "bcrypt" else password
+    return pwd_context.hash(secret)
