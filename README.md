@@ -11,7 +11,7 @@ Construction site management backend built with FastAPI. Handles asset managemen
 
 ### Setup
 
-````bash
+```bash
 # Install dependencies
 pip install -r requirements.txt
 
@@ -24,13 +24,13 @@ alembic upgrade head
 
 # Start the server
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-```text
+```
 
 ### Docker
 
 ```bash
 docker-compose up -d
-```text
+```
 
 This starts the FastAPI app on port `8080` and PostgreSQL on port `5432`. The startup script (`start.sh`) waits for the database, runs migrations, then launches Uvicorn.
 
@@ -44,30 +44,28 @@ This starts the FastAPI app on port `8080` and PostgreSQL on port `5432`. The st
 
 ## Project Structure
 
-````
-
+```
 app/
-api/v1/ Route handlers
-auth.py Authentication & authorization
-assets.py Asset CRUD & availability
-slot_booking.py Booking lifecycle & scheduling
-site_project.py Project management & team assignments
-subcontractor.py Subcontractor management & availability
-users.py User profile management
-file_upload.py File upload with validation
-booking_audit.py Immutable audit trail
-core/
-config.py Settings & environment variables
-database.py SQLAlchemy engine & session
-security.py JWT, password hashing, rate limiting
-email.py Mailtrap email integration
-crud/ Database access layer
-models/ SQLAlchemy ORM models
-schemas/ Pydantic request/response schemas
-utils/ File upload & password utilities
-alembic/ Database migrations
-tests/ Test suite
-
+├── api/v1/             Route handlers
+│   ├── auth.py         Authentication & authorization
+│   ├── assets.py       Asset CRUD & availability
+│   ├── slot_booking.py Booking lifecycle & scheduling
+│   ├── site_project.py Project management & team assignments
+│   ├── subcontractor.py Subcontractor management & availability
+│   ├── users.py        User profile management
+│   ├── file_upload.py  File upload with validation
+│   └── booking_audit.py Immutable audit trail
+├── core/
+│   ├── config.py       Settings & environment variables
+│   ├── database.py     SQLAlchemy engine & session
+│   ├── security.py     JWT, password hashing, rate limiting
+│   └── email.py        Mailtrap email integration
+├── crud/               Database access layer
+├── models/             SQLAlchemy ORM models
+├── schemas/            Pydantic request/response schemas
+└── utils/              File upload & password utilities
+alembic/                Database migrations
+tests/                  Test suite
 ```
 
 ---
@@ -242,7 +240,7 @@ PostgreSQL with SQLAlchemy ORM. All primary keys are UUIDs.
 | Enum             | Values                                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------------------- |
 | `BookingStatus`  | `PENDING`, `CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`, `DENIED`                                     |
-| `AssetStatus`    | `available`, `in_use`, `maintenance`, `retired`                                                               |
+| `AssetStatus`    | `available`, `maintenance`, `retired`                                                                         |
 | `ProjectStatus`  | `active`, `pending`, `completed`, `cancelled`, `on_hold`                                                      |
 | `UserRole`       | `manager`, `admin`, `subcontractor`                                                                           |
 | `TradeSpecialty` | `electrician`, `plumber`, `carpenter`, `mason`, `painter`, `hvac`, `roofer`, `landscaper`, `general`, `other` |
@@ -250,10 +248,8 @@ PostgreSQL with SQLAlchemy ORM. All primary keys are UUIDs.
 ### Connection Pool
 
 ```
-
 pool_size: 20, max_overflow: 40, pool_recycle: 1800s, pool_pre_ping: true
-
-````
+```
 
 ### Migrations
 
@@ -262,7 +258,7 @@ alembic upgrade head              # Apply all migrations
 alembic revision --autogenerate -m "description"  # Generate migration
 alembic downgrade -1              # Revert last migration
 alembic history                   # Show migration history
-````
+```
 
 ---
 

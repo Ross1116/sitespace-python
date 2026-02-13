@@ -46,10 +46,18 @@ def create_booking(
     if not asset:
         raise ValueError(f"Asset with id {booking_data.asset_id} not found")
     
-    # Check if asset is available
-    if asset.status != AssetStatus.AVAILABLE:
-        raise ValueError(f"Asset is not available (status: {asset.status})")
-    
+    # Block permanently unavailable statuses
+    if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
+        raise ValueError(f"Asset is not available (status: {asset.status.value})")
+
+    # Block bookings during scheduled maintenance windows
+    if asset.maintenance_start_date and asset.maintenance_end_date:
+        if asset.maintenance_start_date <= booking_data.booking_date <= asset.maintenance_end_date:
+            raise ValueError(
+                f"Asset is under scheduled maintenance from "
+                f"{asset.maintenance_start_date} to {asset.maintenance_end_date}"
+            )
+
     # Determine manager_id, subcontractor_id, and status based on role
     if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
         # Manager/Admin creating booking
@@ -205,11 +213,21 @@ def create_bulk_bookings(
                 failed_bookings.append({"asset_id": asset_id, "reason": "Asset not found"})
                 continue
 
-            if asset.status != AssetStatus.AVAILABLE:
-                failed_bookings.append({"asset_id": asset_id, "reason": f"Asset status is {asset.status}"})
+            if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
+                failed_bookings.append({"asset_id": asset_id, "reason": f"Asset status is {asset.status.value}"})
                 continue
 
             for booking_date in bulk_data.booking_dates:
+                # Check maintenance date window
+                if asset.maintenance_start_date and asset.maintenance_end_date:
+                    if asset.maintenance_start_date <= booking_date <= asset.maintenance_end_date:
+                        failed_bookings.append({
+                            "asset_id": asset_id,
+                            "date": booking_date,
+                            "reason": f"Asset is under scheduled maintenance from {asset.maintenance_start_date} to {asset.maintenance_end_date}"
+                        })
+                        continue
+
                 conflict_check = BookingConflictCheck(
                     asset_id=asset_id,
                     booking_date=booking_date,

@@ -39,6 +39,15 @@ class AssetCreate(AssetBase):
     """Asset creation schema"""
     project_id: UUID
     status: AssetStatus = AssetStatus.AVAILABLE
+    maintenance_start_date: Optional[date] = None
+    maintenance_end_date: Optional[date] = None
+
+    @field_validator('maintenance_end_date')
+    def validate_maintenance_dates(cls, v, info):
+        start = info.data.get('maintenance_start_date')
+        if v and start and v < start:
+            raise ValueError('maintenance_end_date must be >= maintenance_start_date')
+        return v
 
 class AssetUpdate(BaseSchema):
     """Asset update schema"""
@@ -47,11 +56,20 @@ class AssetUpdate(BaseSchema):
     description: Optional[str] = None
     current_value: Optional[Decimal] = Field(None, ge=0)
     status: Optional[AssetStatus] = None
-    
+    maintenance_start_date: Optional[date] = None
+    maintenance_end_date: Optional[date] = None
+
     @field_validator('current_value', mode='before')
     def round_decimal(cls, v):
         if v is not None:
             return round(Decimal(str(v)), 2)
+        return v
+
+    @field_validator('maintenance_end_date')
+    def validate_maintenance_dates(cls, v, info):
+        start = info.data.get('maintenance_start_date')
+        if v and start and v < start:
+            raise ValueError('maintenance_end_date must be >= maintenance_start_date')
         return v
 
 class AssetTransfer(BaseSchema):
@@ -65,6 +83,8 @@ class AssetResponse(AssetBase, TimestampSchema):
     id: UUID
     project_id: UUID
     status: AssetStatus
+    maintenance_start_date: Optional[date] = None
+    maintenance_end_date: Optional[date] = None
 
 class AssetBriefResponse(BaseSchema):
     """Brief asset info"""

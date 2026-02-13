@@ -33,7 +33,9 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,
         current_value=asset.current_value or asset.purchase_value,
-        status=asset.status or AssetStatus.AVAILABLE
+        status=asset.status or AssetStatus.AVAILABLE,
+        maintenance_start_date=asset.maintenance_start_date,
+        maintenance_end_date=asset.maintenance_end_date
     )
     
     db.add(db_asset)
@@ -275,14 +277,23 @@ def check_asset_availability(
             reason="Asset not found"
         )
     
-    # Check asset status
-    if asset.status != AssetStatus.AVAILABLE:
+    # Block permanently unavailable statuses
+    if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
         return AssetAvailabilityResponse(
             is_available=False,
             conflicts=[],
             reason=f"Asset is {asset.status.value}"
         )
-    
+
+    # Block bookings during scheduled maintenance windows
+    if asset.maintenance_start_date and asset.maintenance_end_date:
+        if asset.maintenance_start_date <= check.date <= asset.maintenance_end_date:
+            return AssetAvailabilityResponse(
+                is_available=False,
+                conflicts=[],
+                reason=f"Asset is under scheduled maintenance from {asset.maintenance_start_date} to {asset.maintenance_end_date}"
+            )
+
     # Parse time strings to time objects
     start_hour, start_min = map(int, check.start_time.split(':'))
     end_hour, end_min = map(int, check.end_time.split(':'))
@@ -365,11 +376,11 @@ def get_available_assets(
     asset_type: Optional[str] = None
 ) -> List[Asset]:
     """Get all available assets for a specific time slot"""
-    # Get all assets for the project
+    # Get all assets for the project (exclude maintenance and retired)
     query = db.query(Asset).filter(
         and_(
             Asset.project_id == project_id,
-            Asset.status == AssetStatus.AVAILABLE
+            Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED])
         )
     )
     
@@ -456,7 +467,7 @@ def get_assets_by_type(
     )
     
     if not include_unavailable:
-        query = query.filter(Asset.status == AssetStatus.AVAILABLE)
+        query = query.filter(Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED]))
     
     return query.order_by(Asset.name).all()
 

@@ -8,7 +8,6 @@ from app.core.database import Base
 
 class AssetStatus(str, enum.Enum):
     AVAILABLE = "available"
-    IN_USE = "in_use"
     MAINTENANCE = "maintenance"
     RETIRED = "retired"
 
@@ -25,6 +24,8 @@ class Asset(Base):
     purchase_value = Column(DECIMAL(12, 2))
     current_value = Column(DECIMAL(12, 2))
     status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
+    maintenance_start_date = Column(Date, nullable=True)
+    maintenance_end_date = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
