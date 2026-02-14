@@ -25,6 +25,7 @@ from ..schemas.slot_booking import (
     BookingResponse
 )
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
+from .asset import resolve_maintenance_status
 
 def create_booking(
     db: Session,
@@ -45,7 +46,9 @@ def create_booking(
     asset = db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
     if not asset:
         raise ValueError(f"Asset with id {booking_data.asset_id} not found")
-    
+
+    resolve_maintenance_status(db, asset)
+
     # Block permanently unavailable statuses
     if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
         raise ValueError(f"Asset is not available (status: {asset.status.value})")
@@ -207,6 +210,12 @@ def create_bulk_bookings(
         raise ValueError(f"Invalid user role: {created_by_role}")
     
     try:
+        # Resolve maintenance status for all assets upfront (before any bookings are flushed)
+        for aid in set(bulk_data.asset_ids):
+            a = db.query(Asset).filter(Asset.id == aid).first()
+            if a:
+                resolve_maintenance_status(db, a)
+
         for asset_id in bulk_data.asset_ids:
             asset = db.query(Asset).filter(Asset.id == asset_id).first()
             if not asset:

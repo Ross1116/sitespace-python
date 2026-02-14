@@ -17,13 +17,78 @@ from ..schemas.asset import (
     MaintenanceRecord
 )
 
+def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
+    """Check and update asset status based on maintenance date window.
+
+    - If today falls within [start, end], set status to MAINTENANCE.
+    - If end date has passed, clear dates and revert to AVAILABLE.
+    Only writes to DB when a transition actually occurs.
+    """
+    if not asset.maintenance_start_date or not asset.maintenance_end_date:
+        return asset
+
+    today = date.today()
+
+    if asset.maintenance_start_date <= today <= asset.maintenance_end_date:
+        # Active maintenance window
+        if asset.status != AssetStatus.MAINTENANCE:
+            asset.status = AssetStatus.MAINTENANCE
+            asset.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(asset)
+    elif today > asset.maintenance_end_date:
+        # Maintenance window expired — clean up
+        asset.maintenance_start_date = None
+        asset.maintenance_end_date = None
+        if asset.status == AssetStatus.MAINTENANCE:
+            asset.status = AssetStatus.AVAILABLE
+        asset.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(asset)
+
+    return asset
+
+
+def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
+    """Batch resolve maintenance status. Commits once if any transitions occurred."""
+    today = date.today()
+    changed = []
+
+    for asset in assets:
+        if not asset.maintenance_start_date or not asset.maintenance_end_date:
+            continue
+
+        if asset.maintenance_start_date <= today <= asset.maintenance_end_date:
+            if asset.status != AssetStatus.MAINTENANCE:
+                asset.status = AssetStatus.MAINTENANCE
+                asset.updated_at = datetime.now(timezone.utc)
+                changed.append(asset)
+        elif today > asset.maintenance_end_date:
+            asset.maintenance_start_date = None
+            asset.maintenance_end_date = None
+            if asset.status == AssetStatus.MAINTENANCE:
+                asset.status = AssetStatus.AVAILABLE
+            asset.updated_at = datetime.now(timezone.utc)
+            changed.append(asset)
+
+    if changed:
+        db.commit()
+        for asset in changed:
+            db.refresh(asset)
+
+    return assets
+
+
 def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset:
     """Create a new asset"""
     # Check if project exists
     project = db.query(SiteProject).filter(SiteProject.id == asset.project_id).first()
     if not project:
         raise ValueError(f"Project with id {asset.project_id} not found")
-    
+
+    if asset.status == AssetStatus.RETIRED and (asset.maintenance_start_date or asset.maintenance_end_date):
+        raise ValueError("Cannot set maintenance dates on a retired asset")
+
     db_asset = Asset(
         project_id=asset.project_id,
         asset_code=asset.asset_code,
@@ -45,21 +110,30 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
 
 def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
     """Get an asset by ID"""
-    return db.query(Asset).filter(Asset.id == asset_id).first()
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if asset:
+        resolve_maintenance_status(db, asset)
+    return asset
 
 def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
     """Get asset with all relationships loaded"""
-    return db.query(Asset)\
+    asset = db.query(Asset)\
         .options(
             joinedload(Asset.project),
             joinedload(Asset.bookings)
         )\
         .filter(Asset.id == asset_id)\
         .first()
+    if asset:
+        resolve_maintenance_status(db, asset)
+    return asset
 
 def get_asset_by_code(db: Session, asset_code: str) -> Optional[Asset]:
     """Get an asset by asset code"""
-    return db.query(Asset).filter(Asset.asset_code == asset_code).first()
+    asset = db.query(Asset).filter(Asset.asset_code == asset_code).first()
+    if asset:
+        resolve_maintenance_status(db, asset)
+    return asset
 
 def get_assets_paginated(
     db: Session,
@@ -87,7 +161,8 @@ def get_assets_paginated(
     # Apply pagination and ordering
     assets = query.order_by(Asset.created_at.desc())\
         .offset(skip).limit(limit).all()
-    
+    _resolve_maintenance_batch(db, assets)
+
     return assets, total
 
 def get_assets_brief(
@@ -103,8 +178,10 @@ def get_assets_brief(
     else:
         # By default, exclude retired assets for brief lists
         query = query.filter(Asset.status != AssetStatus.RETIRED)
-    
-    return query.order_by(Asset.name).all()
+
+    assets = query.order_by(Asset.name).all()
+    _resolve_maintenance_batch(db, assets)
+    return assets
 
 def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailResponse]:
     """Get detailed asset information with statistics"""
@@ -195,13 +272,33 @@ def update_asset(
         return None
     
     update_data = asset_update.model_dump(exclude_unset=True)
-    
+
     # If updating asset_code, check uniqueness
     if 'asset_code' in update_data and update_data['asset_code'] != db_asset.asset_code:
         existing = get_asset_by_code(db, update_data['asset_code'])
         if existing:
             raise ValueError(f"Asset code {update_data['asset_code']} already exists")
-    
+
+    # Determine effective status after this update
+    effective_status = update_data.get('status', db_asset.status)
+
+    # Block maintenance dates on retired assets; clear existing dates when retiring
+    if effective_status == AssetStatus.RETIRED:
+        if update_data.get('maintenance_start_date') is not None or update_data.get('maintenance_end_date') is not None:
+            raise ValueError("Cannot set maintenance dates on a retired asset")
+        if db_asset.maintenance_start_date or db_asset.maintenance_end_date:
+            update_data['maintenance_start_date'] = None
+            update_data['maintenance_end_date'] = None
+
+    # Manual override: setting status to AVAILABLE during an active maintenance
+    # window clears the dates (intentional early exit from maintenance)
+    if update_data.get('status') == AssetStatus.AVAILABLE:
+        if db_asset.maintenance_start_date and db_asset.maintenance_end_date:
+            today = date.today()
+            if db_asset.maintenance_start_date <= today <= db_asset.maintenance_end_date:
+                update_data.setdefault('maintenance_start_date', None)
+                update_data.setdefault('maintenance_end_date', None)
+
     for field, value in update_data.items():
         setattr(db_asset, field, value)
     
@@ -388,7 +485,9 @@ def get_available_assets(
         query = query.filter(Asset.type == asset_type)
     
     assets = query.all()
-    
+    _resolve_maintenance_batch(db, assets)
+    assets = [a for a in assets if a.status not in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED)]
+
     available_assets = []
     for asset in assets:
         check = AssetAvailabilityCheck(
@@ -468,8 +567,10 @@ def get_assets_by_type(
     
     if not include_unavailable:
         query = query.filter(Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED]))
-    
-    return query.order_by(Asset.name).all()
+
+    assets = query.order_by(Asset.name).all()
+    _resolve_maintenance_batch(db, assets)
+    return assets
 
 def get_asset_statistics(
     db: Session,
@@ -578,7 +679,8 @@ def search_assets(
     
     total = query.count()
     assets = query.order_by(Asset.name).offset(skip).limit(limit).all()
-    
+    _resolve_maintenance_batch(db, assets)
+
     return assets, total
 
 def get_assets_requiring_maintenance(
