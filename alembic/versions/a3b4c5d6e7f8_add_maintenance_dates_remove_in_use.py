@@ -11,7 +11,6 @@ from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
 revision: str = 'a3b4c5d6e7f8'
 down_revision: Union[str, None] = 'f1a2b3c4d5e6'
 branch_labels: Union[str, Sequence[str], None] = None
@@ -19,34 +18,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Migrate any existing in_use assets to available.
-    #
-    # PostgreSQL validates every literal in a query against the enum type
-    # at *parse time* — before it checks whether any matching rows exist.
-    # If 'in_use' is not a member of the assetstatus enum, the query is
-    # rejected outright.  Casting the column to text bypasses that check
-    # and lets us safely match on values that may or may not be in the enum.
+    # 1. Detach column from enum — no more validation on any operation
+    op.execute("ALTER TABLE assets ALTER COLUMN status TYPE text")
+
+    # 2. Normalize ALL values to lowercase and remap in_use → available
+    op.execute("UPDATE assets SET status = LOWER(status)")
     op.execute(
         "UPDATE assets SET status = 'available' "
-        "WHERE status::text IN ('IN_USE', 'in_use')"
+        "WHERE status = 'in_use'"
     )
 
-    # Now remove the old value from the enum itself.
-    # PostgreSQL has no ALTER TYPE ... DROP VALUE, so we recreate the type.
-    op.execute("ALTER TYPE assetstatus RENAME TO assetstatus_old")
+    # 3. Replace the enum with new lowercase values (without in_use)
+    op.execute("DROP TYPE assetstatus")
     op.execute(
-        "CREATE TYPE assetstatus AS ENUM ("
-        "  'available', 'deployed', 'maintenance', 'retired'"
-        ")"
+        "CREATE TYPE assetstatus AS ENUM "
+        "('available', 'deployed', 'retired', 'maintenance')"
     )
-    op.execute(
-        "ALTER TABLE assets "
-        "ALTER COLUMN status TYPE assetstatus "
-        "USING status::text::assetstatus"
-    )
-    op.execute("DROP TYPE assetstatus_old")
 
-    # Add maintenance date columns
+    # 4. Convert column back to the new enum
+    op.execute(
+        "ALTER TABLE assets ALTER COLUMN status "
+        "TYPE assetstatus USING status::assetstatus"
+    )
+
+    # 5. Add maintenance date columns
     op.add_column('assets', sa.Column('maintenance_start_date', sa.Date(), nullable=True))
     op.add_column('assets', sa.Column('maintenance_end_date', sa.Date(), nullable=True))
 
@@ -55,5 +50,15 @@ def downgrade() -> None:
     op.drop_column('assets', 'maintenance_end_date')
     op.drop_column('assets', 'maintenance_start_date')
 
-    # Restore the old enum value
-    op.execute("ALTER TYPE assetstatus ADD VALUE IF NOT EXISTS 'in_use'")
+    # Reverse the enum change
+    op.execute("ALTER TABLE assets ALTER COLUMN status TYPE text")
+    op.execute("DROP TYPE assetstatus")
+    op.execute(
+        "CREATE TYPE assetstatus AS ENUM "
+        "('AVAILABLE', 'IN_USE', 'DEPLOYED', 'RETIRED', 'MAINTENANCE')"
+    )
+    op.execute("UPDATE assets SET status = UPPER(status)")
+    op.execute(
+        "ALTER TABLE assets ALTER COLUMN status "
+        "TYPE assetstatus USING status::assetstatus"
+    )
