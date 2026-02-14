@@ -18,24 +18,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1. Detach column from enum — no more validation on any operation
+    # 1. Detach column from enum — bypass all validation
     op.execute("ALTER TABLE assets ALTER COLUMN status TYPE text")
 
-    # 2. Normalize ALL values to lowercase and remap in_use → available
+    # 2. Lowercase everything, then remap removed statuses
     op.execute("UPDATE assets SET status = LOWER(status)")
     op.execute(
         "UPDATE assets SET status = 'available' "
-        "WHERE status = 'in_use'"
+        "WHERE status IN ('in_use', 'deployed')"
     )
 
-    # 3. Replace the enum with new lowercase values (without in_use)
+    # 3. Recreate enum to match Python AssetStatus.value exactly:
+    #    'available', 'maintenance', 'retired'
     op.execute("DROP TYPE assetstatus")
     op.execute(
         "CREATE TYPE assetstatus AS ENUM "
-        "('available', 'deployed', 'retired', 'maintenance')"
+        "('available', 'maintenance', 'retired')"
     )
 
-    # 4. Convert column back to the new enum
+    # 4. Convert column back to enum
     op.execute(
         "ALTER TABLE assets ALTER COLUMN status "
         "TYPE assetstatus USING status::assetstatus"
@@ -50,14 +51,12 @@ def downgrade() -> None:
     op.drop_column('assets', 'maintenance_end_date')
     op.drop_column('assets', 'maintenance_start_date')
 
-    # Reverse the enum change
     op.execute("ALTER TABLE assets ALTER COLUMN status TYPE text")
     op.execute("DROP TYPE assetstatus")
     op.execute(
         "CREATE TYPE assetstatus AS ENUM "
-        "('AVAILABLE', 'IN_USE', 'DEPLOYED', 'RETIRED', 'MAINTENANCE')"
+        "('available', 'in_use', 'deployed', 'retired')"
     )
-    op.execute("UPDATE assets SET status = UPPER(status)")
     op.execute(
         "ALTER TABLE assets ALTER COLUMN status "
         "TYPE assetstatus USING status::assetstatus"
