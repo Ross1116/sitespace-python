@@ -66,9 +66,98 @@ def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
     return asset
 
 
+def _bulk_resolve_maintenance(db: Session) -> None:
+    """Resolve maintenance status transitions directly in the database.
+
+    Runs targeted UPDATE statements so that subsequent queries — including
+    COUNT — reflect accurate statuses without post-query filtering.
+
+    Four transitions are handled:
+    1. **Activate**:  today ∈ [start, end]  → set MAINTENANCE
+    2. **Expire**:    today > end           → revert to AVAILABLE, clear dates
+    3. **Clean**:     today > end (non-MAINTENANCE) → clear stale dates only
+    4. **Unstick**:   today < start, stuck in MAINTENANCE → revert to AVAILABLE
+
+    All updates skip RETIRED assets.  Each update is idempotent.
+    Uses synchronize_session=False because list views call this *before*
+    loading Asset objects; the subsequent commit() (expire_on_commit=True)
+    ensures any previously-cached objects are refreshed on next access.
+    """
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    rows_affected = 0
+
+    # 1. Activate: today within maintenance window, not yet MAINTENANCE
+    rows_affected += db.query(Asset).filter(
+        and_(
+            Asset.maintenance_start_date <= today,
+            Asset.maintenance_end_date >= today,
+            Asset.status != AssetStatus.MAINTENANCE,
+            Asset.status != AssetStatus.RETIRED,
+        )
+    ).update(
+        {Asset.status: AssetStatus.MAINTENANCE, Asset.updated_at: now},
+        synchronize_session=False
+    )
+
+    # 2. Expire status: window passed, currently MAINTENANCE → AVAILABLE
+    rows_affected += db.query(Asset).filter(
+        and_(
+            Asset.maintenance_end_date < today,
+            Asset.maintenance_end_date.isnot(None),
+            Asset.status == AssetStatus.MAINTENANCE,
+        )
+    ).update(
+        {
+            Asset.status: AssetStatus.AVAILABLE,
+            Asset.maintenance_start_date: None,
+            Asset.maintenance_end_date: None,
+            Asset.updated_at: now,
+        },
+        synchronize_session=False
+    )
+
+    # 3. Clear stale dates: window passed for non-MAINTENANCE, non-RETIRED
+    #    assets (edge case: status was manually changed but dates were left)
+    rows_affected += db.query(Asset).filter(
+        and_(
+            Asset.maintenance_end_date < today,
+            Asset.maintenance_end_date.isnot(None),
+            Asset.status != AssetStatus.RETIRED,
+            Asset.status != AssetStatus.MAINTENANCE,  # Already handled in step 2
+        )
+    ).update(
+        {
+            Asset.maintenance_start_date: None,
+            Asset.maintenance_end_date: None,
+            Asset.updated_at: now,
+        },
+        synchronize_session=False
+    )
+
+    # 4. Unstick: window moved to future, asset stuck in MAINTENANCE
+    rows_affected += db.query(Asset).filter(
+        and_(
+            Asset.maintenance_start_date > today,
+            Asset.maintenance_start_date.isnot(None),
+            Asset.status == AssetStatus.MAINTENANCE,
+        )
+    ).update(
+        {Asset.status: AssetStatus.AVAILABLE, Asset.updated_at: now},
+        synchronize_session=False
+    )
+
+    if rows_affected:
+        db.commit()
+
+
 def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
-    """Batch resolve maintenance status. Commits once if any transitions occurred.
-    Retired assets are skipped entirely.
+    """Batch resolve maintenance status for already-loaded Asset objects.
+
+    Prefer ``_bulk_resolve_maintenance`` for list/paginated views where
+    accurate COUNT totals matter — it resolves at the DB level before
+    the query runs.  This function is retained for code paths that
+    operate on an already-loaded collection.
     """
     today = date.today()
     changed = []
@@ -94,9 +183,6 @@ def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
             asset.updated_at = datetime.now(timezone.utc)
             changed.append(asset)
         elif today < asset.maintenance_start_date:
-            # Maintenance window is in the future — unstick any asset that
-            # is currently MAINTENANCE (dates were moved forward).  Keep
-            # the dates so the scheduled window still applies later.
             if asset.status == AssetStatus.MAINTENANCE:
                 asset.status = AssetStatus.AVAILABLE
                 asset.updated_at = datetime.now(timezone.utc)
@@ -178,7 +264,17 @@ def get_assets_paginated(
     skip: int = 0,
     limit: int = 100
 ) -> Tuple[List[Asset], int]:
-    """Get paginated assets with filters"""
+    """Get paginated assets with filters.
+
+    Maintenance statuses are resolved at the DB level *before* the query
+    runs, so both the COUNT and the returned page reflect accurate
+    statuses.
+    """
+    # Resolve all stale maintenance statuses in the DB first — this
+    # ensures the WHERE clause and COUNT operate on correct data across
+    # ALL pages, not just the current one.
+    _bulk_resolve_maintenance(db)
+
     query = db.query(Asset)
 
     if project_id:
@@ -190,21 +286,12 @@ def get_assets_paginated(
     if asset_type:
         query = query.filter(Asset.type == asset_type)
 
-    # Get total count before pagination
+    # Total is accurate because _bulk_resolve_maintenance already
+    # corrected statuses across the entire table.
     total = query.count()
 
-    # Apply pagination and ordering
     assets = query.order_by(Asset.created_at.desc())\
         .offset(skip).limit(limit).all()
-    _resolve_maintenance_batch(db, assets)
-
-    # Post-resolve: batch resolution may have changed statuses (e.g. AVAILABLE
-    # → MAINTENANCE). Re-filter so the returned page only contains assets that
-    # still match the requested status, and adjust total accordingly.
-    if status:
-        pre_filter_count = len(assets)
-        assets = [a for a in assets if a.status == status]
-        total -= (pre_filter_count - len(assets))
 
     return assets, total
 
@@ -215,6 +302,8 @@ def get_assets_brief(
     status: Optional[AssetStatus] = None
 ) -> List[Asset]:
     """Get brief list of assets for selectors/dropdowns"""
+    _bulk_resolve_maintenance(db)
+
     query = db.query(Asset).filter(Asset.project_id == project_id)
 
     if status:
@@ -224,15 +313,6 @@ def get_assets_brief(
         query = query.filter(Asset.status != AssetStatus.RETIRED)
 
     assets = query.order_by(Asset.name).all()
-    _resolve_maintenance_batch(db, assets)
-
-    # Post-resolve: re-filter to ensure status drift from batch resolution
-    # doesn't leak assets that no longer match the requested filter.
-    if status:
-        assets = [a for a in assets if a.status == status]
-    else:
-        assets = [a for a in assets if a.status != AssetStatus.RETIRED]
-
     return assets
 
 
@@ -347,7 +427,7 @@ def update_asset(
     # Manual override: setting status to AVAILABLE always clears maintenance
     # dates — the asset is explicitly marked operational.  Use direct
     # assignment so that any dates provided in the same payload are
-    # discarded (setdefault would preserve them).
+    # discarded.
     if update_data.get('status') == AssetStatus.AVAILABLE:
         update_data['maintenance_start_date'] = None
         update_data['maintenance_end_date'] = None
@@ -359,10 +439,8 @@ def update_asset(
     db.commit()
     db.refresh(db_asset)
 
-    # Re-resolve maintenance status so the returned asset reflects the
-    # correct effective status (e.g. user sets status=available but also
-    # provides maintenance dates that cover today → status should be
-    # maintenance in the response, not on the *next* GET).
+    # Re-resolve so the returned asset reflects the correct effective
+    # status based on any maintenance window that applies right now.
     resolve_maintenance_status(db, db_asset)
 
     return db_asset
@@ -466,10 +544,6 @@ def check_asset_availability(
                 )
             )
 
-    # If status is MAINTENANCE but there is no overlapping window for
-    # check.date (e.g. dates were cleared or moved), we still allow the
-    # booking — the resolver will correct the status on the next read.
-
     # Parse time strings to time objects
     start_hour, start_min = map(int, check.start_time.split(':'))
     end_hour, end_min = map(int, check.end_time.split(':'))
@@ -554,11 +628,13 @@ def get_available_assets(
     asset_type: Optional[str] = None
 ) -> List[Asset]:
     """Get all available assets for a specific time slot"""
-    # Get all assets for the project (exclude retired)
+    _bulk_resolve_maintenance(db)
+
+    # Get all assets for the project (exclude maintenance and retired)
     query = db.query(Asset).filter(
         and_(
             Asset.project_id == project_id,
-            Asset.status != AssetStatus.RETIRED
+            Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED])
         )
     )
 
@@ -566,8 +642,6 @@ def get_available_assets(
         query = query.filter(Asset.type == asset_type)
 
     assets = query.all()
-    _resolve_maintenance_batch(db, assets)
-    assets = [a for a in assets if a.status != AssetStatus.RETIRED]
 
     available_assets = []
     for asset in assets:
@@ -642,6 +716,8 @@ def get_assets_by_type(
     include_unavailable: bool = False
 ) -> List[Asset]:
     """Get all assets of a specific type in a project"""
+    _bulk_resolve_maintenance(db)
+
     query = db.query(Asset).filter(
         and_(
             Asset.project_id == project_id,
@@ -653,14 +729,6 @@ def get_assets_by_type(
         query = query.filter(Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED]))
 
     assets = query.order_by(Asset.name).all()
-    _resolve_maintenance_batch(db, assets)
-
-    # Post-resolve: status may have drifted (e.g. AVAILABLE → MAINTENANCE).
-    # Re-filter so callers that requested only available assets don't get
-    # maintenance or retired assets in the result set.
-    if not include_unavailable:
-        assets = [a for a in assets if a.status not in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED)]
-
     return assets
 
 
@@ -752,6 +820,8 @@ def search_assets(
     limit: int = 100
 ) -> Tuple[List[Asset], int]:
     """Search assets by name, code, or type"""
+    _bulk_resolve_maintenance(db)
+
     query = db.query(Asset)
 
     # Apply search filter
@@ -772,12 +842,6 @@ def search_assets(
 
     total = query.count()
     assets = query.order_by(Asset.name).offset(skip).limit(limit).all()
-    _resolve_maintenance_batch(db, assets)
-
-    # Post-resolve: ensure no status drift leaked retired assets into results
-    pre_filter_count = len(assets)
-    assets = [a for a in assets if a.status != AssetStatus.RETIRED]
-    total -= (pre_filter_count - len(assets))
 
     return assets, total
 

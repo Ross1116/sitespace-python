@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Migrate any existing in_use assets to available
-    op.execute("UPDATE assets SET status = 'AVAILABLE' WHERE status = 'IN_USE'")
+    op.execute("UPDATE assets SET status = 'available' WHERE status IN ('IN_USE', 'in_use')")
 
     # Add maintenance date columns
     op.add_column('assets', sa.Column('maintenance_start_date', sa.Date(), nullable=True))
