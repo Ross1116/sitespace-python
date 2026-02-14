@@ -22,6 +22,8 @@ def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
 
     - If today falls within [start, end], set status to MAINTENANCE.
     - If end date has passed, clear dates and revert to AVAILABLE.
+    - If today is before start date and status is MAINTENANCE, revert to
+      AVAILABLE (maintenance window was moved to the future).
     Only writes to DB when a transition actually occurs.
     Retired assets are never modified.
     """
@@ -50,6 +52,16 @@ def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
         asset.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(asset)
+    elif today < asset.maintenance_start_date:
+        # Maintenance window is in the future — if the asset is currently
+        # stuck in MAINTENANCE (e.g. dates were moved forward), revert to
+        # AVAILABLE.  Keep the dates so the scheduled window still triggers
+        # when the time comes.
+        if asset.status == AssetStatus.MAINTENANCE:
+            asset.status = AssetStatus.AVAILABLE
+            asset.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(asset)
 
     return asset
 
@@ -81,6 +93,14 @@ def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
                 asset.status = AssetStatus.AVAILABLE
             asset.updated_at = datetime.now(timezone.utc)
             changed.append(asset)
+        elif today < asset.maintenance_start_date:
+            # Maintenance window is in the future — unstick any asset that
+            # is currently MAINTENANCE (dates were moved forward).  Keep
+            # the dates so the scheduled window still applies later.
+            if asset.status == AssetStatus.MAINTENANCE:
+                asset.status = AssetStatus.AVAILABLE
+                asset.updated_at = datetime.now(timezone.utc)
+                changed.append(asset)
 
     if changed:
         db.commit()
@@ -405,7 +425,13 @@ def check_asset_availability(
     db: Session,
     check: AssetAvailabilityCheck
 ) -> AssetAvailabilityResponse:
-    """Check if asset is available for booking"""
+    """Check if asset is available for booking.
+
+    - RETIRED assets are always unavailable regardless of date.
+    - MAINTENANCE status only blocks the booking when check.date falls
+      inside the scheduled maintenance window.  Bookings for dates
+      outside the window are allowed.
+    """
 
     # Get the asset first to check its status
     asset = get_asset(db, check.asset_id)
@@ -416,22 +442,33 @@ def check_asset_availability(
             reason="Asset not found"
         )
 
-    # Block permanently unavailable statuses
-    if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
+    # Retired assets are permanently unavailable
+    if asset.status == AssetStatus.RETIRED:
         return AssetAvailabilityResponse(
             is_available=False,
             conflicts=[],
-            reason=f"Asset is {asset.status.value}"
+            reason="Asset is retired"
         )
 
-    # Block bookings during scheduled maintenance windows
+    # Check whether the requested date falls inside a maintenance window.
+    # This covers both:
+    #   1. Assets whose status is already MAINTENANCE (active window), and
+    #   2. Assets that are currently AVAILABLE but have a future scheduled
+    #      window that overlaps check.date.
     if asset.maintenance_start_date and asset.maintenance_end_date:
         if asset.maintenance_start_date <= check.date <= asset.maintenance_end_date:
             return AssetAvailabilityResponse(
                 is_available=False,
                 conflicts=[],
-                reason=f"Asset is under scheduled maintenance from {asset.maintenance_start_date} to {asset.maintenance_end_date}"
+                reason=(
+                    f"Asset is under scheduled maintenance from "
+                    f"{asset.maintenance_start_date} to {asset.maintenance_end_date}"
+                )
             )
+
+    # If status is MAINTENANCE but there is no overlapping window for
+    # check.date (e.g. dates were cleared or moved), we still allow the
+    # booking — the resolver will correct the status on the next read.
 
     # Parse time strings to time objects
     start_hour, start_min = map(int, check.start_time.split(':'))
@@ -517,11 +554,11 @@ def get_available_assets(
     asset_type: Optional[str] = None
 ) -> List[Asset]:
     """Get all available assets for a specific time slot"""
-    # Get all assets for the project (exclude maintenance and retired)
+    # Get all assets for the project (exclude retired)
     query = db.query(Asset).filter(
         and_(
             Asset.project_id == project_id,
-            Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED])
+            Asset.status != AssetStatus.RETIRED
         )
     )
 
@@ -530,7 +567,7 @@ def get_available_assets(
 
     assets = query.all()
     _resolve_maintenance_batch(db, assets)
-    assets = [a for a in assets if a.status not in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED)]
+    assets = [a for a in assets if a.status != AssetStatus.RETIRED]
 
     available_assets = []
     for asset in assets:
