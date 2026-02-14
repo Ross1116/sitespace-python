@@ -1,4 +1,3 @@
-# crud/asset.py
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func, cast, Date
 from typing import List, Optional, Tuple, Dict, Any
@@ -17,14 +16,20 @@ from ..schemas.asset import (
     MaintenanceRecord
 )
 
+
 def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
     """Check and update asset status based on maintenance date window.
 
     - If today falls within [start, end], set status to MAINTENANCE.
     - If end date has passed, clear dates and revert to AVAILABLE.
     Only writes to DB when a transition actually occurs.
+    Retired assets are never modified.
     """
     if not asset.maintenance_start_date or not asset.maintenance_end_date:
+        return asset
+
+    # Never auto-modify retired assets
+    if asset.status == AssetStatus.RETIRED:
         return asset
 
     today = date.today()
@@ -50,11 +55,17 @@ def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
 
 
 def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
-    """Batch resolve maintenance status. Commits once if any transitions occurred."""
+    """Batch resolve maintenance status. Commits once if any transitions occurred.
+    Retired assets are skipped entirely.
+    """
     today = date.today()
     changed = []
 
     for asset in assets:
+        # Never auto-modify retired assets
+        if asset.status == AssetStatus.RETIRED:
+            continue
+
         if not asset.maintenance_start_date or not asset.maintenance_end_date:
             continue
 
@@ -102,11 +113,12 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
         maintenance_start_date=asset.maintenance_start_date,
         maintenance_end_date=asset.maintenance_end_date
     )
-    
+
     db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
     return db_asset
+
 
 def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
     """Get an asset by ID"""
@@ -114,6 +126,7 @@ def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
     if asset:
         resolve_maintenance_status(db, asset)
     return asset
+
 
 def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
     """Get asset with all relationships loaded"""
@@ -128,12 +141,14 @@ def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
         resolve_maintenance_status(db, asset)
     return asset
 
+
 def get_asset_by_code(db: Session, asset_code: str) -> Optional[Asset]:
     """Get an asset by asset code"""
     asset = db.query(Asset).filter(Asset.asset_code == asset_code).first()
     if asset:
         resolve_maintenance_status(db, asset)
     return asset
+
 
 def get_assets_paginated(
     db: Session,
@@ -145,25 +160,34 @@ def get_assets_paginated(
 ) -> Tuple[List[Asset], int]:
     """Get paginated assets with filters"""
     query = db.query(Asset)
-    
+
     if project_id:
         query = query.filter(Asset.project_id == project_id)
-    
+
     if status:
         query = query.filter(Asset.status == status)
-    
+
     if asset_type:
         query = query.filter(Asset.type == asset_type)
-    
+
     # Get total count before pagination
     total = query.count()
-    
+
     # Apply pagination and ordering
     assets = query.order_by(Asset.created_at.desc())\
         .offset(skip).limit(limit).all()
     _resolve_maintenance_batch(db, assets)
 
+    # Post-resolve: batch resolution may have changed statuses (e.g. AVAILABLE
+    # → MAINTENANCE). Re-filter so the returned page only contains assets that
+    # still match the requested status, and adjust total accordingly.
+    if status:
+        pre_filter_count = len(assets)
+        assets = [a for a in assets if a.status == status]
+        total -= (pre_filter_count - len(assets))
+
     return assets, total
+
 
 def get_assets_brief(
     db: Session,
@@ -172,7 +196,7 @@ def get_assets_brief(
 ) -> List[Asset]:
     """Get brief list of assets for selectors/dropdowns"""
     query = db.query(Asset).filter(Asset.project_id == project_id)
-    
+
     if status:
         query = query.filter(Asset.status == status)
     else:
@@ -181,20 +205,29 @@ def get_assets_brief(
 
     assets = query.order_by(Asset.name).all()
     _resolve_maintenance_batch(db, assets)
+
+    # Post-resolve: re-filter to ensure status drift from batch resolution
+    # doesn't leak assets that no longer match the requested filter.
+    if status:
+        assets = [a for a in assets if a.status == status]
+    else:
+        assets = [a for a in assets if a.status != AssetStatus.RETIRED]
+
     return assets
+
 
 def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailResponse]:
     """Get detailed asset information with statistics"""
     asset = get_asset_with_details(db, asset_id)
-    
+
     if not asset:
         return None
-    
+
     # Calculate statistics
     total_bookings = len(asset.bookings)
     active_bookings = len([b for b in asset.bookings if b.status == BookingStatus.CONFIRMED])
     completed_bookings = len([b for b in asset.bookings if b.status == BookingStatus.COMPLETED])
-    
+
     # Calculate utilization rate
     utilization_rate = 0.0
     if asset.purchase_date:
@@ -210,7 +243,7 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
                 )
             ).scalar() or 0
             utilization_rate = min((booked_days / days_owned) * 100, 100.0)
-    
+
     # Calculate depreciation if both values exist
     depreciation_amount = None
     depreciation_percentage = None
@@ -218,16 +251,16 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
         depreciation_amount = float(asset.purchase_value - asset.current_value)
         if asset.purchase_value > 0:
             depreciation_percentage = (depreciation_amount / float(asset.purchase_value)) * 100
-    
+
     # Get recent bookings
     recent_bookings = db.query(SlotBooking)\
         .filter(SlotBooking.asset_id == asset_id)\
         .order_by(SlotBooking.booking_date.desc())\
         .limit(10).all()
-    
+
     # Get maintenance history (placeholder - implement based on your maintenance model)
     maintenance_history = []
-    
+
     return AssetDetailResponse(
         id=asset.id,
         project_id=asset.project_id,
@@ -260,6 +293,7 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
         } for b in recent_bookings]
     )
 
+
 def update_asset(
     db: Session,
     asset_id: UUID,
@@ -270,7 +304,7 @@ def update_asset(
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
-    
+
     update_data = asset_update.model_dump(exclude_unset=True)
 
     # If updating asset_code, check uniqueness
@@ -290,22 +324,29 @@ def update_asset(
             update_data['maintenance_start_date'] = None
             update_data['maintenance_end_date'] = None
 
-    # Manual override: setting status to AVAILABLE clears any maintenance dates
-    # (current or future) — the asset is explicitly marked operational
+    # Manual override: setting status to AVAILABLE always clears maintenance
+    # dates — the asset is explicitly marked operational.  Use direct
+    # assignment so that any dates provided in the same payload are
+    # discarded (setdefault would preserve them).
     if update_data.get('status') == AssetStatus.AVAILABLE:
-        if db_asset.maintenance_start_date or db_asset.maintenance_end_date:
-            update_data.setdefault('maintenance_start_date', None)
-            update_data.setdefault('maintenance_end_date', None)
+        update_data['maintenance_start_date'] = None
+        update_data['maintenance_end_date'] = None
 
     for field, value in update_data.items():
         setattr(db_asset, field, value)
-    
+
     db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
+
+    # Re-resolve maintenance status so the returned asset reflects the
+    # correct effective status (e.g. user sets status=available but also
+    # provides maintenance dates that cover today → status should be
+    # maintenance in the response, not on the *next* GET).
     resolve_maintenance_status(db, db_asset)
 
     return db_asset
+
 
 def transfer_asset(
     db: Session,
@@ -317,14 +358,14 @@ def transfer_asset(
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
-    
+
     # Check if new project exists
     new_project = db.query(SiteProject).filter(
         SiteProject.id == transfer.new_project_id
     ).first()
     if not new_project:
         raise ValueError("Target project not found")
-    
+
     # Check for active bookings that might be affected
     active_bookings = db.query(SlotBooking).filter(
         and_(
@@ -333,19 +374,19 @@ def transfer_asset(
             SlotBooking.status == BookingStatus.CONFIRMED
         )
     ).count()
-    
+
     if active_bookings > 0 and not transfer.force_transfer:
         raise ValueError(f"Asset has {active_bookings} active future bookings. Use force_transfer=true to proceed.")
-    
+
     # Store old project for logging
     old_project_id = db_asset.project_id
-    
+
     # Update asset project
     db_asset.project_id = transfer.new_project_id
     if transfer.update_status:
         db_asset.status = transfer.update_status
     db_asset.updated_at = datetime.now(timezone.utc)
-    
+
     # Update related bookings if needed
     if transfer.update_bookings:
         db.query(SlotBooking).filter(
@@ -354,17 +395,18 @@ def transfer_asset(
                 SlotBooking.project_id == old_project_id
             )
         ).update({"project_id": transfer.new_project_id})
-    
+
     db.commit()
     db.refresh(db_asset)
     return db_asset
+
 
 def check_asset_availability(
     db: Session,
     check: AssetAvailabilityCheck
 ) -> AssetAvailabilityResponse:
     """Check if asset is available for booking"""
-    
+
     # Get the asset first to check its status
     asset = get_asset(db, check.asset_id)
     if not asset:
@@ -373,7 +415,7 @@ def check_asset_availability(
             conflicts=[],
             reason="Asset not found"
         )
-    
+
     # Block permanently unavailable statuses
     if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
         return AssetAvailabilityResponse(
@@ -394,10 +436,10 @@ def check_asset_availability(
     # Parse time strings to time objects
     start_hour, start_min = map(int, check.start_time.split(':'))
     end_hour, end_min = map(int, check.end_time.split(':'))
-    
+
     check_start_time = time(start_hour, start_min)
     check_end_time = time(end_hour, end_min)
-    
+
     # Find conflicting bookings
     conflicts = db.query(SlotBooking).filter(
         and_(
@@ -423,7 +465,7 @@ def check_asset_availability(
             )
         )
     ).all()
-    
+
     booking_conflicts = [
         BookingConflict(
             booking_id=booking.id,
@@ -434,24 +476,25 @@ def check_asset_availability(
         )
         for booking in conflicts
     ]
-    
+
     return AssetAvailabilityResponse(
         is_available=len(conflicts) == 0,
         conflicts=booking_conflicts,
         asset_status=asset.status.value
     )
 
+
 def delete_asset(db: Session, asset_id: UUID, user_id: UUID = None) -> bool:
     """Delete or retire an asset"""
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return False
-    
+
     # Check if asset has any bookings
     has_bookings = db.query(SlotBooking).filter(
         SlotBooking.asset_id == asset_id
     ).first() is not None
-    
+
     if has_bookings:
         # Soft delete - change status to retired
         db_asset.status = AssetStatus.RETIRED
@@ -461,8 +504,9 @@ def delete_asset(db: Session, asset_id: UUID, user_id: UUID = None) -> bool:
         # Hard delete if no bookings
         db.delete(db_asset)
         db.commit()
-    
+
     return True
+
 
 def get_available_assets(
     db: Session,
@@ -480,10 +524,10 @@ def get_available_assets(
             Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED])
         )
     )
-    
+
     if asset_type:
         query = query.filter(Asset.type == asset_type)
-    
+
     assets = query.all()
     _resolve_maintenance_batch(db, assets)
     assets = [a for a in assets if a.status not in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED)]
@@ -499,8 +543,9 @@ def get_available_assets(
         availability = check_asset_availability(db, check)
         if availability.is_available:
             available_assets.append(asset)
-    
+
     return available_assets
+
 
 def update_asset_value(
     db: Session,
@@ -512,12 +557,13 @@ def update_asset_value(
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
-    
+
     db_asset.current_value = new_value
     db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
     return db_asset
+
 
 def update_asset_status(
     db: Session,
@@ -529,7 +575,7 @@ def update_asset_status(
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
-    
+
     # Check if status transition is valid
     if db_asset.status == AssetStatus.RETIRED and new_status != AssetStatus.RETIRED:
         # Check if asset has no future bookings
@@ -539,15 +585,16 @@ def update_asset_status(
                 SlotBooking.booking_date >= date.today()
             )
         ).count()
-        
+
         if future_bookings > 0:
             raise ValueError("Cannot reactivate asset with future bookings")
-    
+
     db_asset.status = new_status
     db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
     return db_asset
+
 
 # Additional helper functions
 
@@ -564,13 +611,21 @@ def get_assets_by_type(
             Asset.type == asset_type
         )
     )
-    
+
     if not include_unavailable:
         query = query.filter(Asset.status.notin_([AssetStatus.MAINTENANCE, AssetStatus.RETIRED]))
 
     assets = query.order_by(Asset.name).all()
     _resolve_maintenance_batch(db, assets)
+
+    # Post-resolve: status may have drifted (e.g. AVAILABLE → MAINTENANCE).
+    # Re-filter so callers that requested only available assets don't get
+    # maintenance or retired assets in the result set.
+    if not include_unavailable:
+        assets = [a for a in assets if a.status not in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED)]
+
     return assets
+
 
 def get_asset_statistics(
     db: Session,
@@ -582,25 +637,25 @@ def get_asset_statistics(
     asset = get_asset(db, asset_id)
     if not asset:
         return {}
-    
+
     # Build base query for bookings
     bookings_query = db.query(SlotBooking).filter(
         SlotBooking.asset_id == asset_id
     )
-    
+
     if start_date:
         bookings_query = bookings_query.filter(SlotBooking.booking_date >= start_date)
     if end_date:
         bookings_query = bookings_query.filter(SlotBooking.booking_date <= end_date)
-    
+
     bookings = bookings_query.all()
-    
+
     # Calculate statistics
     total_bookings = len(bookings)
     confirmed_bookings = sum(1 for b in bookings if b.status == BookingStatus.CONFIRMED)
     completed_bookings = sum(1 for b in bookings if b.status == BookingStatus.COMPLETED)
     cancelled_bookings = sum(1 for b in bookings if b.status == BookingStatus.CANCELLED)
-    
+
     # Calculate total hours booked
     total_hours = 0
     for booking in bookings:
@@ -609,7 +664,7 @@ def get_asset_statistics(
             end_dt = datetime.combine(booking.booking_date, booking.end_time)
             hours = (end_dt - start_dt).total_seconds() / 3600
             total_hours += hours
-    
+
     # Calculate value depreciation
     depreciation_info = {}
     if asset.purchase_value and asset.current_value:
@@ -621,7 +676,7 @@ def get_asset_statistics(
             "depreciation_amount": depreciation_amount,
             "depreciation_percentage": round(depreciation_percentage, 2)
         }
-    
+
     # Calculate utilization rate for the period
     if start_date and end_date:
         total_days = (end_date - start_date).days + 1
@@ -629,7 +684,7 @@ def get_asset_statistics(
         utilization_rate = (booked_days / total_days) * 100 if total_days > 0 else 0
     else:
         utilization_rate = 0
-    
+
     return {
         "asset_id": asset_id,
         "asset_name": asset.name,
@@ -651,6 +706,7 @@ def get_asset_statistics(
         }
     }
 
+
 def search_assets(
     db: Session,
     search_term: str,
@@ -660,7 +716,7 @@ def search_assets(
 ) -> Tuple[List[Asset], int]:
     """Search assets by name, code, or type"""
     query = db.query(Asset)
-    
+
     # Apply search filter
     search_filter = or_(
         Asset.name.ilike(f"%{search_term}%"),
@@ -669,19 +725,25 @@ def search_assets(
         Asset.description.ilike(f"%{search_term}%") if Asset.description else False
     )
     query = query.filter(search_filter)
-    
+
     # Filter by project if specified
     if project_id:
         query = query.filter(Asset.project_id == project_id)
-    
+
     # Exclude retired assets from search by default
     query = query.filter(Asset.status != AssetStatus.RETIRED)
-    
+
     total = query.count()
     assets = query.order_by(Asset.name).offset(skip).limit(limit).all()
     _resolve_maintenance_batch(db, assets)
 
+    # Post-resolve: ensure no status drift leaked retired assets into results
+    pre_filter_count = len(assets)
+    assets = [a for a in assets if a.status != AssetStatus.RETIRED]
+    total -= (pre_filter_count - len(assets))
+
     return assets, total
+
 
 def get_assets_requiring_maintenance(
     db: Session,
@@ -692,10 +754,10 @@ def get_assets_requiring_maintenance(
     query = db.query(Asset).filter(
         Asset.status == AssetStatus.AVAILABLE
     )
-    
+
     if project_id:
         query = query.filter(Asset.project_id == project_id)
-    
+
     threshold_date = date.today() - timedelta(days=days_threshold)
 
     # Single query with subquery instead of N+1 loop
