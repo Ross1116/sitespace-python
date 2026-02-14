@@ -303,6 +303,8 @@ def update_asset(
     db_asset.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_asset)
+    resolve_maintenance_status(db, db_asset)
+
     return db_asset
 
 def transfer_asset(
