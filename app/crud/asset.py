@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from uuid import UUID
 from datetime import datetime, date, time, timedelta, timezone
 from decimal import Decimal
+import re
 
 from ..models.asset import Asset, AssetStatus
 from ..models.site_project import SiteProject
@@ -15,6 +16,32 @@ from ..schemas.asset import (
     AssetAvailabilityResponse, BookingConflict,
     MaintenanceRecord
 )
+
+# Precompiled pattern for HH:MM validation — used by _parse_time_string
+_TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+
+
+def _parse_time_string(value: str, field_name: str = "time") -> time:
+    """Parse an 'HH:MM' string into a ``datetime.time`` object.
+
+    Raises ``ValueError`` with a human-readable message if the format is
+    invalid, so callers (and ultimately API consumers) get a helpful
+    error instead of a raw ``int()`` / unpack traceback.
+    """
+    if not value or not isinstance(value, str):
+        raise ValueError(
+            f"Invalid {field_name}: expected a non-empty string in 'HH:MM' "
+            f"format, got {value!r}"
+        )
+
+    match = _TIME_PATTERN.match(value.strip())
+    if not match:
+        raise ValueError(
+            f"Invalid {field_name} '{value}': expected format 'HH:MM' "
+            f"(00:00–23:59)"
+        )
+
+    return time(int(match.group(1)), int(match.group(2)))
 
 
 def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
@@ -194,6 +221,17 @@ def _resolve_maintenance_batch(db: Session, assets: List[Asset]) -> List[Asset]:
             db.refresh(asset)
 
     return assets
+
+
+def _clear_maintenance_dates(asset: Asset) -> None:
+    """Clear maintenance date fields on an asset object.
+
+    Centralises the pattern used by update_asset, update_asset_status,
+    and transfer_asset so the rule "AVAILABLE/RETIRED ⇒ no maintenance
+    window" is enforced in exactly one place.
+    """
+    asset.maintenance_start_date = None
+    asset.maintenance_end_date = None
 
 
 def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset:
@@ -483,6 +521,13 @@ def transfer_asset(
     db_asset.project_id = transfer.new_project_id
     if transfer.update_status:
         db_asset.status = transfer.update_status
+        # Mirror update_asset behaviour: clear maintenance dates when the
+        # transfer explicitly sets the asset to AVAILABLE or RETIRED so
+        # that resolve_maintenance_status won't silently flip it back to
+        # MAINTENANCE on the next read.
+        if transfer.update_status in (AssetStatus.AVAILABLE, AssetStatus.RETIRED):
+            _clear_maintenance_dates(db_asset)
+
     db_asset.updated_at = datetime.now(timezone.utc)
 
     # Update related bookings if needed
@@ -544,12 +589,10 @@ def check_asset_availability(
                 )
             )
 
-    # Parse time strings to time objects
-    start_hour, start_min = map(int, check.start_time.split(':'))
-    end_hour, end_min = map(int, check.end_time.split(':'))
-
-    check_start_time = time(start_hour, start_min)
-    check_end_time = time(end_hour, end_min)
+    # Parse and validate time strings — raises ValueError with a clear
+    # message if the format is not 'HH:MM'.
+    check_start_time = _parse_time_string(check.start_time, "start_time")
+    check_end_time = _parse_time_string(check.end_time, "end_time")
 
     # Find conflicting bookings
     conflicts = db.query(SlotBooking).filter(
@@ -609,6 +652,7 @@ def delete_asset(db: Session, asset_id: UUID, user_id: UUID = None) -> bool:
     if has_bookings:
         # Soft delete - change status to retired
         db_asset.status = AssetStatus.RETIRED
+        _clear_maintenance_dates(db_asset)
         db_asset.updated_at = datetime.now(timezone.utc)
         db.commit()
     else:
@@ -682,7 +726,13 @@ def update_asset_status(
     new_status: AssetStatus,
     user_id: UUID = None
 ) -> Optional[Asset]:
-    """Update asset status"""
+    """Update asset status.
+
+    Mirrors update_asset behaviour: setting status to AVAILABLE or
+    RETIRED clears any maintenance dates so that
+    resolve_maintenance_status won't silently override the change on
+    the next read.
+    """
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
@@ -699,6 +749,14 @@ def update_asset_status(
 
         if future_bookings > 0:
             raise ValueError("Cannot reactivate asset with future bookings")
+
+    # Clear maintenance dates when manually setting to AVAILABLE or
+    # RETIRED — consistent with update_asset's behaviour.  Without this,
+    # setting AVAILABLE here would be silently reverted to MAINTENANCE on
+    # the next resolve_maintenance_status call if the asset had an active
+    # maintenance window.
+    if new_status in (AssetStatus.AVAILABLE, AssetStatus.RETIRED):
+        _clear_maintenance_dates(db_asset)
 
     db_asset.status = new_status
     db_asset.updated_at = datetime.now(timezone.utc)
