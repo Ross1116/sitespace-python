@@ -14,7 +14,6 @@ class ProjectStatus(str, Enum):
 
 class AssetStatus(str, Enum):
     AVAILABLE = "available"
-    IN_USE = "in_use"
     MAINTENANCE = "maintenance"
     RETIRED = "retired"
 
