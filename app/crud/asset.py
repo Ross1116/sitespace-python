@@ -290,14 +290,12 @@ def update_asset(
             update_data['maintenance_start_date'] = None
             update_data['maintenance_end_date'] = None
 
-    # Manual override: setting status to AVAILABLE during an active maintenance
-    # window clears the dates (intentional early exit from maintenance)
+    # Manual override: setting status to AVAILABLE clears any maintenance dates
+    # (current or future) — the asset is explicitly marked operational
     if update_data.get('status') == AssetStatus.AVAILABLE:
-        if db_asset.maintenance_start_date and db_asset.maintenance_end_date:
-            today = date.today()
-            if db_asset.maintenance_start_date <= today <= db_asset.maintenance_end_date:
-                update_data.setdefault('maintenance_start_date', None)
-                update_data.setdefault('maintenance_end_date', None)
+        if db_asset.maintenance_start_date or db_asset.maintenance_end_date:
+            update_data.setdefault('maintenance_start_date', None)
+            update_data.setdefault('maintenance_end_date', None)
 
     for field, value in update_data.items():
         setattr(db_asset, field, value)
