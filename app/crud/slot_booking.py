@@ -27,6 +27,34 @@ from ..schemas.slot_booking import (
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
 from .asset import resolve_maintenance_status
 
+
+# ---------------------------------------------------------------------------
+# Helpers shared across conflict-checking, auto-deny, and competing count
+# ---------------------------------------------------------------------------
+
+def _overlapping_time_filter(start_time, end_time):
+    """Return an OR clause matching any time overlap with the given window."""
+    return or_(
+        and_(
+            SlotBooking.start_time <= start_time,
+            SlotBooking.end_time > start_time
+        ),
+        and_(
+            SlotBooking.start_time < end_time,
+            SlotBooking.end_time >= end_time
+        ),
+        and_(
+            SlotBooking.start_time >= start_time,
+            SlotBooking.end_time <= end_time
+        )
+    )
+
+
+_ACTIVE_STATUSES = [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED]
+
+
+# ---------------------------------------------------------------------------
+
 def create_booking(
     db: Session,
     booking_data: BookingCreate,
@@ -245,11 +273,18 @@ def create_bulk_bookings(
                 )
 
                 conflicts = check_booking_conflicts(db, conflict_check)
-                if conflicts.has_conflict:
+                if conflicts.has_confirmed_conflict:
                     failed_bookings.append({
                         "asset_id": asset_id,
                         "date": booking_date,
-                        "reason": "Scheduling conflict"
+                        "reason": "A confirmed booking already exists"
+                    })
+                    continue
+                if booking_status == BookingStatus.PENDING and not conflicts.can_request:
+                    failed_bookings.append({
+                        "asset_id": asset_id,
+                        "date": booking_date,
+                        "reason": "Pending capacity reached"
                     })
                     continue
 
@@ -303,12 +338,31 @@ def get_booking_with_details(db: Session, booking_id: UUID) -> Optional[SlotBook
         joinedload(SlotBooking.asset)
     ).filter(SlotBooking.id == booking_id).first()
 
+def _get_competing_pending_count(db: Session, booking: SlotBooking) -> int:
+    """Count other PENDING bookings overlapping the same slot (excludes self)."""
+    if booking.status != BookingStatus.PENDING:
+        return 0
+    return (
+        db.query(func.count(SlotBooking.id))
+        .filter(
+            SlotBooking.asset_id == booking.asset_id,
+            SlotBooking.booking_date == booking.booking_date,
+            _overlapping_time_filter(booking.start_time, booking.end_time),
+            SlotBooking.status == BookingStatus.PENDING,
+            SlotBooking.id != booking.id,
+        )
+        .scalar()
+    ) or 0
+
+
 def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailResponse]:
     booking = get_booking_with_details(db, booking_id)
-    
+
     if not booking:
         return None
-    
+
+    competing = _get_competing_pending_count(db, booking)
+
     return BookingDetailResponse(
         id=booking.id,
         project_id=booking.project_id,
@@ -323,6 +377,7 @@ def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailR
         notes=booking.notes,
         created_at=booking.created_at,
         updated_at=booking.updated_at,
+        competing_pending_count=competing,
         project={
             "id": booking.project.id,
             "name": booking.project.name,
@@ -350,7 +405,8 @@ def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailR
             "asset_code": booking.asset.asset_code,
             "name": booking.asset.name,
             "type": booking.asset.type,
-            "status": booking.asset.status.value if booking.asset.status else None
+            "status": booking.asset.status.value if booking.asset.status else None,
+            "pending_booking_capacity": booking.asset.pending_booking_capacity
         } if booking.asset else None
     )
 
@@ -450,7 +506,8 @@ def get_bookings(
                 "asset_code": booking.asset.asset_code,
                 "name": booking.asset.name,
                 "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None
+                "status": booking.asset.status.value if booking.asset.status else None,
+                "pending_booking_capacity": booking.asset.pending_booking_capacity
             } if booking.asset else None
         ))
     
@@ -558,12 +615,67 @@ def update_booking_status(
     updated_by_id: UUID,
     updated_by_role: UserRole,
     comment: Optional[str] = None
-) -> Optional[SlotBooking]:
+) -> Tuple[Optional[SlotBooking], List[UUID]]:
+    """Update a booking's status. Returns (booking, auto_denied_ids).
+
+    When confirming a PENDING booking:
+    1. Guard against an existing active booking on the same slot.
+    2. Auto-deny all other PENDING bookings on the same slot.
+    """
     booking = get_booking(db, booking_id)
     if not booking:
-        return None
-    
+        return None, []
+
     old_status = booking.status
+    auto_denied_ids: List[UUID] = []
+
+    # --- Confirmation guard + auto-deny ---
+    if new_status == BookingStatus.CONFIRMED and old_status == BookingStatus.PENDING:
+        # Check for existing active booking on this slot
+        active_conflict = (
+            db.query(SlotBooking)
+            .filter(
+                SlotBooking.asset_id == booking.asset_id,
+                SlotBooking.booking_date == booking.booking_date,
+                _overlapping_time_filter(booking.start_time, booking.end_time),
+                SlotBooking.status.in_(_ACTIVE_STATUSES),
+                SlotBooking.id != booking_id,
+            )
+            .first()
+        )
+        if active_conflict:
+            raise ValueError(
+                "Cannot confirm: a confirmed booking already exists for this time slot"
+            )
+
+        # Auto-deny competing PENDING bookings on the same slot
+        competing = (
+            db.query(SlotBooking)
+            .filter(
+                SlotBooking.asset_id == booking.asset_id,
+                SlotBooking.booking_date == booking.booking_date,
+                _overlapping_time_filter(booking.start_time, booking.end_time),
+                SlotBooking.status == BookingStatus.PENDING,
+                SlotBooking.id != booking_id,
+            )
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for comp in competing:
+            comp.status = BookingStatus.DENIED
+            comp.updated_at = now
+            log_booking_audit(
+                db,
+                actor_id=updated_by_id,
+                actor_role=updated_by_role,
+                action=BookingAuditAction.DENIED,
+                booking_id=comp.id,
+                from_status=BookingStatus.PENDING,
+                to_status=BookingStatus.DENIED,
+                comment="Auto-denied: another booking on this slot was confirmed"
+            )
+        auto_denied_ids = [comp.id for comp in competing]
+
     booking.status = new_status
     booking.updated_at = datetime.now(timezone.utc)
 
@@ -575,7 +687,7 @@ def update_booking_status(
         action = BookingAuditAction.DENIED
     elif new_status == BookingStatus.CANCELLED:
         action = BookingAuditAction.CANCELLED
-    
+
     # Log the status change
     log_booking_audit(
         db,
@@ -587,11 +699,11 @@ def update_booking_status(
         to_status=new_status,
         comment=comment
     )
-    
+
     db.commit()
     db.refresh(booking)
-    
-    return booking
+
+    return booking, auto_denied_ids
 
 def delete_booking( 
     db: Session,
@@ -636,36 +748,42 @@ def check_booking_conflicts(
     db: Session,
     conflict_check: BookingConflictCheck
 ) -> BookingConflictResponse:
-    query = db.query(SlotBooking).filter(
+    """Check for conflicts on a slot. Returns enriched response with
+    confirmed-conflict flag, pending count, capacity, and can_request."""
+
+    base_filters = [
         SlotBooking.asset_id == conflict_check.asset_id,
         SlotBooking.booking_date == conflict_check.booking_date,
-        SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.DENIED])
+        _overlapping_time_filter(conflict_check.start_time, conflict_check.end_time),
+    ]
+
+    if conflict_check.exclude_booking_id:
+        base_filters.append(SlotBooking.id != conflict_check.exclude_booking_id)
+
+    # --- confirmed / active conflicts ---
+    confirmed_bookings = (
+        db.query(SlotBooking)
+        .filter(*base_filters, SlotBooking.status.in_(_ACTIVE_STATUSES))
+        .all()
     )
-    
-    if hasattr(conflict_check, 'exclude_booking_id') and conflict_check.exclude_booking_id:
-        query = query.filter(SlotBooking.id != conflict_check.exclude_booking_id)
-    
-    query = query.filter(
-        or_(
-            and_(
-                SlotBooking.start_time <= conflict_check.start_time,
-                SlotBooking.end_time > conflict_check.start_time
-            ),
-            and_(
-                SlotBooking.start_time < conflict_check.end_time,
-                SlotBooking.end_time >= conflict_check.end_time
-            ),
-            and_(
-                SlotBooking.start_time >= conflict_check.start_time,
-                SlotBooking.end_time <= conflict_check.end_time
-            )
-        )
-    )
-    
-    conflicting_bookings = query.all()
-    
+
+    # --- pending count ---
+    pending_count = (
+        db.query(func.count(SlotBooking.id))
+        .filter(*base_filters, SlotBooking.status == BookingStatus.PENDING)
+        .scalar()
+    ) or 0
+
+    # --- asset capacity ---
+    asset = db.query(Asset).filter(Asset.id == conflict_check.asset_id).first()
+    capacity = asset.pending_booking_capacity if asset else 5
+
+    has_confirmed = len(confirmed_bookings) > 0
+    can_request = (not has_confirmed) and (pending_count < capacity)
+
+    # Build response-compatible dicts for confirmed conflicts only
     conflicts = []
-    for booking in conflicting_bookings:
+    for booking in confirmed_bookings:
         conflicts.append({
             "id": booking.id,
             "start_time": booking.start_time,
@@ -681,11 +799,15 @@ def check_booking_conflicts(
             "purpose": booking.purpose,
             "notes": booking.notes
         })
-    
+
     return BookingConflictResponse(
-        has_conflict=len(conflicting_bookings) > 0,
+        has_conflict=has_confirmed,
+        has_confirmed_conflict=has_confirmed,
+        pending_count=pending_count,
+        pending_capacity=capacity,
+        can_request=can_request,
         conflicting_bookings=conflicts,
-        conflict_count=len(conflicting_bookings)
+        conflict_count=len(confirmed_bookings)
     )
 
 def get_booking_statistics(
@@ -881,7 +1003,8 @@ def get_user_upcoming_bookings(
                 "asset_code": booking.asset.asset_code,
                 "name": booking.asset.name,
                 "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None
+                "status": booking.asset.status.value if booking.asset.status else None,
+                "pending_booking_capacity": booking.asset.pending_booking_capacity
             } if booking.asset else None
         ))
     
@@ -968,7 +1091,8 @@ def get_calendar_view(
                 "asset_code": booking.asset.asset_code,
                 "name": booking.asset.name,
                 "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None
+                "status": booking.asset.status.value if booking.asset.status else None,
+                "pending_booking_capacity": booking.asset.pending_booking_capacity
             } if booking.asset else None
         )
         bookings_by_date[booking.booking_date].append(booking_detail)

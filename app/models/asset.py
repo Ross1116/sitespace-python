@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
+from sqlalchemy import Column, Index, Integer, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -26,6 +26,7 @@ class Asset(Base):
     status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
     maintenance_start_date = Column(Date, nullable=True)
     maintenance_end_date = Column(Date, nullable=True)
+    pending_booking_capacity = Column(Integer, nullable=False, default=5, server_default="5")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

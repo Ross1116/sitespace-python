@@ -222,14 +222,23 @@ def create_booking(
             start_time=booking_data.start_time,
             end_time=booking_data.end_time
         )
-        
+
         conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
-        if conflicts.has_conflict:
+
+        # Confirmed conflict blocks everyone
+        if conflicts.has_confirmed_conflict:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Booking conflicts with {len(conflicts.conflicting_bookings)} existing reservation(s)"
+                detail="A confirmed booking already exists for this time slot"
             )
-        
+
+        # Subcontractors must also pass pending capacity check
+        if user_role == UserRole.SUBCONTRACTOR and not conflicts.can_request:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Limit reached for this time slot. Choose another slot or contact the manager."
+            )
+
         # Create the booking with audit logging
         booking = booking_crud.create_booking(
             db,
@@ -344,12 +353,17 @@ def create_bulk_bookings(
                     start_time=bulk_data.start_time,
                     end_time=bulk_data.end_time
                 )
-                
+
                 conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
-                if conflicts.has_conflict:
+                if conflicts.has_confirmed_conflict:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
-                        detail=f"Conflict found for asset on {booking_date}"
+                        detail=f"A confirmed booking already exists for asset on {booking_date}"
+                    )
+                if user_role == UserRole.SUBCONTRACTOR and not conflicts.can_request:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Limit reached for asset on {booking_date}. Choose another slot or contact the manager."
                     )
         
         # Create all bookings with audit logging
@@ -678,10 +692,10 @@ def update_booking(
             )
             
             conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
-            if conflicts.has_conflict:
+            if conflicts.has_confirmed_conflict:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Updated booking would conflict with {len(conflicts.conflicting_bookings)} existing reservation(s)"
+                    detail="Updated booking would conflict with a confirmed reservation"
                 )
         
         user_role = get_user_role(current_entity)
@@ -759,7 +773,7 @@ def update_booking_status(
         user_id = get_entity_id(current_entity)
         
         # Update status with audit logging
-        updated_booking = booking_crud.update_booking_status(
+        updated_booking, auto_denied_ids = booking_crud.update_booking_status(
             db,
             booking_id,
             new_status=status_update.status,
@@ -778,6 +792,10 @@ def update_booking_status(
         else:
             notif_action = "updated"
         notify_booking_change(db, updated_booking.id, notif_action, user_id)
+
+        # Send denial notifications to auto-denied subcontractors
+        for denied_id in auto_denied_ids:
+            notify_booking_change(db, denied_id, "denied", user_id)
 
         return booking_crud.get_booking_detail(db, updated_booking.id)
         
@@ -944,12 +962,17 @@ def duplicate_booking(
         )
         
         conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
-        if conflicts.has_conflict:
+        if conflicts.has_confirmed_conflict:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Booking conflicts with existing reservations on {duplicate_request.new_date}"
+                detail=f"A confirmed booking already exists on {duplicate_request.new_date}"
             )
-        
+        if user_role == UserRole.SUBCONTRACTOR and not conflicts.can_request:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Limit reached for this time slot. Choose another slot or contact the manager."
+            )
+
         # Create duplicate booking data
         duplicate_data = BookingCreate(
             project_id=original.project_id,

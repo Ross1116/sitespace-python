@@ -158,6 +158,7 @@ class BookingDetailResponse(BookingResponse):
     manager: UserBriefResponse
     subcontractor: Optional[SubcontractorBriefResponse] = None
     asset: AssetBriefResponse
+    competing_pending_count: int = 0
 
 
 class BookingListResponse(BaseSchema):
@@ -271,5 +272,9 @@ class BookingConflictCheck(BaseSchema):
 class BookingConflictResponse(BaseSchema):
     """Booking conflict response"""
     has_conflict: bool
+    has_confirmed_conflict: bool = False
+    pending_count: int = 0
+    pending_capacity: int = 5
+    can_request: bool = True
     conflicting_bookings: List[BookingResponse] = Field(default_factory=list)
     conflict_count: int = 0
