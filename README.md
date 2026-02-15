@@ -279,6 +279,7 @@ alembic history                   # Show migration history
 ```bash
 # Database
 DATABASE_URL=postgresql://user:password@localhost:5432/sitespace
+DB_CONNECT_TIMEOUT=10
 
 # JWT (required - no defaults)
 JWT_SECRET=your-secret-key

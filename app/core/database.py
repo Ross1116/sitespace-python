@@ -1,8 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from fastapi import HTTPException, status
 from .config import settings
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,10 @@ def create_database_engine():
             pool_timeout=30,
             pool_size=20,
             max_overflow=40,
+            connect_args={
+                "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+                "application_name": "sitespace-api"
+            },
             echo=False  # Set to True for SQL debugging
         )
         logger.info("✅ PostgreSQL engine configured.")
@@ -40,10 +47,8 @@ def create_database_engine():
         with engine.connect() as connection:
             logger.info("✅ Database connection test successful.")
     except Exception as conn_error:
-        # This block catches any failure (Auth, Host, Driver)
-        logger.error(f"❌ FATAL: Database connection failed: {conn_error}")
-        # Re-raise the exception to prevent the application from starting
-        raise RuntimeError("Database connection failed during startup. Check credentials, host, and port.") from conn_error 
+        logger.warning("❌ Database connectivity check failed at startup: %s", conn_error)
+        logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
 
     return engine
 
@@ -61,5 +66,17 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except OperationalError as db_error:
+        logger.exception("Database operational error during request: %s", db_error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please retry shortly."
+        ) from db_error
+    except SQLAlchemyError as db_error:
+        logger.exception("Database SQLAlchemy error during request: %s", db_error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error. Please retry shortly."
+        ) from db_error
     finally:
         db.close()
