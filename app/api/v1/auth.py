@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, BackgroundTasks
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -20,13 +20,15 @@ from ...core.security import (
     create_refresh_token,
     verify_token,
     verify_refresh_token,
+    TOKEN_TYPE_ACCESS,
     get_current_user,
     get_password_hash,
     verify_password,
     create_verification_token,
     verify_email_token,
     create_password_reset_token,
-    verify_password_reset_token
+    verify_password_reset_token,
+    revoke_token_payload
 )
 from ...core.config import settings
 from ...core.email import send_verification_email, send_password_reset_email
@@ -208,7 +210,9 @@ async def register(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def refresh_token(
+    request: Request,
     refresh_data: RefreshTokenRequest,
     db: Session = Depends(get_db)
 ) -> TokenResponse:
@@ -216,6 +220,12 @@ def refresh_token(
     
     try:
         payload = verify_refresh_token(refresh_data.refresh_token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token"
+            )
+
         entity_id = payload.get("sub")
         user_type = payload.get("user_type", "user")
         
@@ -232,6 +242,9 @@ def refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Account not found or inactive"
             )
+
+        # Rotate refresh token: revoke the currently used refresh token
+        revoke_token_payload(payload)
         
         return build_token_response(entity)
         
@@ -300,7 +313,9 @@ def forgot_password(
 
 
 @router.post("/reset-password", response_model=ResetPasswordResponse)
+@limiter.limit("5/minute")
 def reset_password(
+    request: Request,
     reset_data: ResetPasswordRequest,
     db: Session = Depends(get_db)
 ) -> ResetPasswordResponse:
@@ -337,7 +352,9 @@ def reset_password(
 
 
 @router.post("/change-password", response_model=ChangePasswordResponse)
+@limiter.limit("10/minute")
 def change_password(
+    request: Request,
     change_data: ChangePasswordRequest,
     current_entity: Union[User, Subcontractor] = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -371,7 +388,9 @@ def change_password(
 
 
 @router.post("/verify-email", response_model=VerifyEmailResponse)
+@limiter.limit("10/minute")
 def verify_email(
+    request: Request,
     verify_data: VerifyEmailRequest,
     db: Session = Depends(get_db)
 ) -> VerifyEmailResponse:
@@ -410,7 +429,9 @@ def verify_email(
 
 
 @router.post("/resend-verification", response_model=ResendVerificationResponse)
+@limiter.limit("5/minute")
 async def resend_verification(
+    request: Request,
     resend_data: ResendVerificationRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -485,11 +506,17 @@ def get_current_user_info(
 
 
 @router.post("/logout", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+@limiter.limit("20/minute")
 def logout(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     _current_entity: Union[User, Subcontractor] = Depends(get_current_user)
 ) -> MessageResponse:
     """
-    Logout endpoint (mainly for client-side token clearing)
-    Note: JWT tokens are stateless, actual invalidation happens client-side
+    Logout endpoint: revoke the current access token and clear client token state
     """
+    payload = verify_token(credentials.credentials, TOKEN_TYPE_ACCESS)
+    if payload:
+        revoke_token_payload(payload)
+
     return MessageResponse(message="Successfully logged out")

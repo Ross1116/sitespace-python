@@ -97,12 +97,18 @@ app.add_middleware(RequestLoggingMiddleware)
 # Global exception handler for HTTPException
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    is_server_error = exc.status_code >= 500
+    if is_server_error:
+        safe_detail = "Internal server error"
+    else:
+        safe_detail = exc.detail
+
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "success": False,
-            "message": exc.detail,
-            "detail": exc.detail
+            "message": safe_detail,
+            "detail": safe_detail
         }
     )
 
@@ -119,7 +125,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "success": False,
             "message": "Internal server error",
-            "detail": str(exc) if settings.debug else "An unexpected error occurred"
+            "detail": "An unexpected error occurred"
         }
     )
 
@@ -161,7 +167,6 @@ async def health_check():
         
     except Exception as e:
         health_status["database"] = "disconnected"
-        health_status["db_error"] = str(e)
         logger.warning("Database check failed. Type: %s, Error: %s", type(e).__name__, e)
 
     return health_status

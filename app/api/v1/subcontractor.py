@@ -27,6 +27,16 @@ from ...schemas.enums import BookingStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
+
+def require_manager_or_admin(current_user: Any) -> None:
+    """Restrict endpoint access to manager/admin roles only."""
+    role = getattr(current_user, "role", None)
+    if role not in [UserRole.MANAGER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can access this endpoint"
+        )
+
 # --- Helper Class for the Fix ---
 class EnumValueWrapper:
     """
@@ -170,6 +180,8 @@ def search_subcontractors(
     """
     Search subcontractors by name, company, email, or trade specialty.
     """
+    require_manager_or_admin(current_user)
+
     result = subcontractor_crud.search_subcontractors(
         db,
         search_term=search_term,
@@ -212,6 +224,8 @@ def get_available_subcontractors(
     """
     Get all available subcontractors for a specific date and time.
     """
+    require_manager_or_admin(current_user)
+
     available = subcontractor_crud.get_available_subcontractors_for_date(
         db,
         check_date=check_date,
@@ -247,6 +261,8 @@ def get_subcontractors_by_trade(
     """
     Get all subcontractors with a specific trade specialty.
     """
+    require_manager_or_admin(current_user)
+
     subcontractors = subcontractor_crud.get_subcontractors_by_trade(
         db,
         trade_specialty=trade_specialty,
@@ -282,6 +298,8 @@ def get_all_subcontractors(
     """
     Get all subcontractors with pagination and optional filters.
     """
+    require_manager_or_admin(current_user)
+
     result = subcontractor_crud.get_all_subcontractors(
         db,
         skip=skip,
