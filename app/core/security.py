@@ -103,7 +103,7 @@ def verify_token(token: str, expected_type: str = TOKEN_TYPE_ACCESS) -> Optional
             return None
             
         return payload
-    except JWTError as e:
+    except JWTError:
         return None
 
 
