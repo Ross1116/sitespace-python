@@ -31,6 +31,7 @@ from app.schemas.base import MessageResponse
 from app.schemas.enums import UserRole
 from app.crud import slot_booking as booking_crud
 from app.crud import site_project as project_crud
+from app.core.email import notify_booking_change
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -231,13 +232,15 @@ def create_booking(
         
         # Create the booking with audit logging
         booking = booking_crud.create_booking(
-            db, 
-            booking_data, 
+            db,
+            booking_data,
             created_by_id=user_id,
             created_by_role=user_role,
             comment=booking_data.comment  # User-provided comment for audit
         )
-        
+
+        notify_booking_change(db, booking.id, "created", user_id)
+
         return booking_crud.get_booking_detail(db, booking.id)
         
     except HTTPException:
@@ -351,13 +354,16 @@ def create_bulk_bookings(
         
         # Create all bookings with audit logging
         bookings = booking_crud.create_bulk_bookings(
-            db, 
-            bulk_data, 
+            db,
+            bulk_data,
             created_by_id=user_id,
             created_by_role=user_role,
             comment=bulk_data.comment  # User-provided comment for audit
         )
-        
+
+        for b in bookings:
+            notify_booking_change(db, b.id, "created", user_id)
+
         return [booking_crud.get_booking_detail(db, b.id) for b in bookings]
         
     except HTTPException:
@@ -683,14 +689,21 @@ def update_booking(
         
         # Update with audit logging
         updated_booking = booking_crud.update_booking(
-            db, 
-            booking_id, 
+            db,
+            booking_id,
             booking_update,
             updated_by_id=user_id,
             updated_by_role=user_role,
             comment=booking_update.comment  # User-provided comment for audit
         )
-        
+
+        # Determine if this was a reschedule or general update
+        update_fields = booking_update.model_dump(exclude_unset=True)
+        action = "rescheduled" if any(
+            k in update_fields for k in ("booking_date", "start_time", "end_time")
+        ) else "updated"
+        notify_booking_change(db, updated_booking.id, action, user_id)
+
         return booking_crud.get_booking_detail(db, updated_booking.id)
         
     except HTTPException:
@@ -727,6 +740,8 @@ def update_booking_status(
         
         check_booking_access(db, booking, current_entity)
         
+        old_status = booking.status
+
         # Validate status transition
         if booking.status == BookingStatus.COMPLETED and status_update.status != BookingStatus.COMPLETED:
             raise HTTPException(
@@ -745,14 +760,25 @@ def update_booking_status(
         
         # Update status with audit logging
         updated_booking = booking_crud.update_booking_status(
-            db, 
-            booking_id, 
+            db,
+            booking_id,
             new_status=status_update.status,
             updated_by_id=user_id,
             updated_by_role=user_role,
             comment=status_update.comment  # User-provided comment for audit
         )
-        
+
+        # Map status transition to notification action
+        if status_update.status == BookingStatus.CONFIRMED and old_status == BookingStatus.PENDING:
+            notif_action = "approved"
+        elif status_update.status == BookingStatus.DENIED:
+            notif_action = "denied"
+        elif status_update.status == BookingStatus.CANCELLED:
+            notif_action = "cancelled"
+        else:
+            notif_action = "updated"
+        notify_booking_change(db, updated_booking.id, notif_action, user_id)
+
         return booking_crud.get_booking_detail(db, updated_booking.id)
         
     except HTTPException:
@@ -813,20 +839,24 @@ def delete_booking(
         
         # Delete with audit logging
         success = booking_crud.delete_booking(
-            db, 
+            db,
             booking_id,
             deleted_by_id=user_id,
             deleted_by_role=user_role,
             hard_delete=delete_request.hard_delete,
             comment=delete_request.comment  # User-provided reason for audit
         )
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to delete booking"
             )
         
+        # Notify after successful soft-delete only
+        if not delete_request.hard_delete:
+            notify_booking_change(db, booking_id, "cancelled", user_id)
+
         action = "permanently deleted" if delete_request.hard_delete else "cancelled"
         return MessageResponse(
             success=True,
@@ -941,13 +971,15 @@ def duplicate_booking(
         
         # Create with audit logging
         new_booking = booking_crud.create_booking(
-            db, 
-            duplicate_data, 
+            db,
+            duplicate_data,
             created_by_id=user_id,
             created_by_role=user_role,
             comment=duplicate_request.comment  # User-provided comment for audit
         )
-        
+
+        notify_booking_change(db, new_booking.id, "created", user_id)
+
         return booking_crud.get_booking_detail(db, new_booking.id)
         
     except HTTPException:
