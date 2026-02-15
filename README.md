@@ -74,18 +74,18 @@ tests/                  Test suite
 
 ### Authentication (`/api/auth`)
 
-| Method | Path                   | Description                                 |
-| ------ | ---------------------- | ------------------------------------------- |
-| POST   | `/login`               | Authenticate user or subcontractor (10/min) |
-| POST   | `/register`            | Create new user account                     |
-| POST   | `/refresh`             | Refresh access token                        |
-| GET    | `/me`                  | Get current user info                       |
-| POST   | `/change-password`     | Change password (authenticated)             |
-| POST   | `/forgot-password`     | Request password reset email (3/min)        |
-| POST   | `/reset-password`      | Reset password with token                   |
-| POST   | `/verify-email`        | Verify email address                        |
-| POST   | `/resend-verification` | Resend verification email                   |
-| POST   | `/logout`              | Logout                                      |
+| Method | Path                   | Description                                   |
+| ------ | ---------------------- | --------------------------------------------- |
+| POST   | `/login`               | Authenticate user or subcontractor (10/min)   |
+| POST   | `/register`            | Create new user account (5/min)               |
+| POST   | `/refresh`             | Refresh access token (10/min, token rotation) |
+| GET    | `/me`                  | Get current user info                         |
+| POST   | `/change-password`     | Change password (authenticated, 10/min)       |
+| POST   | `/forgot-password`     | Request password reset email (3/min)          |
+| POST   | `/reset-password`      | Reset password with token (5/min)             |
+| POST   | `/verify-email`        | Verify email address (10/min)                 |
+| POST   | `/resend-verification` | Resend verification email (5/min)             |
+| POST   | `/logout`              | Logout (20/min, revokes current access token) |
 
 ### Assets (`/api/assets`)
 
@@ -177,6 +177,8 @@ tests/                  Test suite
 | ------ | ---- | ----------------------------------------- |
 | POST   | `/`  | Upload file (max 10 MB, restricted types) |
 
+Note: File upload is currently defunct/disabled by product decision and is deferred until explicitly re-enabled.
+
 Allowed types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.csv`, `.txt`, `.json`
 
 ### Users (`/api/users`)
@@ -193,6 +195,9 @@ Allowed types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.pdf`, `.doc`, `.docx`
 ## Authentication
 
 JWT-based with dual entity support (Users and Subcontractors).
+
+- Logout revokes the current access token via blacklist.
+- Refresh token flow uses rotation (the used refresh token is revoked).
 
 | Token              | Expiry   | Purpose               |
 | ------------------ | -------- | --------------------- |
@@ -213,10 +218,17 @@ Algorithm: HS512
 
 ### Rate Limits
 
-| Endpoint                | Limit           |
-| ----------------------- | --------------- |
-| `/auth/login`           | 10 requests/min |
-| `/auth/forgot-password` | 3 requests/min  |
+| Endpoint                    | Limit           |
+| --------------------------- | --------------- |
+| `/auth/login`               | 10 requests/min |
+| `/auth/register`            | 5 requests/min  |
+| `/auth/refresh`             | 10 requests/min |
+| `/auth/forgot-password`     | 3 requests/min  |
+| `/auth/reset-password`      | 5 requests/min  |
+| `/auth/change-password`     | 10 requests/min |
+| `/auth/verify-email`        | 10 requests/min |
+| `/auth/resend-verification` | 5 requests/min  |
+| `/auth/logout`              | 20 requests/min |
 
 ---
 

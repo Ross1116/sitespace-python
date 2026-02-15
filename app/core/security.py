@@ -41,7 +41,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({
         "exp": expire,
         "type": TOKEN_TYPE_ACCESS,
-        "iat": datetime.now(timezone.utc)
+        "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_urlsafe(32)
     })
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return encoded_jwt
@@ -95,10 +96,49 @@ def verify_token(token: str, expected_type: str = TOKEN_TYPE_ACCESS) -> Optional
         token_type = payload.get("type")
         if token_type != expected_type:
             return None
+
+        # Enforce token revocation (if token has jti)
+        jti = payload.get("jti")
+        if jti and token_blacklist.is_blacklisted(jti):
+            return None
             
         return payload
-    except JWTError as e:
+    except JWTError:
         return None
+
+
+def _normalize_exp_to_datetime(exp_value: Any) -> Optional[datetime]:
+    """Normalize JWT exp claim into a timezone-aware datetime."""
+    if exp_value is None:
+        return None
+
+    if isinstance(exp_value, datetime):
+        return exp_value if exp_value.tzinfo else exp_value.replace(tzinfo=timezone.utc)
+
+    if isinstance(exp_value, (int, float)):
+        return datetime.fromtimestamp(exp_value, tz=timezone.utc)
+
+    if isinstance(exp_value, str):
+        try:
+            return datetime.fromtimestamp(int(exp_value), tz=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    return None
+
+
+def revoke_token_payload(payload: Dict[str, Any]) -> bool:
+    """Revoke a JWT payload by adding its jti to the blacklist until expiry."""
+    jti = payload.get("jti")
+    if not jti:
+        return False
+
+    expires_at = _normalize_exp_to_datetime(payload.get("exp"))
+    if expires_at is None:
+        return False
+
+    token_blacklist.add(jti, expires_at)
+    return True
 
 def verify_refresh_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify refresh token"""
@@ -281,71 +321,6 @@ class TokenBlacklist:
 
 # Initialize token blacklist
 token_blacklist = TokenBlacklist()
-
-# Keep your existing decryption utilities
-import base64
-import hashlib
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-
-def decrypt_password(encrypted_text: str) -> str:
-    """Decrypt password (legacy support)"""
-    try:
-        # Decode base64
-        cipher_data = base64.b64decode(encrypted_text)
-        
-        # Extract salt (bytes 8-16)
-        salt_data = cipher_data[8:16]
-        
-        # Generate key and IV using MD5
-        key_and_iv = generate_key_and_iv(32, 16, 1, salt_data, settings.secret_key.encode('utf-8'))
-        key = key_and_iv[0]
-        iv = key_and_iv[1]
-        
-        # Extract encrypted data (bytes 16 onwards)
-        encrypted = cipher_data[16:]
-        
-        # Decrypt
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted_data = cipher.decrypt(encrypted)
-        decrypted_text = unpad(decrypted_data, AES.block_size).decode('utf-8')
-        
-        return decrypted_text.replace('"', '')
-    except Exception as e:
-        logger.error("Decryption error: %s", e)
-        return encrypted_text
-
-def generate_key_and_iv(key_length: int, iv_length: int, iterations: int, salt: bytes, password: bytes):
-    """Generate key and IV for decryption (legacy support)"""
-    md5 = hashlib.md5()
-    digest_length = md5.digest_size
-    required_length = (key_length + iv_length + digest_length - 1) // digest_length * digest_length
-    generated_data = bytearray(required_length)
-    generated_length = 0
-    
-    while generated_length < key_length + iv_length:
-        if generated_length > 0:
-            md5.update(generated_data[generated_length - digest_length:generated_length])
-        md5.update(password)
-        if salt:
-            md5.update(salt[:8])
-        
-        digest = md5.digest()
-        generated_data[generated_length:generated_length + digest_length] = digest
-        
-        # Additional rounds
-        for i in range(1, iterations):
-            md5.update(generated_data[generated_length:generated_length + digest_length])
-            digest = md5.digest()
-            generated_data[generated_length:generated_length + digest_length] = digest
-        
-        generated_length += digest_length
-    
-    # Copy key and IV into separate byte arrays
-    key = bytes(generated_data[:key_length])
-    iv = bytes(generated_data[key_length:key_length + iv_length]) if iv_length > 0 else b''
-    
-    return [key, iv]
 
 def get_user_role(entity: Union[User, Subcontractor]) -> UserRole:
     """

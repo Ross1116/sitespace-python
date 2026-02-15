@@ -31,6 +31,15 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 # ==================== Helper Functions ====================
 
+def require_manager_or_admin(current_user) -> None:
+    """Restrict endpoint access to manager/admin roles only."""
+    role = getattr(current_user, "role", None)
+    if role not in [UserRole.MANAGER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can access this endpoint"
+        )
+
 def validate_managers_exist(db: Session, manager_ids: List[UUID]) -> None:
     """Validate that all manager IDs exist and are active"""
     for manager_id in manager_ids:
@@ -114,6 +123,8 @@ def create_project(
     """Create a new project"""
     
     try:
+        require_manager_or_admin(current_user)
+
         # Validate managers exist if provided
         if project_data.manager_ids:
             validate_managers_exist(db, project_data.manager_ids)
@@ -169,6 +180,8 @@ def list_projects(
     """List projects with optional filters"""
     
     try:
+        require_manager_or_admin(current_user)
+
         # Build filters dictionary
         filters = {}
         
@@ -208,6 +221,8 @@ def list_projects(
             has_more=(skip + limit) < total
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
