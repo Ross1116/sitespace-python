@@ -1,7 +1,9 @@
 import os
 import requests
 import logging
-from typing import Optional, Dict
+import threading
+from typing import Optional, Dict, List
+from uuid import UUID
 from .config import settings
 
 # Configure logging
@@ -389,3 +391,266 @@ This link is valid for 24 hours.
         html_content=html_content,
         text_content=text_content
     )
+
+
+# ---------------------------------------------------------
+# Booking Notification Emails
+# ---------------------------------------------------------
+
+_RED = "#dc2626"
+_GREEN = "#16a34a"
+_AMBER = "#d97706"
+_BLUE = "#2563eb"
+
+# Action → (heading, subtitle, accent color, status badge color)
+_BOOKING_ACTION_META = {
+    "created":     ("New Booking Created",   "A booking has been created.",          _TEAL,  _GREEN),
+    "approved":    ("Booking Approved",      "A booking has been approved.",         _TEAL,  _GREEN),
+    "denied":      ("Booking Denied",        "A booking has been denied.",           _RED,   _RED),
+    "updated":     ("Booking Updated",       "A booking has been updated.",          _NAVY,  _BLUE),
+    "rescheduled": ("Booking Rescheduled",   "A booking has been rescheduled.",      _NAVY,  _AMBER),
+    "cancelled":   ("Booking Cancelled",     "A booking has been cancelled.",        _RED,   _RED),
+}
+
+
+def _status_badge(status: str, color: str) -> str:
+    """Render an inline status badge."""
+    return (
+        f'<span style="display:inline-block;padding:3px 10px;font-size:12px;'
+        f'font-weight:700;color:#ffffff;background-color:{color};'
+        f'border-radius:6px;text-transform:uppercase;letter-spacing:0.4px;">'
+        f'{status}</span>'
+    )
+
+
+def _booking_detail_row(label: str, value: str) -> str:
+    """Render a single row in the booking preview card."""
+    return (
+        f'<tr>'
+        f'<td style="padding:6px 12px;font-size:13px;color:{_SLATE_500};'
+        f'white-space:nowrap;vertical-align:top;">{label}</td>'
+        f'<td style="padding:6px 12px;font-size:13px;color:{_SLATE_900};'
+        f'font-weight:500;">{value}</td>'
+        f'</tr>'
+    )
+
+
+def send_booking_notification_email(
+    to_email: str,
+    recipient_name: str,
+    action: str,
+    actor_name: str,
+    booking_id: str,
+    booking_details: Dict[str, str],
+) -> bool:
+    """
+    Send a booking notification email.
+
+    ``action`` should be one of the BookingAuditAction values:
+    created, approved, denied, updated, rescheduled, cancelled.
+
+    ``booking_details`` keys: date, start_time, end_time, asset, project,
+    status, purpose (all strings, already formatted for display).
+    """
+
+    meta = _BOOKING_ACTION_META.get(action)
+    if not meta:
+        logger.warning(f"Unknown booking action '{action}' — skipping email")
+        return False
+
+    heading, subtitle, accent, badge_color = meta
+    booking_url = f"{settings.FRONTEND_URL}/bookings?highlight={booking_id}"
+
+    # Build the preview card rows
+    rows = ""
+    if booking_details.get("project"):
+        rows += _booking_detail_row("Project", booking_details["project"])
+    if booking_details.get("asset"):
+        rows += _booking_detail_row("Asset", booking_details["asset"])
+    if booking_details.get("date"):
+        rows += _booking_detail_row("Date", booking_details["date"])
+    if booking_details.get("start_time") and booking_details.get("end_time"):
+        rows += _booking_detail_row(
+            "Time", f'{booking_details["start_time"]} — {booking_details["end_time"]}'
+        )
+    if booking_details.get("status"):
+        rows += _booking_detail_row(
+            "Status", _status_badge(booking_details["status"], badge_color)
+        )
+    if booking_details.get("purpose"):
+        rows += _booking_detail_row("Purpose", booking_details["purpose"])
+
+    body = f"""\
+<h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:{_SLATE_900};">{heading}</h2>
+<p style="margin:0 0 24px;font-size:15px;color:{_SLATE_500};">Hi {recipient_name}, {subtitle.lower()}</p>
+<p style="margin:0 0 20px;font-size:15px;color:{_SLATE_700};line-height:1.6;">
+  <strong>{actor_name}</strong> {_action_verb(action)} this booking.
+</p>
+
+<!-- Booking preview card -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+       style="margin:0 0 8px;border:1px solid {_SLATE_200};border-radius:12px;overflow:hidden;">
+  <tr>
+    <td style="background-color:{accent};height:4px;font-size:1px;line-height:1px;">&nbsp;</td>
+  </tr>
+  <tr>
+    <td style="padding:16px 4px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        {rows}
+      </table>
+    </td>
+  </tr>
+</table>
+
+{_button(booking_url, "View Booking", accent)}
+{_link_fallback(booking_url)}"""
+
+    html_content = _wrap_email(heading, body)
+
+    # Plain-text fallback
+    text_lines = [
+        f"Hi {recipient_name},",
+        "",
+        f"{actor_name} {_action_verb(action)} a booking.",
+        "",
+    ]
+    for label, key in [
+        ("Project", "project"), ("Asset", "asset"), ("Date", "date"),
+        ("Time", "start_time"), ("Status", "status"), ("Purpose", "purpose"),
+    ]:
+        val = booking_details.get(key, "")
+        if key == "start_time" and val:
+            val = f'{val} - {booking_details.get("end_time", "")}'
+        if val:
+            text_lines.append(f"  {label}: {val}")
+    text_lines += ["", f"View booking: {booking_url}", "", f"- {settings.APP_NAME} Team"]
+    text_content = "\n".join(text_lines)
+
+    return email_sender.send_email(
+        to_email=to_email,
+        subject=f"{heading} — {settings.APP_NAME}",
+        html_content=html_content,
+        text_content=text_content,
+    )
+
+
+def _action_verb(action: str) -> str:
+    """Return a past-tense verb for the action."""
+    return {
+        "created": "created",
+        "approved": "approved",
+        "denied": "denied",
+        "updated": "updated",
+        "rescheduled": "rescheduled",
+        "cancelled": "cancelled",
+    }.get(action, "modified")
+
+
+# ---------------------------------------------------------
+# Booking Notification Orchestrator
+# ---------------------------------------------------------
+
+def notify_booking_change(
+    db,
+    booking_id: UUID,
+    action: str,
+    actor_id: UUID,
+) -> None:
+    """
+    Determine recipients and send booking notification emails
+    in a background thread so the API response is not delayed.
+
+    Call this from route handlers AFTER the CRUD operation has committed.
+    """
+    from app.models.slot_booking import SlotBooking
+    from app.models.user import User
+    from app.models.subcontractor import Subcontractor
+    from sqlalchemy.orm import joinedload
+
+    # Load booking with relationships (still on the request thread / DB session)
+    booking = (
+        db.query(SlotBooking)
+        .options(
+            joinedload(SlotBooking.project),
+            joinedload(SlotBooking.manager),
+            joinedload(SlotBooking.subcontractor),
+            joinedload(SlotBooking.asset),
+        )
+        .filter(SlotBooking.id == booking_id)
+        .first()
+    )
+    if not booking:
+        logger.warning(f"notify_booking_change: booking {booking_id} not found")
+        return
+
+    # Format booking details for the email
+    booking_details: Dict[str, str] = {
+        "date": booking.booking_date.strftime("%B %d, %Y") if booking.booking_date else "",
+        "start_time": booking.start_time.strftime("%I:%M %p") if booking.start_time else "",
+        "end_time": booking.end_time.strftime("%I:%M %p") if booking.end_time else "",
+        "status": booking.status.value if booking.status else "",
+        "purpose": booking.purpose or "",
+        "asset": "",
+        "project": "",
+    }
+    if booking.asset:
+        asset_label = booking.asset.name or ""
+        if booking.asset.asset_code:
+            asset_label = f"{asset_label} ({booking.asset.asset_code})"
+        booking_details["asset"] = asset_label
+    if booking.project:
+        booking_details["project"] = booking.project.name or ""
+
+    # Resolve actor name
+    actor_name = "Someone"
+    if booking.manager and str(booking.manager.id) == str(actor_id):
+        actor_name = f"{booking.manager.first_name} {booking.manager.last_name}"
+    elif booking.subcontractor and str(booking.subcontractor.id) == str(actor_id):
+        actor_name = f"{booking.subcontractor.first_name} {booking.subcontractor.last_name}"
+    else:
+        # Actor might be an admin who is neither the manager nor subcontractor
+        actor = db.query(User).filter(User.id == actor_id).first()
+        if actor:
+            actor_name = f"{actor.first_name} {actor.last_name}"
+        else:
+            sub_actor = db.query(Subcontractor).filter(Subcontractor.id == actor_id).first()
+            if sub_actor:
+                actor_name = f"{sub_actor.first_name} {sub_actor.last_name}"
+
+    # Collect recipients: (email, display_name) — skip the actor
+    recipients: List[tuple] = []
+
+    if booking.manager and str(booking.manager.id) != str(actor_id):
+        recipients.append((
+            booking.manager.email,
+            booking.manager.first_name,
+        ))
+
+    if booking.subcontractor and str(booking.subcontractor.id) != str(actor_id):
+        recipients.append((
+            booking.subcontractor.email,
+            booking.subcontractor.first_name,
+        ))
+
+    if not recipients:
+        return
+
+    bid = str(booking_id)
+
+    # Fire-and-forget in a background thread
+    def _send():
+        for email_addr, name in recipients:
+            try:
+                send_booking_notification_email(
+                    to_email=email_addr,
+                    recipient_name=name,
+                    action=action,
+                    actor_name=actor_name,
+                    booking_id=bid,
+                    booking_details=booking_details,
+                )
+            except Exception:
+                logger.exception(f"Failed to send booking notification to {email_addr}")
+
+    thread = threading.Thread(target=_send, daemon=True)
+    thread.start()
