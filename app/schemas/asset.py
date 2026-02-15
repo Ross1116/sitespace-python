@@ -24,6 +24,7 @@ class AssetBase(BaseSchema):
     purchase_date: Optional[date] = None
     purchase_value: Optional[Decimal] = Field(None, ge=0)
     current_value: Optional[Decimal] = Field(None, ge=0)
+    pending_booking_capacity: int = Field(5, ge=1, le=20)
 
     @field_validator('purchase_value', 'current_value', mode='before')
     def round_decimal(cls, v):
@@ -83,6 +84,7 @@ class AssetUpdate(BaseSchema):
     poc: Optional[str] = Field(None, max_length=255)
     usage_instructions: Optional[str] = None
     current_value: Optional[Decimal] = Field(None, ge=0)
+    pending_booking_capacity: Optional[int] = Field(None, ge=1, le=20)
     status: Optional[AssetStatus] = None
     project_id: Optional[UUID] = None
     maintenance_start_date: Optional[date] = None
@@ -148,6 +150,7 @@ class AssetResponse(AssetBase, TimestampSchema):
     status: AssetStatus
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
+    pending_booking_capacity: int = 5
 
 
 class AssetBriefResponse(BaseSchema):
@@ -157,6 +160,7 @@ class AssetBriefResponse(BaseSchema):
     name: str
     type: Optional[str] = None
     status: AssetStatus
+    pending_booking_capacity: int = 5
 
 
 class MaintenanceRecord(BaseSchema):
