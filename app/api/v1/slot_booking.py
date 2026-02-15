@@ -837,10 +837,6 @@ def delete_booking(
         
         check_booking_access(db, booking, current_entity)
         
-        # Notify before delete (need booking data still in DB)
-        if not delete_request.hard_delete:
-            notify_booking_change(db, booking_id, "cancelled", user_id)
-
         # Delete with audit logging
         success = booking_crud.delete_booking(
             db,
@@ -857,6 +853,10 @@ def delete_booking(
                 detail="Failed to delete booking"
             )
         
+        # Notify after successful soft-delete only
+        if not delete_request.hard_delete:
+            notify_booking_change(db, booking_id, "cancelled", user_id)
+
         action = "permanently deleted" if delete_request.hard_delete else "cancelled"
         return MessageResponse(
             success=True,

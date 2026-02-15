@@ -1,3 +1,4 @@
+import html as html_mod
 import os
 import requests
 import logging
@@ -414,23 +415,30 @@ _BOOKING_ACTION_META = {
 
 
 def _status_badge(status: str, color: str) -> str:
-    """Render an inline status badge."""
+    """Render an inline status badge. Escapes the status text."""
+    safe_status = html_mod.escape(status)
     return (
         f'<span style="display:inline-block;padding:3px 10px;font-size:12px;'
         f'font-weight:700;color:#ffffff;background-color:{color};'
         f'border-radius:6px;text-transform:uppercase;letter-spacing:0.4px;">'
-        f'{status}</span>'
+        f'{safe_status}</span>'
     )
 
 
-def _booking_detail_row(label: str, value: str) -> str:
-    """Render a single row in the booking preview card."""
+def _booking_detail_row(label: str, value: str, raw_html: bool = False) -> str:
+    """Render a single row in the booking preview card.
+
+    ``label`` is always escaped.  ``value`` is escaped unless
+    ``raw_html=True`` (used for pre-built badge HTML).
+    """
+    safe_label = html_mod.escape(label)
+    safe_value = value if raw_html else html_mod.escape(value)
     return (
         f'<tr>'
         f'<td style="padding:6px 12px;font-size:13px;color:{_SLATE_500};'
-        f'white-space:nowrap;vertical-align:top;">{label}</td>'
+        f'white-space:nowrap;vertical-align:top;">{safe_label}</td>'
         f'<td style="padding:6px 12px;font-size:13px;color:{_SLATE_900};'
-        f'font-weight:500;">{value}</td>'
+        f'font-weight:500;">{safe_value}</td>'
         f'</tr>'
     )
 
@@ -461,30 +469,39 @@ def send_booking_notification_email(
     heading, subtitle, accent, badge_color = meta
     booking_url = f"{settings.FRONTEND_URL}/bookings?highlight={booking_id}"
 
-    # Build the preview card rows
+    # Escape all user-controlled strings for HTML context
+    safe_recipient = html_mod.escape(recipient_name)
+    safe_actor = html_mod.escape(actor_name)
+
+    # Escape every booking_details value once; use the escaped versions everywhere
+    esc = {k: html_mod.escape(v) for k, v in booking_details.items() if v}
+
+    # Build the preview card rows (values already escaped via `esc`)
     rows = ""
-    if booking_details.get("project"):
-        rows += _booking_detail_row("Project", booking_details["project"])
-    if booking_details.get("asset"):
-        rows += _booking_detail_row("Asset", booking_details["asset"])
-    if booking_details.get("date"):
-        rows += _booking_detail_row("Date", booking_details["date"])
-    if booking_details.get("start_time") and booking_details.get("end_time"):
+    if esc.get("project"):
+        rows += _booking_detail_row("Project", esc["project"])
+    if esc.get("asset"):
+        rows += _booking_detail_row("Asset", esc["asset"])
+    if esc.get("date"):
+        rows += _booking_detail_row("Date", esc["date"])
+    if esc.get("start_time") and esc.get("end_time"):
         rows += _booking_detail_row(
-            "Time", f'{booking_details["start_time"]} — {booking_details["end_time"]}'
+            "Time", f'{esc["start_time"]} — {esc["end_time"]}'
         )
-    if booking_details.get("status"):
+    if esc.get("status"):
+        # _status_badge returns safe HTML (it escapes the status text internally)
         rows += _booking_detail_row(
-            "Status", _status_badge(booking_details["status"], badge_color)
+            "Status", _status_badge(booking_details["status"], badge_color),
+            raw_html=True,
         )
-    if booking_details.get("purpose"):
-        rows += _booking_detail_row("Purpose", booking_details["purpose"])
+    if esc.get("purpose"):
+        rows += _booking_detail_row("Purpose", esc["purpose"])
 
     body = f"""\
 <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:{_SLATE_900};">{heading}</h2>
-<p style="margin:0 0 24px;font-size:15px;color:{_SLATE_500};">Hi {recipient_name}, {subtitle.lower()}</p>
+<p style="margin:0 0 24px;font-size:15px;color:{_SLATE_500};">Hi {safe_recipient}, {subtitle.lower()}</p>
 <p style="margin:0 0 20px;font-size:15px;color:{_SLATE_700};line-height:1.6;">
-  <strong>{actor_name}</strong> {_action_verb(action)} this booking.
+  <strong>{safe_actor}</strong> {_action_verb(action)} this booking.
 </p>
 
 <!-- Booking preview card -->
@@ -507,7 +524,7 @@ def send_booking_notification_email(
 
     html_content = _wrap_email(heading, body)
 
-    # Plain-text fallback
+    # Plain-text fallback (no escaping needed — plain text is not HTML-rendered)
     text_lines = [
         f"Hi {recipient_name},",
         "",
