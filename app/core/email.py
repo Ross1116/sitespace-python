@@ -473,29 +473,26 @@ def send_booking_notification_email(
     safe_recipient = html_mod.escape(recipient_name)
     safe_actor = html_mod.escape(actor_name)
 
-    # Escape every booking_details value once; use the escaped versions everywhere
-    esc = {k: html_mod.escape(v) for k, v in booking_details.items() if v}
-
-    # Build the preview card rows (values already escaped via `esc`)
+    # Build the preview card rows (_booking_detail_row handles escaping)
     rows = ""
-    if esc.get("project"):
-        rows += _booking_detail_row("Project", esc["project"])
-    if esc.get("asset"):
-        rows += _booking_detail_row("Asset", esc["asset"])
-    if esc.get("date"):
-        rows += _booking_detail_row("Date", esc["date"])
-    if esc.get("start_time") and esc.get("end_time"):
+    if booking_details.get("project"):
+        rows += _booking_detail_row("Project", booking_details["project"])
+    if booking_details.get("asset"):
+        rows += _booking_detail_row("Asset", booking_details["asset"])
+    if booking_details.get("date"):
+        rows += _booking_detail_row("Date", booking_details["date"])
+    if booking_details.get("start_time") and booking_details.get("end_time"):
         rows += _booking_detail_row(
-            "Time", f'{esc["start_time"]} — {esc["end_time"]}'
+            "Time", f'{booking_details["start_time"]} — {booking_details["end_time"]}'
         )
-    if esc.get("status"):
+    if booking_details.get("status"):
         # _status_badge returns safe HTML (it escapes the status text internally)
         rows += _booking_detail_row(
             "Status", _status_badge(booking_details["status"], badge_color),
             raw_html=True,
         )
-    if esc.get("purpose"):
-        rows += _booking_detail_row("Purpose", esc["purpose"])
+    if booking_details.get("purpose"):
+        rows += _booking_detail_row("Purpose", booking_details["purpose"])
 
     body = f"""\
 <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:{_SLATE_900};">{heading}</h2>
