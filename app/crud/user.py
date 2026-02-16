@@ -17,6 +17,10 @@ from ..schemas.user import (
 from ..schemas.site_project import SiteProjectBriefResponse
 from ..core.password import get_password_hash, verify_password 
 
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
 class UserCRUD:
     """CRUD operations for User model"""
     
@@ -28,8 +32,9 @@ class UserCRUD:
     @staticmethod
     def get_user_by_email(db: Session, email: str) -> Optional[User]:
         """Get user by email (case-insensitive)"""
+        normalized_email = _normalize_email(email)
         return db.query(User).filter(
-            func.lower(User.email) == func.lower(email)
+            func.lower(User.email) == normalized_email
         ).first()
     
     @staticmethod
@@ -141,7 +146,7 @@ class UserCRUD:
         hashed_password = get_password_hash(user_data.password)
         
         db_user = User(
-            email=user_data.email.lower(),
+            email=_normalize_email(user_data.email),
             password=hashed_password,
             first_name=user_data.first_name,
             last_name=user_data.last_name,
@@ -168,7 +173,7 @@ class UserCRUD:
         
         for field, value in update_data.items():
             if field == "email" and value:
-                setattr(user, field, value.lower())
+                setattr(user, field, _normalize_email(value))
             else:
                 setattr(user, field, value)
         

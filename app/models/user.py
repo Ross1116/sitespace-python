@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 import uuid
 import enum
@@ -33,3 +33,7 @@ class User(Base):
         back_populates="manager",
         cascade="all, delete-orphan"
     )
+
+    @validates("email")
+    def normalize_email(self, key, value):
+        return value.strip().lower() if value else value

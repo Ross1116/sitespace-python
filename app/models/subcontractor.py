@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 import uuid
 from app.core.database import Base
@@ -33,3 +33,7 @@ class Subcontractor(Base):
         secondary=subcontractor_site_project_association,
         back_populates="subcontractors"
     )
+
+    @validates("email")
+    def normalize_email(self, key, value):
+        return value.strip().lower() if value else value

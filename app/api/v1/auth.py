@@ -71,12 +71,17 @@ def hash_identifier(value: str) -> str:
     normalized = value.strip().lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
 def get_entity_by_email(db: Session, email: str) -> Union[User, Subcontractor, None]:
     """Get user or subcontractor by email"""
-    user = user_crud.get_user_by_email(db, email=email)
+    normalized_email = normalize_email(email)
+    user = user_crud.get_user_by_email(db, email=normalized_email)
     if user:
         return user
-    return subcontractor_crud.get_subcontractor_by_email(db, email=email)
+    return subcontractor_crud.get_subcontractor_by_email(db, email=normalized_email)
 
 
 def get_entity_by_id(db: Session, entity_id: UUID, user_type: str) -> Union[User, Subcontractor, None]:
