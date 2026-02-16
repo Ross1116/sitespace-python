@@ -60,10 +60,11 @@ def _auto_deny_competing_pending_bookings(
     booking: SlotBooking,
     actor_id: UUID,
     actor_role: UserRole,
-    comment: str = "Auto-denied: another booking on this slot was confirmed"
+    comment: str = "Auto-denied: another booking on this slot was confirmed",
+    treat_as_confirmed: bool = False,
 ) -> List[UUID]:
     """Auto-deny PENDING bookings overlapping a confirmed booking's slot."""
-    if booking.status != BookingStatus.CONFIRMED:
+    if not treat_as_confirmed and booking.status != BookingStatus.CONFIRMED:
         return []
 
     competing = (
@@ -714,6 +715,7 @@ def update_booking_status(
             booking=booking,
             actor_id=updated_by_id,
             actor_role=updated_by_role,
+            treat_as_confirmed=True,
         )
 
     booking.status = new_status
