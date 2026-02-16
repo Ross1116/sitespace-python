@@ -1,10 +1,26 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError
+from fastapi import HTTPException, status
 from .config import settings
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _get_db_connect_timeout(default: int = 10) -> int:
+    raw = os.getenv("DB_CONNECT_TIMEOUT", str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid DB_CONNECT_TIMEOUT value '%s'; using default timeout=%s",
+            raw,
+            default,
+        )
+        return default
 
 # Create SQLAlchemy engine without a SQLite fallback
 def create_database_engine():
@@ -19,6 +35,7 @@ def create_database_engine():
     # We remove the outer try/except block to ensure failure if the database is inaccessible, 
     # preventing silent fallback to an un-migrated SQLite file.
     if settings.database_url.startswith("postgresql"):
+        connect_timeout = _get_db_connect_timeout()
         # PostgreSQL connection with connection pooling
         engine = create_engine(
             settings.database_url,
@@ -27,6 +44,10 @@ def create_database_engine():
             pool_timeout=30,
             pool_size=20,
             max_overflow=40,
+            connect_args={
+                "connect_timeout": connect_timeout,
+                "application_name": "sitespace-api"
+            },
             echo=False  # Set to True for SQL debugging
         )
         logger.info("✅ PostgreSQL engine configured.")
@@ -40,10 +61,8 @@ def create_database_engine():
         with engine.connect() as connection:
             logger.info("✅ Database connection test successful.")
     except Exception as conn_error:
-        # This block catches any failure (Auth, Host, Driver)
-        logger.error(f"❌ FATAL: Database connection failed: {conn_error}")
-        # Re-raise the exception to prevent the application from starting
-        raise RuntimeError("Database connection failed during startup. Check credentials, host, and port.") from conn_error 
+        logger.warning("❌ Database connectivity check failed at startup: %s", conn_error)
+        logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
 
     return engine
 
@@ -61,5 +80,11 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except OperationalError as db_error:
+        logger.exception("Database operational error during request: %s", db_error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please retry shortly."
+        ) from db_error
     finally:
         db.close()

@@ -55,6 +55,50 @@ _ACTIVE_STATUSES = [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingS
 
 # ---------------------------------------------------------------------------
 
+def _auto_deny_competing_pending_bookings(
+    db: Session,
+    booking: SlotBooking,
+    actor_id: UUID,
+    actor_role: UserRole,
+    comment: str = "Auto-denied: another booking on this slot was confirmed",
+    treat_as_confirmed: bool = False,
+) -> List[UUID]:
+    """Auto-deny PENDING bookings overlapping a confirmed booking's slot."""
+    if not treat_as_confirmed and booking.status != BookingStatus.CONFIRMED:
+        return []
+
+    competing = (
+        db.query(SlotBooking)
+        .filter(
+            SlotBooking.asset_id == booking.asset_id,
+            SlotBooking.booking_date == booking.booking_date,
+            _overlapping_time_filter(booking.start_time, booking.end_time),
+            SlotBooking.status == BookingStatus.PENDING,
+            SlotBooking.id != booking.id,
+        )
+        .all()
+    )
+
+    now = datetime.now(timezone.utc)
+    for comp in competing:
+        comp.status = BookingStatus.DENIED
+        comp.updated_at = now
+        log_booking_audit(
+            db,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            action=BookingAuditAction.DENIED,
+            booking_id=comp.id,
+            from_status=BookingStatus.PENDING,
+            to_status=BookingStatus.DENIED,
+            comment=comment,
+        )
+
+    return [comp.id for comp in competing]
+
+
+# ---------------------------------------------------------------------------
+
 def create_booking(
     db: Session,
     booking_data: BookingCreate,
@@ -170,6 +214,15 @@ def create_booking(
         booking_id=db_booking.id,
         to_status=db_booking.status,
         comment=comment
+    )
+
+    # If this booking is confirmed on creation (manager/admin), auto-deny
+    # overlapping pending requests for the same slot.
+    _auto_deny_competing_pending_bookings(
+        db,
+        booking=db_booking,
+        actor_id=created_by_id,
+        actor_role=created_by_role,
     )
     
     db.commit()
@@ -312,6 +365,15 @@ def create_bulk_bookings(
                     booking_id=db_booking.id,
                     to_status=db_booking.status,
                     comment=comment
+                )
+
+                # If this booking is confirmed on creation (manager/admin),
+                # auto-deny overlapping pending requests for the same slot.
+                _auto_deny_competing_pending_bookings(
+                    db,
+                    booking=db_booking,
+                    actor_id=created_by_id,
+                    actor_role=created_by_role,
                 )
 
                 bookings.append(db_booking)
@@ -648,33 +710,13 @@ def update_booking_status(
                 "Cannot confirm: a confirmed booking already exists for this time slot"
             )
 
-        # Auto-deny competing PENDING bookings on the same slot
-        competing = (
-            db.query(SlotBooking)
-            .filter(
-                SlotBooking.asset_id == booking.asset_id,
-                SlotBooking.booking_date == booking.booking_date,
-                _overlapping_time_filter(booking.start_time, booking.end_time),
-                SlotBooking.status == BookingStatus.PENDING,
-                SlotBooking.id != booking_id,
-            )
-            .all()
+        auto_denied_ids = _auto_deny_competing_pending_bookings(
+            db,
+            booking=booking,
+            actor_id=updated_by_id,
+            actor_role=updated_by_role,
+            treat_as_confirmed=True,
         )
-        now = datetime.now(timezone.utc)
-        for comp in competing:
-            comp.status = BookingStatus.DENIED
-            comp.updated_at = now
-            log_booking_audit(
-                db,
-                actor_id=updated_by_id,
-                actor_role=updated_by_role,
-                action=BookingAuditAction.DENIED,
-                booking_id=comp.id,
-                from_status=BookingStatus.PENDING,
-                to_status=BookingStatus.DENIED,
-                comment="Auto-denied: another booking on this slot was confirmed"
-            )
-        auto_denied_ids = [comp.id for comp in competing]
 
     booking.status = new_status
     booking.updated_at = datetime.now(timezone.utc)
