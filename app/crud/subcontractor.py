@@ -14,6 +14,10 @@ from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
 from ..core.security import get_password_hash, verify_password
 from ..schemas.enums import BookingStatus
 
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
     """Create a new subcontractor"""
     # Hash the password
@@ -28,7 +32,7 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
     
     # Create subcontractor instance
     db_subcontractor = Subcontractor(
-        email=subcontractor_data.email,
+        email=_normalize_email(subcontractor_data.email),
         password_hash=hashed_password,
         first_name=subcontractor_data.first_name,
         last_name=subcontractor_data.last_name,
@@ -58,7 +62,10 @@ def get_subcontractor_with_details(db: Session, subcontractor_id: UUID) -> Optio
 
 def get_subcontractor_by_email(db: Session, email: str) -> Optional[Subcontractor]:
     """Get a subcontractor by email"""
-    return db.query(Subcontractor).filter(Subcontractor.email == email).first()
+    normalized_email = _normalize_email(email)
+    return db.query(Subcontractor).filter(
+        func.lower(Subcontractor.email) == normalized_email
+    ).first()
 
 def authenticate_subcontractor(db: Session, email: str, password: str) -> Optional[Subcontractor]:
     """
@@ -121,6 +128,8 @@ def update_subcontractor(
     for field, value in update_data.items():
         if field == "trade_specialty" and value:
             value = value.value if hasattr(value, 'value') else value
+        if field == "email" and value:
+            value = _normalize_email(value)
         setattr(db_subcontractor, field, value)
     
     db_subcontractor.updated_at = datetime.now(timezone.utc)

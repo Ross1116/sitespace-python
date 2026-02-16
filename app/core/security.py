@@ -30,6 +30,10 @@ TOKEN_TYPE_REFRESH = "refresh"
 TOKEN_TYPE_EMAIL_VERIFY = "email_verify"
 TOKEN_TYPE_PASSWORD_RESET = "password_reset"
 
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Create JWT access token"""
     to_encode = data.copy()
@@ -68,7 +72,7 @@ def create_verification_token(email: str) -> str:
     """Create email verification token"""
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_EXPIRE_HOURS)
     to_encode = {
-        "email": email,
+        "email": normalize_email(email),
         "exp": expire,
         "type": TOKEN_TYPE_EMAIL_VERIFY
     }
@@ -79,7 +83,7 @@ def create_password_reset_token(email: str) -> str:
     """Create password reset token"""
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.PASSWORD_RESET_EXPIRE_HOURS)
     to_encode = {
-        "email": email,
+        "email": normalize_email(email),
         "exp": expire,
         "type": TOKEN_TYPE_PASSWORD_RESET,
         "jti": secrets.token_urlsafe(32)
@@ -148,14 +152,16 @@ def verify_email_token(token: str) -> Optional[str]:
     """Verify email verification token and return email"""
     payload = verify_token(token, TOKEN_TYPE_EMAIL_VERIFY)
     if payload:
-        return payload.get("email")
+        email = payload.get("email")
+        return normalize_email(email) if email else None
     return None
 
 def verify_password_reset_token(token: str) -> Optional[str]:
     """Verify password reset token and return email"""
     payload = verify_token(token, TOKEN_TYPE_PASSWORD_RESET)
     if payload:
-        return payload.get("email")
+        email = payload.get("email")
+        return normalize_email(email) if email else None
     return None
 
 def get_current_user(
