@@ -1,13 +1,26 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import OperationalError
 from fastapi import HTTPException, status
 from .config import settings
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _get_db_connect_timeout(default: int = 10) -> int:
+    raw = os.getenv("DB_CONNECT_TIMEOUT", str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid DB_CONNECT_TIMEOUT value '%s'; using default timeout=%s",
+            raw,
+            default,
+        )
+        return default
 
 # Create SQLAlchemy engine without a SQLite fallback
 def create_database_engine():
@@ -22,6 +35,7 @@ def create_database_engine():
     # We remove the outer try/except block to ensure failure if the database is inaccessible, 
     # preventing silent fallback to an un-migrated SQLite file.
     if settings.database_url.startswith("postgresql"):
+        connect_timeout = _get_db_connect_timeout()
         # PostgreSQL connection with connection pooling
         engine = create_engine(
             settings.database_url,
@@ -31,7 +45,7 @@ def create_database_engine():
             pool_size=20,
             max_overflow=40,
             connect_args={
-                "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+                "connect_timeout": connect_timeout,
                 "application_name": "sitespace-api"
             },
             echo=False  # Set to True for SQL debugging
@@ -71,12 +85,6 @@ def get_db():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database temporarily unavailable. Please retry shortly."
-        ) from db_error
-    except SQLAlchemyError as db_error:
-        logger.exception("Database SQLAlchemy error during request: %s", db_error)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database error. Please retry shortly."
         ) from db_error
     finally:
         db.close()
