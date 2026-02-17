@@ -237,3 +237,27 @@ class AssetAvailabilityResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ImpactedBookingSummary(BaseSchema):
+    """Booking summary used in asset status-change impact responses."""
+    id: UUID
+    booking_date: date
+    start_time: time
+    end_time: time
+    status: str
+    project_id: UUID
+    manager_id: UUID
+    subcontractor_id: Optional[UUID] = None
+
+
+class AssetStatusChangeImpactResponse(BaseSchema):
+    """Preview payload for bookings impacted by an asset status change."""
+    asset_id: UUID
+    target_status: AssetStatus
+    maintenance_start_date: Optional[date] = None
+    maintenance_end_date: Optional[date] = None
+    requires_confirmation: bool
+    total_impacted_bookings: int
+    impacted_bookings: List[ImpactedBookingSummary] = []
+    message: str

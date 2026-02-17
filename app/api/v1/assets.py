@@ -13,7 +13,8 @@ from ...models.user import User
 from ...schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetResponse, AssetDetailResponse, AssetBriefResponse, AssetListResponse,
-    AssetAvailabilityCheck, AssetAvailabilityResponse
+    AssetAvailabilityCheck, AssetAvailabilityResponse,
+    AssetStatusChangeImpactResponse
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import AssetStatus, UserRole
@@ -195,24 +196,65 @@ def get_asset_by_code(
 def update_asset(
     asset_id: UUID,
     asset_update: AssetUpdate,
+    confirm_booking_denials: bool = Query(
+        False,
+        description="Set true to confirm and apply auto-denial of impacted bookings",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """Update an existing asset"""
     try:
-        updated_asset = asset_crud.update_asset(db, asset_id, asset_update, current_user.id)
+        updated_asset = asset_crud.update_asset(
+            db,
+            asset_id,
+            asset_update,
+            current_user.id,
+            actor_role=UserRole(current_user.role),
+            confirm_booking_denials=confirm_booking_denials,
+        )
         if not updated_asset:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
         return AssetResponse.model_validate(updated_asset)
+    except asset_crud.AssetStatusChangeConfirmationRequired as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=e.payload.model_dump(mode="json")
+        )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating asset: {str(e)}"
+        )
+
+
+@router.post("/{asset_id}/status-impact", response_model=AssetStatusChangeImpactResponse)
+def preview_asset_status_change_impact(
+    asset_id: UUID,
+    asset_update: AssetUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Preview bookings that would be auto-denied by this asset status update."""
+    try:
+        impact = asset_crud.preview_asset_status_change_impact(db, asset_id, asset_update)
+        if not impact:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found"
+            )
+        return impact
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error previewing status impact: {str(e)}"
         )
 
 @router.post("/{asset_id}/transfer", response_model=AssetResponse)

@@ -9,13 +9,15 @@ import re
 from ..models.asset import Asset, AssetStatus
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
-from ..schemas.enums import BookingStatus
+from ..schemas.enums import BookingAuditAction, BookingStatus, UserRole
 from ..schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetDetailResponse, AssetAvailabilityCheck,
     AssetAvailabilityResponse, BookingConflict,
-    MaintenanceRecord
+    MaintenanceRecord, AssetStatusChangeImpactResponse,
+    ImpactedBookingSummary
 )
+from .booking_audit import log_booking_audit
 
 # Precompiled pattern for HH:MM validation — used by _parse_time_string
 _TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -234,6 +236,146 @@ def _clear_maintenance_dates(asset: Asset) -> None:
     asset.maintenance_end_date = None
 
 
+class AssetStatusChangeConfirmationRequired(Exception):
+    """Raised when a status change requires explicit confirmation."""
+
+    def __init__(self, payload: AssetStatusChangeImpactResponse):
+        self.payload = payload
+        super().__init__(payload.message)
+
+
+def _build_status_change_impact(
+    db: Session,
+    db_asset: Asset,
+    target_status: Optional[AssetStatus],
+    maintenance_start_date: Optional[date],
+    maintenance_end_date: Optional[date],
+) -> AssetStatusChangeImpactResponse:
+    """Build impacted-bookings preview for a potential status change."""
+    impacted_bookings: List[SlotBooking] = []
+    message = "No bookings will be auto-denied."
+
+    if target_status == AssetStatus.RETIRED:
+        impacted_bookings = db.query(SlotBooking).filter(
+            and_(
+                SlotBooking.asset_id == db_asset.id,
+                SlotBooking.booking_date >= date.today(),
+                SlotBooking.status.in_([BookingStatus.PENDING, BookingStatus.CONFIRMED])
+            )
+        ).order_by(SlotBooking.booking_date, SlotBooking.start_time).all()
+        if impacted_bookings:
+            message = (
+                f"Retiring this asset will auto-deny {len(impacted_bookings)} "
+                f"future pending/confirmed booking(s)."
+            )
+
+    elif (
+        target_status == AssetStatus.MAINTENANCE
+        and maintenance_start_date is not None
+        and maintenance_end_date is not None
+    ):
+        impacted_bookings = db.query(SlotBooking).filter(
+            and_(
+                SlotBooking.asset_id == db_asset.id,
+                SlotBooking.booking_date >= maintenance_start_date,
+                SlotBooking.booking_date <= maintenance_end_date,
+                SlotBooking.status.in_([BookingStatus.PENDING, BookingStatus.CONFIRMED])
+            )
+        ).order_by(SlotBooking.booking_date, SlotBooking.start_time).all()
+        if impacted_bookings:
+            message = (
+                f"Maintenance window {maintenance_start_date} to {maintenance_end_date} "
+                f"will auto-deny {len(impacted_bookings)} pending/confirmed booking(s)."
+            )
+
+    return AssetStatusChangeImpactResponse(
+        asset_id=db_asset.id,
+        target_status=target_status or db_asset.status,
+        maintenance_start_date=maintenance_start_date,
+        maintenance_end_date=maintenance_end_date,
+        requires_confirmation=len(impacted_bookings) > 0,
+        total_impacted_bookings=len(impacted_bookings),
+        impacted_bookings=[
+            ImpactedBookingSummary(
+                id=booking.id,
+                booking_date=booking.booking_date,
+                start_time=booking.start_time,
+                end_time=booking.end_time,
+                status=booking.status.value if hasattr(booking.status, "value") else str(booking.status),
+                project_id=booking.project_id,
+                manager_id=booking.manager_id,
+                subcontractor_id=booking.subcontractor_id,
+            )
+            for booking in impacted_bookings
+        ],
+        message=message,
+    )
+
+
+def preview_asset_status_change_impact(
+    db: Session,
+    asset_id: UUID,
+    asset_update: AssetUpdate,
+) -> Optional[AssetStatusChangeImpactResponse]:
+    """Preview bookings that would be auto-denied by an asset status change."""
+    db_asset = get_asset(db, asset_id)
+    if not db_asset:
+        return None
+
+    update_data = asset_update.model_dump(exclude_unset=True)
+    target_status = update_data.get('status', db_asset.status)
+    maintenance_start_date = update_data.get('maintenance_start_date', db_asset.maintenance_start_date)
+    maintenance_end_date = update_data.get('maintenance_end_date', db_asset.maintenance_end_date)
+
+    return _build_status_change_impact(
+        db=db,
+        db_asset=db_asset,
+        target_status=target_status,
+        maintenance_start_date=maintenance_start_date,
+        maintenance_end_date=maintenance_end_date,
+    )
+
+
+def _auto_deny_bookings_for_asset_status_change(
+    db: Session,
+    impact: AssetStatusChangeImpactResponse,
+    actor_id: UUID,
+    actor_role: UserRole,
+) -> List[UUID]:
+    """Auto-deny impacted bookings and create audit logs."""
+    if impact.total_impacted_bookings == 0:
+        return []
+
+    booking_ids = [b.id for b in impact.impacted_bookings]
+    bookings = db.query(SlotBooking).filter(SlotBooking.id.in_(booking_ids)).all()
+    now = datetime.now(timezone.utc)
+    denied_ids: List[UUID] = []
+
+    for booking in bookings:
+        from_status = booking.status
+        if from_status not in (BookingStatus.PENDING, BookingStatus.CONFIRMED):
+            continue
+
+        booking.status = BookingStatus.DENIED
+        booking.updated_at = now
+        denied_ids.append(booking.id)
+        log_booking_audit(
+            db,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            action=BookingAuditAction.DENIED,
+            booking_id=booking.id,
+            from_status=from_status,
+            to_status=BookingStatus.DENIED,
+            comment=(
+                "Auto-denied due to asset status change to "
+                f"{impact.target_status.value}"
+            ),
+        )
+
+    return denied_ids
+
+
 def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset:
     """Create a new asset"""
     # Check if project exists
@@ -436,7 +578,9 @@ def update_asset(
     db: Session,
     asset_id: UUID,
     asset_update: AssetUpdate,
-    user_id: UUID = None
+    user_id: UUID = None,
+    actor_role: UserRole = UserRole.MANAGER,
+    confirm_booking_denials: bool = False,
 ) -> Optional[Asset]:
     """Update an asset"""
     db_asset = get_asset(db, asset_id)
@@ -469,6 +613,30 @@ def update_asset(
     if update_data.get('status') == AssetStatus.AVAILABLE:
         update_data['maintenance_start_date'] = None
         update_data['maintenance_end_date'] = None
+
+    maintenance_start_date = update_data.get('maintenance_start_date', db_asset.maintenance_start_date)
+    maintenance_end_date = update_data.get('maintenance_end_date', db_asset.maintenance_end_date)
+
+    impact = _build_status_change_impact(
+        db=db,
+        db_asset=db_asset,
+        target_status=effective_status,
+        maintenance_start_date=maintenance_start_date,
+        maintenance_end_date=maintenance_end_date,
+    )
+
+    if impact.requires_confirmation and not confirm_booking_denials:
+        raise AssetStatusChangeConfirmationRequired(impact)
+
+    if impact.requires_confirmation:
+        if user_id is None:
+            raise ValueError("user_id is required to auto-deny impacted bookings")
+        _auto_deny_bookings_for_asset_status_change(
+            db=db,
+            impact=impact,
+            actor_id=user_id,
+            actor_role=actor_role,
+        )
 
     for field, value in update_data.items():
         setattr(db_asset, field, value)
