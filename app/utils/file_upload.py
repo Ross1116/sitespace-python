@@ -36,13 +36,8 @@ async def save_upload_file(upload_file: UploadFile, folder: str = "uploads") -> 
             "size": len(content)
         }
         
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error uploading file: {str(e)}",
-            "file_path": None,
-            "img_path": None
-        }
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error uploading file")
 
 def get_file_path(filename: str, folder: str = "uploads") -> str:
     """

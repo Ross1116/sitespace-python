@@ -241,8 +241,11 @@ class UserCRUD:
     @staticmethod
     def delete_user(db: Session, user: User) -> bool:
         """
-        Permanently delete user
-        Warning: This will cascade delete related records (bookings)
+        Delete a user if safe; otherwise deactivate to preserve booking history.
+
+        Returns:
+            True: the user record was permanently deleted.
+            False: the user had bookings and was deactivated instead.
         """
         booking_count = db.query(func.count(SlotBooking.id)).filter(
             SlotBooking.manager_id == user.id

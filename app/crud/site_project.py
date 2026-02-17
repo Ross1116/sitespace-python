@@ -193,7 +193,7 @@ def update_project(
     db.refresh(project)
     return project
 
-def delete_project(db: Session, project: SiteProject):
+def archive_project(db: Session, project: SiteProject) -> SiteProject:
     """Archive a project instead of hard delete.
 
     Hard-deleting projects can cascade-delete assets/bookings depending on DB
@@ -203,6 +203,13 @@ def delete_project(db: Session, project: SiteProject):
     project.status = "cancelled"
     db.commit()
     db.refresh(project)
+
+    return project
+
+
+def delete_project(db: Session, project: SiteProject) -> SiteProject:
+    """Backward-compatible alias for `archive_project`."""
+    return archive_project(db, project)
 
 def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
     """Check if user has access to project (as manager only)"""

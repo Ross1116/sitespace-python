@@ -307,7 +307,7 @@ def delete_project(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ) -> MessageResponse:
-    """Delete project (admin or lead manager only)"""
+    """Archive project (admin or lead manager only)."""
 
     try:
         project = project_crud.get_project(db, project_id=project_id)
@@ -323,7 +323,7 @@ def delete_project(
             check_project_access(db, project_id, current_user, require_lead=True)
 
         # Archive project (non-destructive)
-        project_crud.delete_project(db, project=project)
+        project_crud.archive_project(db, project=project)
         return MessageResponse(message="Project archived successfully")
 
     except HTTPException:
@@ -332,7 +332,7 @@ def delete_project(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete project"
+            detail="Failed to archive project"
         )
 
 

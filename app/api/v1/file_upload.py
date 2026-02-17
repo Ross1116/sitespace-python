@@ -44,31 +44,23 @@ async def upload_file(
             raise HTTPException(status_code=400, detail="File too large. Maximum size is 10 MB")
         await file.seek(0)
 
-        # Save file
+        # Save file (raises HTTPException on failure)
         result = await save_upload_file(file)
 
-        if result["success"]:
-            return MessageResponse(
-                success=True,
-                message=result["message"],
-                data={
-                    "file_path": result["file_path"],
-                    "img_path": result["img_path"],
-                    "filename": result["filename"],
-                    "original_filename": result["original_filename"],
-                    "size": result["size"]
-                }
-            )
-        else:
-            return MessageResponse(
-                success=False,
-                message=result["message"]
-            )
+        return MessageResponse(
+            success=True,
+            message=result["message"],
+            data={
+                "file_path": result["file_path"],
+                "img_path": result["img_path"],
+                "filename": result["filename"],
+                "original_filename": result["original_filename"],
+                "size": result["size"]
+            }
+        )
 
     except HTTPException:
         raise
     except Exception:
-        return MessageResponse(
-            success=False,
-            message="Error uploading file"
-        )
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Error uploading file")
