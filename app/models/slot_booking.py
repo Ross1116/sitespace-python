@@ -18,10 +18,10 @@ class SlotBooking(Base):
     __tablename__ = "slot_bookings"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("site_projects.id", ondelete="CASCADE"), nullable=False)
-    manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    subcontractor_id = Column(UUID(as_uuid=True), ForeignKey("subcontractors.id", ondelete="CASCADE"), nullable=True)  # Changed to nullable=True
-    asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("site_projects.id", ondelete="RESTRICT"), nullable=False)
+    manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    subcontractor_id = Column(UUID(as_uuid=True), ForeignKey("subcontractors.id", ondelete="RESTRICT"), nullable=True)  # Changed to nullable=True
+    asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="RESTRICT"), nullable=False)
     booking_date = Column(Date, nullable=False, index=True)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)

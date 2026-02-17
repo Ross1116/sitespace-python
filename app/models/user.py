@@ -30,8 +30,7 @@ class User(Base):
     
     bookings = relationship(
         "SlotBooking",
-        back_populates="manager",
-        cascade="all, delete-orphan"
+        back_populates="manager"
     )
 
     @validates("email")

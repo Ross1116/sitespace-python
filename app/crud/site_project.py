@@ -7,6 +7,7 @@ from datetime import date
 from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
+from ..schemas.enums import ProjectStatus
 from ..schemas.site_project import SiteProjectCreate, SiteProjectUpdate
 
 def create_project(
@@ -65,11 +66,14 @@ def get_project_with_details(db: Session, project_id: UUID) -> Optional[SiteProj
 
 def get_projects(
     db: Session,
-    filters: Dict[str, Any] = {},
+    filters: Optional[Dict[str, Any]] = None,
     skip: int = 0,
     limit: int = 100
 ) -> List[SiteProject]:
     """Get projects with filters"""
+    if filters is None:
+        filters = {}
+
     query = db.query(SiteProject)
     
     # Text search filters
@@ -108,8 +112,11 @@ def get_projects(
     
     return query.order_by(SiteProject.created_at.desc()).offset(skip).limit(limit).all()
 
-def count_projects(db: Session, filters: Dict[str, Any] = {}) -> int:
+def count_projects(db: Session, filters: Optional[Dict[str, Any]] = None) -> int:
     """Count projects with filters"""
+    if filters is None:
+        filters = {}
+
     query = db.query(SiteProject)
     
     # Apply same filters as get_projects
@@ -187,10 +194,23 @@ def update_project(
     db.refresh(project)
     return project
 
-def delete_project(db: Session, project: SiteProject):
-    """Delete project and all related data (cascade)"""
-    db.delete(project)
+def archive_project(db: Session, project: SiteProject) -> SiteProject:
+    """Archive a project instead of hard delete.
+
+    Hard-deleting projects can cascade-delete assets/bookings depending on DB
+    constraints, which risks destroying booking history. We mark the project as
+    cancelled to retain historical records.
+    """
+    project.status = ProjectStatus.CANCELLED
     db.commit()
+    db.refresh(project)
+
+    return project
+
+
+def delete_project(db: Session, project: SiteProject) -> SiteProject:
+    """Backward-compatible alias for `archive_project`."""
+    return archive_project(db, project)
 
 def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
     """Check if user has access to project (as manager only)"""

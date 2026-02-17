@@ -65,10 +65,10 @@ def create_asset(
         return AssetResponse.model_validate(db_asset)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create asset: {str(e)}"
+            detail="Failed to create asset"
         )
 
 @router.get("/", response_model=AssetListResponse)
@@ -111,10 +111,10 @@ def list_assets(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving assets: {str(e)}"
+            detail="Error retrieving assets"
         )
 
 @router.get("/brief", response_model=List[AssetBriefResponse])
@@ -133,10 +133,10 @@ def list_assets_brief(
         return [AssetBriefResponse.model_validate(asset) for asset in assets]
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving assets: {str(e)}"
+            detail="Error retrieving assets"
         )
 
 @router.get("/{asset_id}", response_model=AssetDetailResponse)
@@ -163,10 +163,10 @@ def get_asset_detail(
         return asset_detail
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving asset details: {str(e)}"
+            detail="Error retrieving asset details"
         )
 
 @router.get("/code/{asset_code}", response_model=AssetResponse)
@@ -186,10 +186,10 @@ def get_asset_by_code(
         return AssetResponse.model_validate(db_asset)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving asset: {str(e)}"
+            detail="Error retrieving asset"
         )
 
 @router.put("/{asset_id}", response_model=AssetResponse)
@@ -230,10 +230,10 @@ def update_asset(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating asset: {str(e)}"
+            detail="Error updating asset"
         )
 
 
@@ -264,10 +264,10 @@ def preview_asset_status_change_impact(
         return impact
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error previewing status impact: {str(e)}"
+            detail="Error previewing status impact"
         )
 
 @router.post("/{asset_id}/transfer", response_model=AssetResponse)
@@ -290,10 +290,10 @@ def transfer_asset(
         return AssetResponse.model_validate(transferred_asset)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error transferring asset: {str(e)}"
+            detail="Error transferring asset"
         )
 
 @router.post("/check-availability", response_model=AssetAvailabilityResponse)
@@ -306,10 +306,10 @@ def check_asset_availability(
     try:
         availability = asset_crud.check_asset_availability(db, availability_check)
         return availability
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error checking availability: {str(e)}"
+            detail="Error checking availability"
         )
 
 @router.delete("/{asset_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
@@ -329,8 +329,8 @@ def delete_asset(
         return MessageResponse(message="Asset deleted successfully")
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error deleting asset: {str(e)}"
+            detail="Error deleting asset"
         )

@@ -80,11 +80,18 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+        # Standard transaction boundary: commit once per request if no exception.
+        db.commit()
     except OperationalError as db_error:
+        db.rollback()
         logger.exception("Database operational error during request: %s", db_error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database temporarily unavailable. Please retry shortly."
         ) from db_error
+    except Exception:
+        # Ensure partial state doesn't leak on any other error.
+        db.rollback()
+        raise
     finally:
         db.close()

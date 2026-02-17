@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime, timezone
 from uuid import UUID
-from typing import Optional
+from typing import Any, Dict, Optional
 
 class BaseSchema(BaseModel):
     """Base schema with common configuration"""
@@ -44,6 +44,7 @@ class MessageResponse(BaseSchema):
     """Simple message response"""
     message: str
     success: bool = True
+    data: Optional[Dict[str, Any]] = None
 
 class ErrorResponse(BaseSchema):
     """Error response schema"""

@@ -1,8 +1,10 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime, timezone
+from ..models.slot_booking import SlotBooking, BookingStatus
 
 from ..models.user import User
 from ..schemas.enums import UserRole
@@ -240,12 +242,50 @@ class UserCRUD:
     @staticmethod
     def delete_user(db: Session, user: User) -> bool:
         """
-        Permanently delete user
-        Warning: This will cascade delete related records (bookings)
+        Delete a user if safe; otherwise deactivate to preserve booking history.
+
+        Returns:
+            True: the user record was permanently deleted.
+            False: the user had bookings and was deactivated instead.
         """
+        active_statuses = (
+            BookingStatus.PENDING,
+            BookingStatus.CONFIRMED,
+            BookingStatus.IN_PROGRESS,
+        )
+
+        booking_count = (
+            db.query(func.count(SlotBooking.id))
+            .filter(SlotBooking.manager_id == user.id)
+            .filter(SlotBooking.status.in_(active_statuses))
+            .scalar()
+            or 0
+        )
+
+        if booking_count > 0:
+            # Preserve booking history: deactivate instead of deleting.
+            user.is_active = False
+            user.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(user)
+            return False
+
         db.delete(user)
-        db.commit()
-        return True
+        try:
+            db.commit()
+            return True
+        except IntegrityError:
+            # Preserve booking history (and handle FK-RESTRICT races): deactivate instead.
+            db.rollback()
+            existing_user = db.query(User).filter(User.id == user.id).first()
+            if existing_user is None:
+                return True
+
+            existing_user.is_active = False
+            existing_user.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(existing_user)
+            return False
     
     @staticmethod
     def get_user_projects(db: Session, user: User) -> List:

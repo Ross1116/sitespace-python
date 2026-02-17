@@ -90,8 +90,8 @@ class SiteProject(Base):
         back_populates="assigned_projects"
     )
     
-    assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
-    slot_bookings = relationship("SlotBooking", back_populates="project", cascade="all, delete-orphan")
+    assets = relationship("Asset", back_populates="project")
+    slot_bookings = relationship("SlotBooking", back_populates="project")
 
     def __repr__(self):
         return f"<SiteProject(id={self.id}, name={self.name})>"

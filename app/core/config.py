@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -69,7 +70,18 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-if settings.IS_PRODUCTION and (not settings.jwt_secret or not settings.secret_key):
-    raise ValueError(
-        "Production configuration error: jwt_secret and secret_key must be set."
-    )
+logger = logging.getLogger(__name__)
+
+# Secrets must be set for any non-debug run. Allow empty only in DEBUG to
+# avoid accidental insecure staging/prod deployments.
+if not settings.jwt_secret or not settings.secret_key:
+    if settings.debug:
+        logger.warning(
+            "Insecure configuration: JWT_SECRET/SECRET_KEY are empty while DEBUG=True. "
+            "Do not use this configuration in staging/production."
+        )
+    else:
+        raise ValueError(
+            "Configuration error: JWT_SECRET and SECRET_KEY must be set "
+            "(empty secrets are only allowed when DEBUG=True)."
+        )
