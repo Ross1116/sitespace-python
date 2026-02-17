@@ -6,16 +6,16 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/sitespace
-      - JWT_SECRET=Paragon$123
-      - JWT_ALGORITHM=HS512
-      - JWT_EXPIRATION_MS=86400000
-      - SECRET_KEY=PARAGON$87654321
-      - EXPORT_FILES_ABSOLUTE_PATH=/app/uploads
-      - EXPORT_FILES_SERVER_PATH=getFile
-      - HOST=0.0.0.0
-      - PORT=8080
-      - DEBUG=True
+      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-sitespace}}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS512}
+      - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS:-86400000}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - EXPORT_FILES_ABSOLUTE_PATH=${EXPORT_FILES_ABSOLUTE_PATH:-/app/uploads}
+      - EXPORT_FILES_SERVER_PATH=${EXPORT_FILES_SERVER_PATH:-getFile}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8080}
+      - DEBUG=${DEBUG:-False}
     volumes:
       - ./uploads:/app/uploads
     depends_on:
@@ -25,9 +25,9 @@ services:
   db:
     image: postgres:15
     environment:
-      - POSTGRES_DB=sitespace
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=${POSTGRES_DB:-sitespace}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "5432:5432"
     volumes:
