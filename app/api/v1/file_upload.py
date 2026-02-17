@@ -67,8 +67,8 @@ async def upload_file(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         return MessageResponse(
             success=False,
-            message=f"Error uploading file: {str(e)}"
+            message="Error uploading file"
         )

@@ -264,13 +264,13 @@ def create_booking(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="Invalid booking data"
         )
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create booking: {str(e)}"
+            detail="Failed to create booking"
         )
 
 
@@ -386,13 +386,13 @@ def create_bulk_bookings(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="Invalid bulk booking request"
         )
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create bulk bookings: {str(e)}"
+            detail="Failed to create bulk bookings"
         )
 
 
@@ -458,10 +458,10 @@ def get_bookings(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve bookings: {str(e)}"
+            detail="Failed to retrieve bookings"
         )
 
 
@@ -530,10 +530,10 @@ def get_calendar_view(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve calendar view: {str(e)}"
+            detail="Failed to retrieve calendar view"
         )
 
 
@@ -574,10 +574,10 @@ def get_booking_statistics(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve statistics: {str(e)}"
+            detail="Failed to retrieve statistics"
         )
 
 
@@ -603,10 +603,10 @@ def get_my_upcoming_bookings(
         
         return bookings
         
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve upcoming bookings: {str(e)}"
+            detail="Failed to retrieve upcoming bookings"
         )
 
 
@@ -633,10 +633,10 @@ def get_booking(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve booking: {str(e)}"
+            detail="Failed to retrieve booking"
         )
 
 
@@ -722,11 +722,11 @@ def update_booking(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update booking: {str(e)}"
+            detail="Failed to update booking"
         )
 
 
@@ -801,11 +801,11 @@ def update_booking_status(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update booking status: {str(e)}"
+            detail="Failed to update booking status"
         )
 
 
@@ -883,11 +883,11 @@ def delete_booking(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete booking: {str(e)}"
+            detail="Failed to delete booking"
         )
 
 
@@ -914,10 +914,10 @@ def check_conflicts(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to check conflicts: {str(e)}"
+            detail="Failed to check conflicts"
         )
 
 
@@ -1011,11 +1011,11 @@ def duplicate_booking(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="Invalid duplicate booking request"
         )
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to duplicate booking: {str(e)}"
+            detail="Failed to duplicate booking"
         )

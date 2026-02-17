@@ -156,11 +156,11 @@ def create_project(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create project: {str(e)}"
+            detail="Failed to create project"
         )
 
 
@@ -223,10 +223,10 @@ def list_projects(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve projects: {str(e)}"
+            detail="Failed to retrieve projects"
         )
 
 
@@ -254,10 +254,10 @@ def get_project(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve project: {str(e)}"
+            detail="Failed to retrieve project"
         )
 
 
@@ -293,11 +293,11 @@ def update_project(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update project: {str(e)}"
+            detail="Failed to update project"
         )
 
 
@@ -322,17 +322,17 @@ def delete_project(
         if current_user.role != UserRole.ADMIN:
             check_project_access(db, project_id, current_user, require_lead=True)
 
-        # Delete project
+        # Archive project (non-destructive)
         project_crud.delete_project(db, project=project)
-        return MessageResponse(message="Project deleted successfully")
+        return MessageResponse(message="Project archived successfully")
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete project: {str(e)}"
+            detail="Failed to delete project"
         )
 
 
@@ -381,11 +381,11 @@ def add_manager(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to add manager: {str(e)}"
+            detail="Failed to add manager"
         )
 
 
@@ -434,11 +434,11 @@ def remove_manager(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to remove manager: {str(e)}"
+            detail="Failed to remove manager"
         )
 
 
@@ -500,11 +500,11 @@ def add_subcontractor(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to add subcontractor: {str(e)}"
+            detail="Failed to add subcontractor"
         )
 
 
@@ -541,11 +541,11 @@ def update_subcontractor(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update subcontractor: {str(e)}"
+            detail="Failed to update subcontractor"
         )
 
 
@@ -580,11 +580,11 @@ def remove_subcontractor(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to remove subcontractor: {str(e)}"
+            detail="Failed to remove subcontractor"
         )
 
 
@@ -611,10 +611,10 @@ def get_available_subcontractors(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve available subcontractors: {str(e)}"
+            detail="Failed to retrieve available subcontractors"
         )
 
 
@@ -642,8 +642,8 @@ def get_project_statistics(
         
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve project statistics: {str(e)}"
+            detail="Failed to retrieve project statistics"
         )

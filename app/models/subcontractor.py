@@ -24,8 +24,7 @@ class Subcontractor(Base):
     # Relationships
     bookings = relationship(
         "SlotBooking",
-        back_populates="subcontractor",
-        cascade="all, delete-orphan"
+        back_populates="subcontractor"
     )
     
     assigned_projects = relationship(

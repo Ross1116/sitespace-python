@@ -36,4 +36,4 @@ class Asset(Base):
 
     # Relationships
     project = relationship("SiteProject", back_populates="assets")
-    bookings = relationship("SlotBooking", back_populates="asset", cascade="all, delete-orphan")
+    bookings = relationship("SlotBooking", back_populates="asset")

@@ -3,6 +3,7 @@ from sqlalchemy import and_, or_, func
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime, timezone
+from ..models.slot_booking import SlotBooking
 
 from ..models.user import User
 from ..schemas.enums import UserRole
@@ -243,6 +244,18 @@ class UserCRUD:
         Permanently delete user
         Warning: This will cascade delete related records (bookings)
         """
+        booking_count = db.query(func.count(SlotBooking.id)).filter(
+            SlotBooking.manager_id == user.id
+        ).scalar() or 0
+
+        if booking_count > 0:
+            # Preserve booking history: deactivate instead of deleting.
+            user.is_active = False
+            user.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(user)
+            return False
+
         db.delete(user)
         db.commit()
         return True
