@@ -684,29 +684,35 @@ def update_booking_status(
     1. Guard against an existing active booking on the same slot.
     2. Auto-deny all other PENDING bookings on the same slot.
     """
-    booking = db.query(SlotBooking).filter(SlotBooking.id == booking_id).first()
+    booking = (
+        db.query(SlotBooking)
+        .filter(SlotBooking.id == booking_id)
+        .with_for_update()
+        .first()
+    )
     if not booking:
         return None, []
 
     auto_denied_ids: List[UUID] = []
+
+    booking_asset_id = booking.asset_id
+    booking_date = booking.booking_date
+    booking_start_time = booking.start_time
+    booking_end_time = booking.end_time
 
     # Lock all overlapping rows for this slot in a deterministic order so
     # conflict check + status transition are atomic and race-safe.
     locked_slot_rows = (
         db.query(SlotBooking)
         .filter(
-            SlotBooking.asset_id == booking.asset_id,
-            SlotBooking.booking_date == booking.booking_date,
-            _overlapping_time_filter(booking.start_time, booking.end_time),
+            SlotBooking.asset_id == booking_asset_id,
+            SlotBooking.booking_date == booking_date,
+            _overlapping_time_filter(booking_start_time, booking_end_time),
         )
         .order_by(SlotBooking.id)
         .with_for_update()
         .all()
     )
-
-    booking = next((row for row in locked_slot_rows if row.id == booking_id), None)
-    if not booking:
-        return None, []
 
     old_status = booking.status
 
