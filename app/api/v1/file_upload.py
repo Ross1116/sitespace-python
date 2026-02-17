@@ -61,6 +61,5 @@ async def upload_file(
 
     except HTTPException:
         raise
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Error uploading file")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error uploading file") from e

@@ -7,6 +7,7 @@ from datetime import date
 from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
+from ..schemas.enums import ProjectStatus
 from ..schemas.site_project import SiteProjectCreate, SiteProjectUpdate
 
 def create_project(
@@ -200,7 +201,7 @@ def archive_project(db: Session, project: SiteProject) -> SiteProject:
     constraints, which risks destroying booking history. We mark the project as
     cancelled to retain historical records.
     """
-    project.status = "cancelled"
+    project.status = ProjectStatus.CANCELLED
     db.commit()
     db.refresh(project)
 
