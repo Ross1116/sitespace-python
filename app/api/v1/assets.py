@@ -205,6 +205,15 @@ def update_asset(
 ):
     """Update an existing asset"""
     try:
+        asset = asset_crud.get_asset(db, asset_id)
+        if not asset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found"
+            )
+
+        check_asset_view_access(db, asset.project_id, current_user)
+
         updated_asset = asset_crud.update_asset(
             db,
             asset_id,
@@ -213,11 +222,6 @@ def update_asset(
             actor_role=UserRole(current_user.role),
             confirm_booking_denials=confirm_booking_denials,
         )
-        if not updated_asset:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Asset not found"
-            )
         return AssetResponse.model_validate(updated_asset)
     except asset_crud.AssetStatusChangeConfirmationRequired as e:
         raise HTTPException(
@@ -242,6 +246,15 @@ def preview_asset_status_change_impact(
 ):
     """Preview bookings that would be auto-denied by this asset status update."""
     try:
+        asset = asset_crud.get_asset(db, asset_id)
+        if not asset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found"
+            )
+
+        check_asset_view_access(db, asset.project_id, current_user)
+
         impact = asset_crud.preview_asset_status_change_impact(db, asset_id, asset_update)
         if not impact:
             raise HTTPException(

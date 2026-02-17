@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, AliasChoices
 from typing import Optional, List
 from datetime import date, time
 from uuid import UUID
@@ -234,9 +234,7 @@ class AssetAvailabilityResponse(BaseModel):
     conflicts: List[BookingConflict] = []
     reason: Optional[str] = None
     asset_status: Optional[str] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ImpactedBookingSummary(BaseSchema):
