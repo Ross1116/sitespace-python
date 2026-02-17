@@ -684,39 +684,64 @@ def update_booking_status(
     1. Guard against an existing active booking on the same slot.
     2. Auto-deny all other PENDING bookings on the same slot.
     """
-    booking = get_booking(db, booking_id)
+    booking = db.query(SlotBooking).filter(SlotBooking.id == booking_id).first()
+    if not booking:
+        return None, []
+
+    auto_denied_ids: List[UUID] = []
+
+    # Lock all overlapping rows for this slot in a deterministic order so
+    # conflict check + status transition are atomic and race-safe.
+    locked_slot_rows = (
+        db.query(SlotBooking)
+        .filter(
+            SlotBooking.asset_id == booking.asset_id,
+            SlotBooking.booking_date == booking.booking_date,
+            _overlapping_time_filter(booking.start_time, booking.end_time),
+        )
+        .order_by(SlotBooking.id)
+        .with_for_update()
+        .all()
+    )
+
+    booking = next((row for row in locked_slot_rows if row.id == booking_id), None)
     if not booking:
         return None, []
 
     old_status = booking.status
-    auto_denied_ids: List[UUID] = []
 
-    # --- Confirmation guard + auto-deny ---
+    # --- Confirmation guard + auto-deny (atomic on locked rows) ---
     if new_status == BookingStatus.CONFIRMED and old_status == BookingStatus.PENDING:
-        # Check for existing active booking on this slot
-        active_conflict = (
-            db.query(SlotBooking)
-            .filter(
-                SlotBooking.asset_id == booking.asset_id,
-                SlotBooking.booking_date == booking.booking_date,
-                _overlapping_time_filter(booking.start_time, booking.end_time),
-                SlotBooking.status.in_(_ACTIVE_STATUSES),
-                SlotBooking.id != booking_id,
-            )
-            .first()
+        active_conflict = next(
+            (
+                row for row in locked_slot_rows
+                if row.id != booking_id and row.status in _ACTIVE_STATUSES
+            ),
+            None,
         )
         if active_conflict:
             raise ValueError(
                 "Cannot confirm: a confirmed booking already exists for this time slot"
             )
 
-        auto_denied_ids = _auto_deny_competing_pending_bookings(
-            db,
-            booking=booking,
-            actor_id=updated_by_id,
-            actor_role=updated_by_role,
-            treat_as_confirmed=True,
-        )
+        now = datetime.now(timezone.utc)
+        for row in locked_slot_rows:
+            if row.id == booking_id or row.status != BookingStatus.PENDING:
+                continue
+
+            row.status = BookingStatus.DENIED
+            row.updated_at = now
+            auto_denied_ids.append(row.id)
+            log_booking_audit(
+                db,
+                actor_id=updated_by_id,
+                actor_role=updated_by_role,
+                action=BookingAuditAction.DENIED,
+                booking_id=row.id,
+                from_status=BookingStatus.PENDING,
+                to_status=BookingStatus.DENIED,
+                comment="Auto-denied: another booking on this slot was confirmed",
+            )
 
     booking.status = new_status
     booking.updated_at = datetime.now(timezone.utc)
