@@ -220,11 +220,11 @@ def update_asset(
                 if isinstance(current_user.role, UserRole)
                 else UserRole(current_user.role)
             )
-        except ValueError:
+        except ValueError as err:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid user role",
-            )
+            ) from err
 
         updated_asset = asset_crud.update_asset(
             db,
