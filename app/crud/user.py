@@ -4,10 +4,10 @@ from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime, timezone
-from ..models.slot_booking import SlotBooking, BookingStatus
+from ..models.slot_booking import SlotBooking
 
 from ..models.user import User
-from ..schemas.enums import UserRole
+from ..schemas.enums import BookingStatus, UserRole
 from ..schemas.user import (
     UserCreate, 
     UserUpdate,

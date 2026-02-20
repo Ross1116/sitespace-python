@@ -80,8 +80,6 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
-        # Standard transaction boundary: commit once per request if no exception.
-        db.commit()
     except OperationalError as db_error:
         db.rollback()
         logger.exception("Database operational error during request: %s", db_error)

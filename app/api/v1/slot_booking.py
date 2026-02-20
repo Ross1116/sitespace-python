@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.security import get_current_active_user, get_user_role, get_entity_id
 from app.models.subcontractor import Subcontractor
 from app.models.user import User
-from app.models.slot_booking import SlotBooking, BookingStatus
+from app.models.slot_booking import SlotBooking
 from app.schemas.slot_booking import (
     BookingCreate,
     BookingUpdate,
@@ -28,7 +28,7 @@ from app.schemas.slot_booking import (
     BookingDuplicateRequest
 )
 from app.schemas.base import MessageResponse
-from app.schemas.enums import UserRole
+from app.schemas.enums import BookingStatus, UserRole
 from app.crud import slot_booking as booking_crud
 from app.crud import site_project as project_crud
 from app.core.email import notify_booking_change
