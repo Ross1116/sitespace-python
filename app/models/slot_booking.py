@@ -3,16 +3,9 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
-import enum
 from app.core.database import Base
 
-class BookingStatus(str, enum.Enum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    DENIED = "denied"
+from app.schemas.enums import BookingStatus
 
 class SlotBooking(Base):
     __tablename__ = "slot_bookings"

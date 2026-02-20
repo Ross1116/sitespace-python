@@ -33,8 +33,13 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 def require_manager_or_admin(current_user) -> None:
     """Restrict endpoint access to manager/admin roles only."""
-    role = getattr(current_user, "role", None)
-    if role not in [UserRole.MANAGER, UserRole.ADMIN]:
+    raw_role = getattr(current_user, "role", None)
+    try:
+        role = raw_role if isinstance(raw_role, UserRole) else UserRole(raw_role)
+    except ValueError:
+        role = None
+
+    if role not in (UserRole.MANAGER, UserRole.ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only managers and admins can access this endpoint"
@@ -54,7 +59,7 @@ def validate_managers_exist(db: Session, manager_ids: List[UUID]) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Manager {manager.email} is not active"
             )
-        if manager.role not in [UserRole.MANAGER, UserRole.ADMIN]:
+        if manager.role not in (UserRole.MANAGER.value, UserRole.ADMIN.value):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"User {manager.email} is not a manager or admin"
@@ -87,7 +92,7 @@ def check_project_access(
     """Check if user has required access level to project"""
     
     # Admins always have access
-    if user.role == UserRole.ADMIN:
+    if user.role == UserRole.ADMIN.value:
         return
     
     # Check if user has project access
@@ -143,7 +148,7 @@ def create_project(
         
         # Add current user as a lead manager if no managers specified
         # and current user is a manager/admin
-        if not project_data.manager_ids and current_user.role in [UserRole.MANAGER, UserRole.ADMIN]:
+        if not project_data.manager_ids and current_user.role in (UserRole.MANAGER.value, UserRole.ADMIN.value):
             project_crud.add_manager_to_project(
                 db,
                 project_id=project.id,
@@ -319,7 +324,7 @@ def delete_project(
             )
 
         # Check if user is admin or lead manager
-        if current_user.role != UserRole.ADMIN:
+        if current_user.role != UserRole.ADMIN.value:
             check_project_access(db, project_id, current_user, require_lead=True)
 
         # Archive project (non-destructive)
@@ -408,7 +413,7 @@ def remove_manager(
             )
         
         # Check permissions (need to be lead manager or admin)
-        if current_user.role != UserRole.ADMIN:
+        if current_user.role != UserRole.ADMIN.value:
             check_project_access(db, project_id, current_user, require_lead=True)
         
         # Prevent removing last manager

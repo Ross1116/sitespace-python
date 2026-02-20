@@ -214,12 +214,24 @@ def update_asset(
 
         check_asset_view_access(db, asset.project_id, current_user)
 
+        try:
+            actor_role = (
+                current_user.role
+                if isinstance(current_user.role, UserRole)
+                else UserRole(current_user.role)
+            )
+        except ValueError as err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user role",
+            ) from err
+
         updated_asset = asset_crud.update_asset(
             db,
             asset_id,
             asset_update,
             current_user.id,
-            actor_role=UserRole(current_user.role),
+            actor_role=actor_role,
             confirm_booking_denials=confirm_booking_denials,
         )
         return AssetResponse.model_validate(updated_asset)
