@@ -199,6 +199,66 @@ JWT-based with dual entity support (Users and Subcontractors).
 - Logout revokes the current access token via blacklist.
 - Refresh token flow uses rotation (the used refresh token is revoked).
 
+---
+
+## TV Role (Display-Only)
+
+The `tv` role is intended for wall displays / read-only project viewing.
+
+- Role input is **case-insensitive** (`tv`, `TV`, `Tv`, etc.).
+- `/api/auth/me` returns `role: "tv"` for these users.
+- JWT access tokens include a `role` claim, normalized to lowercase.
+
+### Rules (RBAC)
+
+- TV users can only **read** bookings + calendar + assets for projects they are assigned to.
+- TV users are **blocked from all write operations** (any `POST`/`PUT`/`PATCH`/`DELETE`) with `403 Forbidden`.
+
+### Create a TV user
+
+Use the standard registration endpoint (example):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/auth/register" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"email": "tv1@example.com",
+		"first_name": "TV",
+		"last_name": "Display",
+		"phone": null,
+		"password": "ChangeMe123!",
+		"confirm_password": "ChangeMe123!",
+		"role": "TV"
+	}'
+```
+
+### Assign TV user to a project
+
+TV visibility is scoped by project assignment. Assign the TV user to a project using the existing project membership endpoint (requires manager/admin auth):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/projects/{project_id}/managers" \
+	-H "Authorization: Bearer $MANAGER_OR_ADMIN_TOKEN" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"manager_id": "{tv_user_id}",
+		"is_lead_manager": false
+	}'
+```
+
+Note: the path uses `/managers` for historical reasons, but TV users are treated as **project members** (not project managers).
+
+### Endpoints used by the frontend in TV mode (GET-only)
+
+- `GET /api/projects/?my_projects=true&limit=...&skip=...`
+- `GET /api/assets/?project_id=...&skip=...&limit=...`
+- `GET /api/bookings/?project_id=...&limit=...&skip=...`
+- `GET /api/bookings/calendar?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&project_id=...`
+- `GET /api/bookings/{bookingId}`
+- `GET /api/bookings/{bookingId}/audit`
+
+All of the above enforce project membership for TV users; guessing IDs from other projects will return `403`.
+
 | Token              | Expiry   | Purpose               |
 | ------------------ | -------- | --------------------- |
 | Access token       | 30 min   | API access            |

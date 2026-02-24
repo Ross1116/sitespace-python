@@ -177,6 +177,12 @@ def get_asset_by_code(
 ):
     """Get asset by asset code"""
     try:
+        # Not project-scoped; TV users must use project-scoped endpoints.
+        if get_user_role(current_user) == UserRole.TV:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TV users cannot access this endpoint"
+            )
         db_asset = asset_crud.get_asset_by_code(db, asset_code)
         if not db_asset:
             raise HTTPException(

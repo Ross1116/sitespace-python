@@ -277,7 +277,8 @@ def require_role(allowed_roles: list):
                 )
         # Handle user
         elif isinstance(current_entity, User):
-            if current_entity.role not in allowed_roles:
+            role_norm = current_entity.role.strip().lower() if isinstance(current_entity.role, str) else current_entity.role
+            if role_norm not in allowed_roles:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have permission to access this resource"
@@ -341,7 +342,8 @@ def get_user_role(entity: Union[User, Subcontractor]) -> UserRole:
     if isinstance(entity, Subcontractor):
         return UserRole.SUBCONTRACTOR
     elif isinstance(entity, User):
-        return UserRole(entity.role)
+        raw_role = entity.role.strip().lower() if isinstance(entity.role, str) else entity.role
+        return UserRole(raw_role)
     else:
         raise ValueError(f"Invalid entity type: {type(entity)}")
 

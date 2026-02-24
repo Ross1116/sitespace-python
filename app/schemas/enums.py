@@ -4,6 +4,7 @@ class UserRole(str, Enum):
     MANAGER = "manager"
     ADMIN = "admin"
     SUBCONTRACTOR = "subcontractor"
+    TV = "tv"
 
 class ProjectStatus(str, Enum):
     ACTIVE = "active"

@@ -25,6 +25,12 @@ class UserCreate(UserBase, PasswordMixin):
     """User creation schema"""
     role: UserRole = UserRole.MANAGER
     confirm_password: str
+
+    @field_validator('role', mode='before')
+    def normalize_role(cls, v):
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
     
     @field_validator('confirm_password')
     def passwords_match(cls, v, values):
@@ -50,6 +56,12 @@ class UserAdminUpdate(UserUpdate):
     """
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+
+    @field_validator('role', mode='before')
+    def normalize_role(cls, v):
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 class UserResponse(UserBase, TimestampSchema):
     """User response schema"""

@@ -36,3 +36,7 @@ class User(Base):
     @validates("email")
     def normalize_email(self, key, value):
         return value.strip().lower() if value else value
+
+    @validates("role")
+    def normalize_role(self, key, value):
+        return value.strip().lower() if isinstance(value, str) else value
