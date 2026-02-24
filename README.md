@@ -192,6 +192,31 @@ Allowed types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.pdf`, `.doc`, `.docx`
 
 ---
 
+## Role-Based Access
+
+### UserRole Enum
+
+```
+UserRole:
+	- admin          # Full access
+	- manager        # Project management
+	- subcontractor  # Limited booking/asset access
+	- tv             # Display-only, read-only, project-scoped (case-insensitive)
+```
+
+### Permissions Table
+
+| Role          | JWT Value       | Write Access   | Project Assignment | Notes                                  |
+| ------------- | --------------- | -------------- | ------------------ | -------------------------------------- |
+| admin         | "admin"         | Yes            | Any                | Full access                            |
+| manager       | "manager"       | Yes            | By assignment      | Project CRUD, booking/asset management |
+| subcontractor | "subcontractor" | Limited (self) | By assignment      | Bookings for assigned projects         |
+| tv            | "tv"            | No (read-only) | By assignment      | Only GET, only for assigned projects   |
+
+---
+
+---
+
 ## Authentication
 
 JWT-based with dual entity support (Users and Subcontractors).

@@ -266,19 +266,31 @@ def get_current_user_or_subcontractor(
         }
 
 def require_role(allowed_roles: list):
-    """Dependency to check if user has required role"""
+    """Dependency to check if user has required role (case-insensitive, robust to enums/strings)."""
+    # Normalize allowed_roles to a set of lowercase strings
+    def _normalize_role(r):
+        if hasattr(r, "value"):
+            return str(r.value).strip().lower()
+        if hasattr(r, "name"):
+            return str(r.name).strip().lower()
+        if isinstance(r, str):
+            return r.strip().lower()
+        return str(r).strip().lower()
+
+    allowed_set = set(_normalize_role(r) for r in allowed_roles)
+
     def role_checker(current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)):
         # Handle subcontractor
         if isinstance(current_entity, Subcontractor):
-            if "subcontractor" not in allowed_roles:
+            if "subcontractor" not in allowed_set:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have permission to access this resource"
                 )
         # Handle user
         elif isinstance(current_entity, User):
-            role_norm = current_entity.role.strip().lower() if isinstance(current_entity.role, str) else current_entity.role
-            if role_norm not in allowed_roles:
+            role_norm = _normalize_role(current_entity.role)
+            if role_norm not in allowed_set:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have permission to access this resource"

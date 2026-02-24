@@ -74,8 +74,15 @@ def check_booking_access(
         if project_crud.is_project_manager(db, booking.project_id, user_id):
             return
 
-    # 3b. TV users: read-only access to bookings for assigned projects
+
+    # 3b. TV users: allow read-only access to assigned projects, but never owner-required actions
     if booking.project_id and user_role == UserRole.TV:
+        if require_owner:
+            # TV can never be an owner for write actions
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the booking owner or project manager can perform this action"
+            )
         if project_crud.has_project_access(db, booking.project_id, user_id):
             return
     
