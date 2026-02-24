@@ -59,10 +59,10 @@ def validate_managers_exist(db: Session, manager_ids: List[UUID]) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Manager {manager.email} is not active"
             )
-        if manager.role not in (UserRole.MANAGER.value, UserRole.ADMIN.value):
+        if manager.role not in (UserRole.MANAGER.value, UserRole.ADMIN.value, UserRole.TV.value):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"User {manager.email} is not a manager or admin"
+                detail=f"User {manager.email} is not eligible to be assigned to a project"
             )
 
 
@@ -185,7 +185,18 @@ def list_projects(
     """List projects with optional filters"""
     
     try:
-        require_manager_or_admin(current_user)
+        raw_role = getattr(current_user, "role", None)
+        role_norm = raw_role.strip().lower() if isinstance(raw_role, str) else raw_role
+
+        # TV users can only list their assigned projects (used by TV mode on login)
+        if role_norm == UserRole.TV.value:
+            if not my_projects:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="TV users can only list assigned projects"
+                )
+        else:
+            require_manager_or_admin(current_user)
 
         # Build filters dictionary
         filters = {}
@@ -206,6 +217,9 @@ def list_projects(
             filters['start_date_to'] = start_date_to
         
         if my_projects:
+            filters['user_id'] = current_user.id
+        elif role_norm == UserRole.TV.value:
+            # Defensive: force scoping even if query param logic changes
             filters['user_id'] = current_user.id
         
         # Get paginated projects
@@ -368,10 +382,10 @@ def add_manager(
         validate_managers_exist(db, [manager_data.manager_id])
         
         # Check if manager is already assigned
-        if project_crud.is_project_manager(db, project_id=project_id, user_id=manager_data.manager_id):
+        if project_crud.has_project_access(db, project_id=project_id, user_id=manager_data.manager_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User is already a manager of this project"
+                detail="User is already assigned to this project"
             )
         
         # Add manager

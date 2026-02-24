@@ -38,7 +38,7 @@ from slowapi.errors import RateLimitExceeded
 
 from .core.config import settings
 from .core.database import engine, Base
-from .core.middleware import RequestLoggingMiddleware
+from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
 from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit
 
 # Import all models so SQLAlchemy knows about them
@@ -90,6 +90,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
 )
+
+# Request logging + Sentry user context
+# Enforce TV read-only mode (must wrap API so blocked writes are still logged)
+app.add_middleware(TvReadOnlyMiddleware)
 
 # Request logging + Sentry user context
 app.add_middleware(RequestLoggingMiddleware)

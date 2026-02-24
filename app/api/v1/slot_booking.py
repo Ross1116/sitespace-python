@@ -73,6 +73,18 @@ def check_booking_access(
     if booking.project_id and user_role == UserRole.MANAGER:
         if project_crud.is_project_manager(db, booking.project_id, user_id):
             return
+
+
+    # 3b. TV users: allow read-only access to assigned projects, but never owner-required actions
+    if booking.project_id and user_role == UserRole.TV:
+        if require_owner:
+            # TV can never be an owner for write actions
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the booking owner or project manager can perform this action"
+            )
+        if project_crud.has_project_access(db, booking.project_id, user_id):
+            return
     
     # 4. If we get here, we haven't matched any access rights
     if require_owner:
@@ -433,6 +445,39 @@ def get_bookings(
             date_from=date_from,
             date_to=date_to
         )
+
+        # TV users must scope reads to a project they are assigned to
+        if user_role == UserRole.TV:
+            if not project_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="TV users must provide project_id"
+                )
+            if not project_crud.has_project_access(db, project_id, user_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have access to this project"
+                )
+            # Force project scoping; ignore other identity filters
+            filter_params.project_id = project_id
+            filter_params.manager_id = None
+            filter_params.subcontractor_id = None
+        else:
+            # If a project filter is provided, enforce membership to avoid ID guessing.
+            if project_id and user_role != UserRole.ADMIN:
+                if user_role == UserRole.SUBCONTRACTOR:
+                    from app.crud import subcontractor as subcontractor_crud
+                    if not subcontractor_crud.is_subcontractor_assigned(db, project_id, user_id):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You don't have access to this project"
+                        )
+                else:
+                    if not project_crud.has_project_access(db, project_id, user_id):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You don't have access to this project"
+                        )
         
         # Apply role-based filters
         if user_role == UserRole.SUBCONTRACTOR:
@@ -490,6 +535,12 @@ def get_calendar_view(
         
         user_id = get_entity_id(current_entity)
         user_role = get_user_role(current_entity)
+
+        if user_role == UserRole.TV and not project_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TV users must provide project_id"
+            )
 
         if project_id:
             has_access = False
@@ -551,6 +602,12 @@ def get_booking_statistics(
     try:
         user_role = get_user_role(current_entity)
         user_id = get_entity_id(current_entity)
+
+        if user_role == UserRole.TV:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TV users cannot access this endpoint"
+            )
         
         validate_date_range(date_from, date_to)
         
@@ -593,16 +650,24 @@ def get_my_upcoming_bookings(
     try:
         user_id = get_entity_id(current_entity)
         user_role = get_user_role(current_entity)
-        
+
+        if user_role == UserRole.TV:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TV users cannot access this endpoint"
+            )
+
         bookings = booking_crud.get_user_upcoming_bookings(
-            db, 
+            db,
             user_id=user_id,
             user_role=user_role,
             limit=limit
         )
-        
+
         return bookings
-        
+
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

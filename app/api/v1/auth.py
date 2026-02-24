@@ -95,7 +95,10 @@ def create_token_payload(entity: Union[User, Subcontractor]) -> Dict[str, Any]:
     """Create consistent token payload for user or subcontractor"""
     is_subcontractor = isinstance(entity, Subcontractor)
     user_type = "subcontractor" if is_subcontractor else "user"
-    role = "subcontractor" if is_subcontractor else entity.role
+    if is_subcontractor:
+        role = "subcontractor"
+    else:
+        role = entity.role.strip().lower() if isinstance(entity.role, str) else entity.role
     
     return {
         "sub": str(entity.id),
@@ -504,7 +507,7 @@ def get_current_user_info(
         first_name=current_entity.first_name,
         last_name=current_entity.last_name,
         phone=current_entity.phone,
-        role=current_entity.role,
+        role=current_entity.role.strip().lower() if isinstance(current_entity.role, str) else current_entity.role,
         is_active=current_entity.is_active,
         email_verified=getattr(current_entity, 'email_verified', False),
     )

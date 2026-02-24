@@ -7,7 +7,7 @@ from datetime import date
 from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
-from ..schemas.enums import ProjectStatus
+from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.site_project import SiteProjectCreate, SiteProjectUpdate
 
 def create_project(
@@ -223,11 +223,15 @@ def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
 
 def is_project_manager(db: Session, project_id: UUID, user_id: UUID) -> bool:
     """Check if user is a project manager"""
-    project = db.query(SiteProject)\
-        .filter(SiteProject.id == project_id)\
-        .filter(SiteProject.managers.any(User.id == user_id))\
+    project = (
+        db.query(SiteProject)
+        .join(SiteProject.managers)
+        .filter(SiteProject.id == project_id)
+        .filter(User.id == user_id)
+        .filter(User.role.in_([UserRole.MANAGER.value, UserRole.ADMIN.value]))
         .first()
-    
+    )
+
     return project is not None
 
 def is_lead_project_manager(db: Session, project_id: UUID, user_id: UUID) -> bool:
@@ -242,8 +246,12 @@ def is_lead_project_manager(db: Session, project_id: UUID, user_id: UUID) -> boo
         .first()
     
     if project and project.managers:
-        # Consider the first manager as lead
-        return project.managers[0].id == user_id
+        # Consider the first *real* manager/admin as lead (TV members don't count)
+        lead_candidates = [
+            m for m in project.managers
+            if getattr(m, "role", None) in (UserRole.MANAGER.value, UserRole.ADMIN.value)
+        ]
+        return bool(lead_candidates) and lead_candidates[0].id == user_id
     
     return False
 
@@ -255,7 +263,12 @@ def count_project_managers(db: Session, project_id: UUID) -> int:
         .first()
     
     if project:
-        return len(project.managers)
+        return len(
+            [
+                m for m in project.managers
+                if getattr(m, "role", None) in (UserRole.MANAGER.value, UserRole.ADMIN.value)
+            ]
+        )
     return 0
 
 def count_lead_managers(db: Session, project_id: UUID) -> int:
@@ -266,7 +279,13 @@ def count_lead_managers(db: Session, project_id: UUID) -> int:
         .first()
     
     if project and project.managers:
-        return 1  # Currently only one lead manager (first in list)
+        manager_count = len(
+            [
+                m for m in project.managers
+                if getattr(m, "role", None) in (UserRole.MANAGER.value, UserRole.ADMIN.value)
+            ]
+        )
+        return 1 if manager_count > 0 else 0
     return 0
 
 def add_manager_to_project(

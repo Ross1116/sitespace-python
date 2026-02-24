@@ -50,6 +50,11 @@ def check_audit_access(
     if booking.project_id and user_role == UserRole.MANAGER:
         if project_crud.is_project_manager(db, booking.project_id, user_id):
             return
+
+    # TV users: read-only access for assigned projects
+    if booking.project_id and user_role == UserRole.TV:
+        if project_crud.has_project_access(db, booking.project_id, user_id):
+            return
     
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -114,6 +119,11 @@ def get_my_audit_activity(
     Shows all booking actions performed by the current user.
     """
     user_id = get_entity_id(current_entity)
+    if get_user_role(current_entity) == UserRole.TV:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="TV users cannot access this endpoint"
+        )
     
     audit_logs = audit_crud.get_actor_audit_history(
         db, 
@@ -140,6 +150,12 @@ def get_project_audit_logs(
     """
     user_role = get_user_role(current_entity)
     user_id = get_entity_id(current_entity)
+
+    if user_role == UserRole.TV:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="TV users cannot access this endpoint"
+        )
     
     # Check project access
     if user_role == UserRole.SUBCONTRACTOR:
