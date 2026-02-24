@@ -656,16 +656,18 @@ def get_my_upcoming_bookings(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="TV users cannot access this endpoint"
             )
-        
+
         bookings = booking_crud.get_user_upcoming_bookings(
-            db, 
+            db,
             user_id=user_id,
             user_role=user_role,
             limit=limit
         )
-        
+
         return bookings
-        
+
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
