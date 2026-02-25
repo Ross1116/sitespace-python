@@ -26,7 +26,9 @@ try:
     import app.models.site_project
     import app.models.slot_booking
     import app.models.subcontractor
-    
+    import app.models.stored_file
+    import app.models.site_plan
+
     print("Alembic: Successfully imported all models.")
 except ImportError as e:
     print(f"Alembic Import Error: Could not import all models. Check your paths. Error: {e}")

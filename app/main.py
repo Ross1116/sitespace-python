@@ -39,10 +39,10 @@ from slowapi.errors import RateLimitExceeded
 from .core.config import settings
 from .core.database import engine, Base
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
-from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit
+from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans
 
 # Import all models so SQLAlchemy knows about them
-from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model
+from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model, stored_file as stored_file_model, site_plan as site_plan_model
 
 # Create database tables (optional for testing) - Non-blocking
 def create_tables_if_possible():
@@ -142,6 +142,8 @@ app.include_router(site_project.router, prefix="/api")
 app.include_router(subcontractor.router, prefix="/api")
 app.include_router(users.router, prefix="/api") 
 app.include_router(booking_audit.router, prefix="/api")
+app.include_router(files.router, prefix="/api")
+app.include_router(site_plans.router, prefix="/api")
 
 # Root endpoint
 @app.get("/")
