@@ -23,14 +23,35 @@ ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _file_urls(file_id: UUID) -> tuple[str, str, str]:
-    """Return (preview_url, image_url, raw_url) for a given file id."""
     base = f"/api/files/{file_id}"
     return f"{base}/preview", f"{base}/image", base
 
 
-# ---------------------------------------------------------------------------
-# Upload
-# ---------------------------------------------------------------------------
+def _get_stored_file(file_id: UUID, db: Session) -> StoredFile:
+    record = db.query(StoredFile).filter(StoredFile.id == file_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not storage.exists(record.storage_path):
+        raise HTTPException(status_code=404, detail="File data not found on storage")
+    return record
+
+
+def _cache_headers(file_id: UUID, suffix: str) -> dict[str, str]:
+    return {
+        "Cache-Control": "public, max-age=3600",
+        "ETag": f'"{file_id}-{suffix}"',
+    }
+
+
+def _serve_as_image(record: StoredFile, scale: float, cache_suffix: str) -> Response:
+    content = storage.read(record.storage_path)
+    ct = (record.content_type or "").lower()
+    headers = _cache_headers(record.id, cache_suffix)
+    if ct == "application/pdf" or record.original_filename.lower().endswith(".pdf"):
+        png_bytes = render_pdf_to_png(content, scale=scale)
+        return Response(content=png_bytes, media_type="image/png", headers=headers)
+    return Response(content=content, media_type=ct or "image/jpeg", headers=headers)
+
 
 @router.post("/upload", response_model=FileUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
@@ -40,12 +61,9 @@ async def upload_file(
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ):
     """
-    Upload a file (PDF or image). Returns a suggested title derived from the
-    filename (or PDF metadata) plus the file_id needed for the second phase.
-
-    Phase 1 of the two-phase site-plan upload UX:
-      1. POST /api/files/upload  →  { file_id, suggested_title, preview_url }
-      2. POST /api/site-plans/   →  { title, file_id, project_id }
+    Phase 1 of two-phase site-plan upload.
+    Returns suggested title (from PDF metadata or filename) + file_id.
+    Phase 2: POST /api/site-plans/ with { title, file_id, project_id }.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -57,14 +75,12 @@ async def upload_file(
             detail=f"File type '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    # Fast-fail on Content-Length before reading the body
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File too large. Maximum size is 20 MB")
 
     content = await file.read()
-    # Verify actual size (Content-Length can be spoofed)
-    if len(content) > MAX_FILE_SIZE:
+    if len(content) > MAX_FILE_SIZE:  # verify — Content-Length can be spoofed
         raise HTTPException(status_code=413, detail="File too large. Maximum size is 20 MB")
 
     content_type = (
@@ -73,7 +89,6 @@ async def upload_file(
         or "application/octet-stream"
     )
     suggested_title = extract_suggested_title(content, file.filename)
-
     storage_path = await storage.save(content, file.filename)
 
     uploader_id = current_user.id if isinstance(current_user, User) else None
@@ -100,42 +115,6 @@ async def upload_file(
     )
 
 
-# ---------------------------------------------------------------------------
-# Serve helpers
-# ---------------------------------------------------------------------------
-
-def _get_stored_file(file_id: UUID, db: Session) -> StoredFile:
-    record = db.query(StoredFile).filter(StoredFile.id == file_id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="File not found")
-    if not storage.exists(record.storage_path):
-        raise HTTPException(status_code=404, detail="File data not found on storage")
-    return record
-
-
-def _cache_headers(file_id: UUID, suffix: str) -> dict[str, str]:
-    """Shared cache headers for rendered outputs. ETag scoped by file_id + render variant."""
-    return {
-        "Cache-Control": "public, max-age=3600",
-        "ETag": f'"{file_id}-{suffix}"',
-    }
-
-
-def _serve_as_image(record: StoredFile, scale: float, cache_suffix: str) -> Response:
-    content = storage.read(record.storage_path)
-    ct = (record.content_type or "").lower()
-    headers = _cache_headers(record.id, cache_suffix)
-    if ct == "application/pdf" or record.original_filename.lower().endswith(".pdf"):
-        png_bytes = render_pdf_to_png(content, scale=scale)
-        return Response(content=png_bytes, media_type="image/png", headers=headers)
-    # Already an image — serve the original with cache headers
-    return Response(content=content, media_type=ct or "image/jpeg", headers=headers)
-
-
-# ---------------------------------------------------------------------------
-# Serve endpoints (all authenticated roles)
-# ---------------------------------------------------------------------------
-
 @router.get("/{file_id}")
 def serve_file_raw(
     file_id: UUID,
@@ -158,11 +137,7 @@ def serve_file_preview(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_active_user),
 ):
-    """
-    Serve the file as a PNG at thumbnail scale (1.5×).
-    For PDFs, renders the first page. For images, serves the original.
-    Response is cached for 1 hour (ETag + Cache-Control).
-    """
+    """PNG at 1.5× scale. PDFs render first page; images served as-is. Cached 1 hour."""
     record = _get_stored_file(file_id, db)
     return _serve_as_image(record, scale=1.5, cache_suffix="preview")
 
@@ -173,18 +148,10 @@ def serve_file_image(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_active_user),
 ):
-    """
-    Serve the file as a high-quality PNG (3×).
-    Intended for standalone display in popups or detail views.
-    Response is cached for 1 hour (ETag + Cache-Control).
-    """
+    """PNG at 3× scale for standalone display in popups or detail views. Cached 1 hour."""
     record = _get_stored_file(file_id, db)
     return _serve_as_image(record, scale=3.0, cache_suffix="image")
 
-
-# ---------------------------------------------------------------------------
-# Delete (manager/admin only)
-# ---------------------------------------------------------------------------
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_file(
@@ -193,14 +160,12 @@ def delete_file(
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ):
     """
-    Delete a stored file. Returns 409 if any site plan still references it.
-    DB commit happens before storage deletion so a failed disk remove doesn't
-    leave the DB in an inconsistent state.
+    Delete a stored file. Returns 409 if referenced by a site plan.
+    DB commits before storage deletion — failed disk remove won't corrupt DB state.
     """
     record = _get_stored_file(file_id, db)
 
-    referenced = db.query(SitePlan).filter(SitePlan.file_id == file_id).first()
-    if referenced:
+    if db.query(SitePlan).filter(SitePlan.file_id == file_id).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete file: it is referenced by one or more site plans. Delete the site plan first.",
@@ -208,6 +173,5 @@ def delete_file(
 
     storage_path = record.storage_path
     db.delete(record)
-    db.commit()  # DB consistent first
-
-    storage.delete(storage_path)  # then disk
+    db.commit()
+    storage.delete(storage_path)
