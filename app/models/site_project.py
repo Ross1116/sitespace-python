@@ -92,6 +92,7 @@ class SiteProject(Base):
     
     assets = relationship("Asset", back_populates="project")
     slot_bookings = relationship("SlotBooking", back_populates="project")
+    site_plans = relationship("SitePlan", back_populates="project", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<SiteProject(id={self.id}, name={self.name})>"
