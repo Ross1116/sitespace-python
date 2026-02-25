@@ -26,29 +26,27 @@ def _file_urls(file_id: UUID) -> tuple[str, str, str]:
 
 def _build_response(plan: SitePlan) -> SitePlanResponse:
     preview_url, image_url, raw_url = _file_urls(plan.file.id)
-    file_brief = StoredFileBrief(
-        id=plan.file.id,
-        original_filename=plan.file.original_filename,
-        content_type=plan.file.content_type,
-        file_size=plan.file.file_size,
-        preview_url=preview_url,
-        image_url=image_url,
-        raw_url=raw_url,
-        created_at=plan.file.created_at,
-    )
-    creator = UserBriefResponse(
-        id=plan.created_by.id,
-        email=plan.created_by.email,
-        first_name=plan.created_by.first_name,
-        last_name=plan.created_by.last_name,
-        role=plan.created_by.role,
-    )
     return SitePlanResponse(
         id=plan.id,
         title=plan.title,
         project_id=plan.project_id,
-        file=file_brief,
-        created_by=creator,
+        file=StoredFileBrief(
+            id=plan.file.id,
+            original_filename=plan.file.original_filename,
+            content_type=plan.file.content_type,
+            file_size=plan.file.file_size,
+            preview_url=preview_url,
+            image_url=image_url,
+            raw_url=raw_url,
+            created_at=plan.file.created_at,
+        ),
+        created_by=UserBriefResponse(
+            id=plan.created_by.id,
+            email=plan.created_by.email,
+            first_name=plan.created_by.first_name,
+            last_name=plan.created_by.last_name,
+            role=plan.created_by.role,
+        ),
         created_at=plan.created_at,
         updated_at=plan.updated_at,
     )
@@ -57,10 +55,7 @@ def _build_response(plan: SitePlan) -> SitePlanResponse:
 def _load_plan(plan_id: UUID, db: Session) -> SitePlan:
     plan = (
         db.query(SitePlan)
-        .options(
-            joinedload(SitePlan.file),
-            joinedload(SitePlan.created_by),
-        )
+        .options(joinedload(SitePlan.file), joinedload(SitePlan.created_by))
         .filter(SitePlan.id == plan_id)
         .first()
     )
@@ -69,10 +64,6 @@ def _load_plan(plan_id: UUID, db: Session) -> SitePlan:
     return plan
 
 
-# ---------------------------------------------------------------------------
-# Create
-# ---------------------------------------------------------------------------
-
 @router.post("/", response_model=SitePlanResponse, status_code=status.HTTP_201_CREATED)
 def create_site_plan(
     payload: SitePlanCreate,
@@ -80,26 +71,16 @@ def create_site_plan(
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ):
     """
-    Create a site plan. Requires an already-uploaded file_id and an existing project_id.
-    Each site plan exclusively owns its file — a file_id cannot be shared between plans.
+    Create a site plan. file_id must come from POST /api/files/upload.
+    Each site plan exclusively owns its file — file_id cannot be reused across plans.
     """
-    file_record = db.query(StoredFile).filter(StoredFile.id == payload.file_id).first()
-    if not file_record:
-        raise HTTPException(
-            status_code=404,
-            detail="File not found. Upload the file first via POST /api/files/upload",
-        )
+    if not db.query(StoredFile).filter(StoredFile.id == payload.file_id).first():
+        raise HTTPException(status_code=404, detail="File not found. Upload the file first via POST /api/files/upload")
 
-    # Enforce one-file-per-plan: a StoredFile must not be shared across site plans
-    existing_plan = db.query(SitePlan).filter(SitePlan.file_id == payload.file_id).first()
-    if existing_plan:
-        raise HTTPException(
-            status_code=409,
-            detail="This file is already used by another site plan. Upload a fresh copy.",
-        )
+    if db.query(SitePlan).filter(SitePlan.file_id == payload.file_id).first():
+        raise HTTPException(status_code=409, detail="This file is already used by another site plan. Upload a fresh copy.")
 
-    project = db.query(SiteProject).filter(SiteProject.id == payload.project_id).first()
-    if not project:
+    if not db.query(SiteProject).filter(SiteProject.id == payload.project_id).first():
         raise HTTPException(status_code=404, detail="Project not found")
 
     plan = SitePlan(
@@ -110,13 +91,8 @@ def create_site_plan(
     )
     db.add(plan)
     db.commit()
-
     return _build_response(_load_plan(plan.id, db))
 
-
-# ---------------------------------------------------------------------------
-# List
-# ---------------------------------------------------------------------------
 
 @router.get("/", response_model=List[SitePlanResponse])
 def list_site_plans(
@@ -124,20 +100,12 @@ def list_site_plans(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_active_user),
 ):
-    """List site plans. Optionally filter by project_id."""
-    q = db.query(SitePlan).options(
-        joinedload(SitePlan.file),
-        joinedload(SitePlan.created_by),
-    )
+    """List site plans. Filter by project_id if provided."""
+    q = db.query(SitePlan).options(joinedload(SitePlan.file), joinedload(SitePlan.created_by))
     if project_id:
         q = q.filter(SitePlan.project_id == project_id)
-    plans = q.order_by(SitePlan.created_at.desc()).all()
-    return [_build_response(p) for p in plans]
+    return [_build_response(p) for p in q.order_by(SitePlan.created_at.desc()).all()]
 
-
-# ---------------------------------------------------------------------------
-# Get single
-# ---------------------------------------------------------------------------
 
 @router.get("/{plan_id}", response_model=SitePlanResponse)
 def get_site_plan(
@@ -148,10 +116,6 @@ def get_site_plan(
     return _build_response(_load_plan(plan_id, db))
 
 
-# ---------------------------------------------------------------------------
-# Update
-# ---------------------------------------------------------------------------
-
 @router.patch("/{plan_id}", response_model=SitePlanResponse)
 def update_site_plan(
     plan_id: UUID,
@@ -160,9 +124,8 @@ def update_site_plan(
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ):
     """
-    Update a site plan's title and/or replace its file.
-    When file_id is replaced, the old file is removed from the DB and disk —
-    but storage deletion only happens AFTER the DB transaction commits successfully.
+    Update title and/or replace file. Storage deletion happens after DB commit —
+    a failed disk remove won't leave the DB inconsistent.
     """
     plan = _load_plan(plan_id, db)
 
@@ -172,53 +135,32 @@ def update_site_plan(
     old_storage_path: Optional[str] = None
 
     if payload.file_id is not None and payload.file_id != plan.file_id:
-        new_file = db.query(StoredFile).filter(StoredFile.id == payload.file_id).first()
-        if not new_file:
-            raise HTTPException(
-                status_code=404,
-                detail="New file not found. Upload it first via POST /api/files/upload",
-            )
+        if not db.query(StoredFile).filter(StoredFile.id == payload.file_id).first():
+            raise HTTPException(status_code=404, detail="New file not found. Upload it first via POST /api/files/upload")
 
-        # Enforce one-file-per-plan on the replacement file too
-        other_plan = db.query(SitePlan).filter(
-            SitePlan.file_id == payload.file_id,
-            SitePlan.id != plan_id,
-        ).first()
-        if other_plan:
-            raise HTTPException(
-                status_code=409,
-                detail="This file is already used by another site plan. Upload a fresh copy.",
-            )
+        if db.query(SitePlan).filter(SitePlan.file_id == payload.file_id, SitePlan.id != plan_id).first():
+            raise HTTPException(status_code=409, detail="This file is already used by another site plan. Upload a fresh copy.")
 
         old_file = plan.file
-        # Check before we detach the relationship
-        other_refs = db.query(SitePlan).filter(
-            SitePlan.file_id == old_file.id,
-            SitePlan.id != plan_id,
+        no_other_refs = not db.query(SitePlan).filter(
+            SitePlan.file_id == old_file.id, SitePlan.id != plan_id
         ).first()
 
         plan.file_id = payload.file_id
 
-        if not other_refs:
-            # Capture path and delete from DB — storage deletion happens after commit below
+        if no_other_refs:
             old_storage_path = old_file.storage_path
             db.delete(old_file)
 
-    # Single commit: all DB changes land atomically
     db.commit()
 
-    # Storage deletion only AFTER the DB commit succeeds.
-    # If this fails, the DB is already consistent; the orphaned file can be
-    # cleaned up by the background orphan-sweep job (future work).
+    # Storage deletion after commit — if this fails, DB is already consistent.
+    # Lingering files are handled by the future orphan-sweep job.
     if old_storage_path:
         storage.delete(old_storage_path)
 
     return _build_response(_load_plan(plan_id, db))
 
-
-# ---------------------------------------------------------------------------
-# Delete
-# ---------------------------------------------------------------------------
 
 @router.delete("/{plan_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_site_plan(
@@ -226,29 +168,20 @@ def delete_site_plan(
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ):
-    """
-    Delete a site plan and its associated stored file.
-    Storage deletion happens AFTER the DB transaction commits successfully.
-    """
+    """Deletes the plan and its file. Storage deletion happens after DB commit."""
     plan = _load_plan(plan_id, db)
     file_record = plan.file
 
-    # Determine whether the file will become orphaned after this plan is deleted
-    other_refs = db.query(SitePlan).filter(
-        SitePlan.file_id == file_record.id,
-        SitePlan.id != plan_id,
+    no_other_refs = not db.query(SitePlan).filter(
+        SitePlan.file_id == file_record.id, SitePlan.id != plan_id
     ).first()
 
-    storage_path_to_delete: Optional[str] = None
-    if not other_refs:
-        storage_path_to_delete = file_record.storage_path
+    storage_path_to_delete: Optional[str] = file_record.storage_path if no_other_refs else None
 
-    # Delete plan (and file record if orphaned) in one transaction
     db.delete(plan)
     if storage_path_to_delete:
         db.delete(file_record)
     db.commit()
 
-    # Storage deletion only AFTER successful DB commit
     if storage_path_to_delete:
         storage.delete(storage_path_to_delete)

@@ -29,8 +29,14 @@ def create_database_engine():
     It is configured for PostgreSQL and will raise an error if connection fails.
     """
     
-    # Log the URL being used
-    logger.info(f"Database URL detected: {settings.database_url}")
+    # Log the URL with credentials masked
+    try:
+        from urllib.parse import urlparse, urlunparse
+        p = urlparse(settings.database_url)
+        safe_url = urlunparse(p._replace(netloc=f"{p.username}:***@{p.hostname}:{p.port}"))
+    except Exception:
+        safe_url = "<unparseable url>"
+    logger.info("Database URL detected: %s", safe_url)
     
     # We remove the outer try/except block to ensure failure if the database is inaccessible, 
     # preventing silent fallback to an un-migrated SQLite file.

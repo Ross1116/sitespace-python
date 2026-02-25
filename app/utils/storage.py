@@ -36,12 +36,11 @@ class StorageBackend(ABC):
 
 
 class LocalStorageBackend(StorageBackend):
-    """Stores files on the local filesystem under EXPORT_FILES_ABSOLUTE_PATH/uploads/."""
+    """Local disk backend. Saves to EXPORT_FILES_ABSOLUTE_PATH (the /app/uploads volume)."""
 
     BACKEND_NAME = "local"
 
     async def save(self, content: bytes, original_filename: str) -> str:
-        # Store directly under EXPORT_FILES_ABSOLUTE_PATH (the /app/uploads mounted volume)
         ext = os.path.splitext(original_filename)[1].lower()
         unique_name = f"{uuid.uuid4()}{ext}"
         upload_dir = settings.export_files_absolute_path.rstrip("/").rstrip("\\")
@@ -68,5 +67,4 @@ class LocalStorageBackend(StorageBackend):
         return os.path.exists(storage_path)
 
 
-# Singleton — import this in endpoints and services
 storage: StorageBackend = LocalStorageBackend()
