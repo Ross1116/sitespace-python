@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
@@ -41,7 +43,13 @@ ALLOWED_CONTENT_TYPES = {
     "application/csv",
     "text/plain",  # some CSV uploads come through as text/plain
 }
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+
+
+def _normalize_role(role: Any) -> str:
+    if hasattr(role, "value"):
+        return str(role.value).strip().lower()
+    return str(role).strip().lower()
 
 
 def _check_project_access(project_id: UUID, current_user: User, db: Session) -> SiteProject:
@@ -49,7 +57,7 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    role = str(current_user.role).lower() if hasattr(current_user, "role") else ""
+    role = _normalize_role(getattr(current_user, "role", ""))
     is_manager = role in ("manager", "admin")
     is_project_manager = any(str(m.id) == str(current_user.id) for m in project.managers)
 
@@ -104,7 +112,7 @@ async def upload_programme(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Upload a CSV or XLSX file.",
+            detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, or XLSM file.",
         )
 
     # Read and store via storage backend (same pattern as site_plans)
@@ -131,13 +139,14 @@ async def upload_programme(
     db.add(stored_file)
     db.flush()
 
-    # Determine version number for this project
-    existing_count = (
-        db.query(ProgrammeUpload)
+    # Lock project row to serialize per-project version allocation.
+    db.query(SiteProject).filter(SiteProject.id == project_id).with_for_update().first()
+    latest_version = (
+        db.query(func.max(ProgrammeUpload.version_number))
         .filter(ProgrammeUpload.project_id == project_id)
-        .count()
+        .scalar()
     )
-    version_number = existing_count + 1
+    version_number = int(latest_version or 0) + 1
 
     # Create ProgrammeUpload record (status=processing)
     upload = ProgrammeUpload(
@@ -150,7 +159,14 @@ async def upload_programme(
         status="processing",
     )
     db.add(upload)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Concurrent upload detected. Please retry.",
+        )
 
     upload_id = str(upload.id)
 
@@ -393,6 +409,7 @@ def get_unclassified_activity_mappings(
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             ActivityAssetMapping.confidence == "low",
+            ActivityAssetMapping.manually_corrected.is_(False),
         )
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
         .all()

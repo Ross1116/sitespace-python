@@ -80,11 +80,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
     if scheduler is not None:
+        hour = int(settings.NIGHTLY_LOOKAHEAD_HOUR)
+        minute = int(settings.NIGHTLY_LOOKAHEAD_MINUTE)
         scheduler.add_job(
             nightly_lookahead_job,
             trigger="cron",
-            hour=17,
-            minute=0,
+            hour=hour,
+            minute=minute,
             id="nightly_lookahead_job",
             replace_existing=True,
         )

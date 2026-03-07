@@ -38,9 +38,9 @@ from .ai_service import ALLOWED_ASSET_TYPES, ActivityItem, ClassificationResult,
 
 logger = logging.getLogger(__name__)
 
-# Header hash cache: sha256(headers_tuple) -> StructureResult
+# Header hash cache: sha256(headers_tuple) -> column_mapping
 # Reused across uploads with identical column headers — skips AI entirely.
-_header_cache: dict[str, StructureResult] = {}
+_header_cache: dict[str, dict[str, str]] = {}
 
 
 async def process_programme(upload_id: str) -> None:
@@ -53,6 +53,10 @@ async def process_programme(upload_id: str) -> None:
         await _run(upload_id, db)
     except Exception as exc:
         logger.exception("Unhandled error in process_programme for upload %s", upload_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Rollback failed in process_programme for upload %s", upload_id)
         _mark_failed_as_committed(upload_id, db, str(exc))
     finally:
         db.close()
@@ -88,10 +92,10 @@ async def _run(upload_id: str, db: Session) -> None:
 
     if cached:
         logger.info("Header hash cache hit for upload %s — reusing column_mapping", upload_id)
-        structure = cached
+        structure = _build_structure_from_cached_mapping(sample, cached)
     else:
         structure = await detect_structure(sample)
-        _header_cache[header_hash] = structure
+        _header_cache[header_hash] = dict(structure.column_mapping)
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
@@ -234,7 +238,7 @@ def _parse_file(
             reader = csv.DictReader(io.StringIO(text))
             return [dict(row) for row in reader], None
 
-        if name_lower.endswith((".xlsx", ".xls")):
+        if name_lower.endswith((".xlsx", ".xlsm")):
             openpyxl = importlib.import_module("openpyxl")
             wb = openpyxl.load_workbook(
                 io.BytesIO(file_bytes),
@@ -259,6 +263,39 @@ def _compute_header_hash(rows: list[dict[str, Any]]) -> str:
         return ""
     headers = tuple(sorted(rows[0].keys()))
     return hashlib.sha256(str(headers).encode()).hexdigest()
+
+
+def _build_structure_from_cached_mapping(
+    rows: list[dict[str, Any]],
+    column_mapping: dict[str, str],
+) -> StructureResult:
+    """
+    Build a fresh per-file StructureResult using cached header mapping only.
+
+    Row-derived fields (activities, completeness, notes, missing_fields) are
+    recalculated for each upload to avoid cross-file contamination.
+    """
+    activities = _apply_mapping(rows, column_mapping, start_index=0)
+    total_rows = len(rows)
+    dated_rows = 0
+    for item in activities:
+        if _parse_date(item.start) and _parse_date(item.finish):
+            dated_rows += 1
+
+    completeness = int((dated_rows / total_rows) * 100) if total_rows else 0
+    missing_fields = [
+        field_name
+        for field_name in ("name", "start_date", "end_date")
+        if field_name not in column_mapping
+    ]
+
+    return StructureResult(
+        column_mapping=dict(column_mapping),
+        activities=activities,
+        completeness_score=completeness,
+        missing_fields=missing_fields,
+        notes="Header-hash cache hit: reused column mapping and reparsed current rows.",
+    )
 
 
 def _parse_date(value: str | None) -> date | None:

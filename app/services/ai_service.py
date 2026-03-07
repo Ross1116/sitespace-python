@@ -17,7 +17,7 @@ Contract:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ..core.config import settings
@@ -299,7 +299,6 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         return None
 
     activities: list[ActivityItem] = []
-    flags: list[str] = []
 
     for i, row in enumerate(rows):
         name = str(row.get(column_mapping.get("name", ""), "")).strip()
@@ -308,10 +307,6 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
         start = _parse_date(row.get(column_mapping.get("start_date", ""), ""))
         finish = _parse_date(row.get(column_mapping.get("end_date", ""), ""))
-        row_flags: list[str] = []
-        if not start or not finish:
-            row_flags.append("dates_missing")
-
         activities.append(ActivityItem(
             id=f"row-{i}",
             name=name,

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint
+from sqlalchemy import Column, String, Integer, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -9,6 +9,9 @@ from app.core.database import Base
 
 class ProgrammeUpload(Base):
     __tablename__ = "programme_uploads"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version_number", name="uq_programme_upload_project_version"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(

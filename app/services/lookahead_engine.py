@@ -37,8 +37,10 @@ def _week_start(d: date) -> date:
 def _hours_between(start: time, end: time) -> float:
     start_dt = datetime.combine(date.min, start)
     end_dt = datetime.combine(date.min, end)
-    delta = (end_dt - start_dt).total_seconds() / 3600.0
-    return max(delta, 0.0)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+    hours = (end_dt - start_dt).total_seconds() / 3600.0
+    return max(hours, 0.0)
 
 
 def _demand_level(hours: float) -> str:
@@ -142,7 +144,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         duration_days = max((activity.end_date - activity.start_date).days + 1, 1)
         demand_hours = float(duration_days * 8)
 
-        local_start = datetime.combine(activity.start_date, time.min, tzinfo=tz).date()
+        local_start = activity.start_date
         week = _week_start(local_start)
         demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
 
@@ -283,7 +285,7 @@ def get_sub_notifications(project_id: uuid.UUID, sub_id: uuid.UUID, db: Session)
     )
 
 
-async def nightly_lookahead_job() -> None:
+def nightly_lookahead_job() -> None:
     db = SessionLocal()
     try:
         project_ids = [

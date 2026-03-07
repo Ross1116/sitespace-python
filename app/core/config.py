@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "8"))
     AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "3"))
 
+    # Scheduler
+    NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "17"))
+    NIGHTLY_LOOKAHEAD_MINUTE: int = int(os.getenv("NIGHTLY_LOOKAHEAD_MINUTE", "0"))
+
     class Config:
         env_file = ".env"
 

@@ -6,19 +6,7 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from .base import BaseSchema
-
-ALLOWED_ASSET_TYPES = {
-    "crane",
-    "hoist",
-    "loading_bay",
-    "ewp",
-    "concrete_pump",
-    "excavator",
-    "forklift",
-    "telehandler",
-    "compactor",
-    "other",
-}
+from ..services.ai_service import ALLOWED_ASSET_TYPES
 
 
 class MappingCorrectionRequest(BaseSchema):

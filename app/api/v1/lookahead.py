@@ -28,8 +28,14 @@ def _check_project_exists(project_id: UUID, db: Session) -> SiteProject:
     return project
 
 
+def _normalize_role(role: object) -> str:
+    if hasattr(role, "value"):
+        return str(getattr(role, "value")).strip().lower()
+    return str(role).strip().lower()
+
+
 def _check_manager_project_access(project: SiteProject, current_user: User) -> None:
-    role = str(getattr(current_user, "role", "")).strip().lower()
+    role = _normalize_role(getattr(current_user, "role", ""))
     if role == UserRole.ADMIN.value:
         return
 
