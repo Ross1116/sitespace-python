@@ -25,6 +25,7 @@ import hashlib
 import importlib
 import io
 import logging
+import threading
 import uuid
 from datetime import date, datetime
 from typing import Any
@@ -42,6 +43,7 @@ SAFE_FAILURE_REASON = "processing_failed"
 # Header hash cache: sha256(headers_tuple) -> cached structure metadata
 # Reused across uploads with identical column headers — skips AI entirely.
 _header_cache: dict[str, dict[str, Any]] = {}
+_header_cache_lock = threading.Lock()
 
 
 async def process_programme(upload_id: str) -> None:
@@ -73,8 +75,8 @@ async def _run(upload_id: str, db: Session) -> None:
     stored_file = upload.file
     try:
         file_bytes = storage.read(stored_file.storage_path)
-    except Exception as exc:
-        logger.exception("Could not read file for upload %s: %s", upload_id, exc)
+    except Exception:
+        logger.exception("Could not read file for upload %s", upload_id)
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
@@ -89,23 +91,25 @@ async def _run(upload_id: str, db: Session) -> None:
 
     # 3. Header hash cache — skip AI if same headers seen before
     header_hash = _compute_header_hash(sample)
-    cached = _header_cache.get(header_hash)
+    with _header_cache_lock:
+        cached = _header_cache.get(header_hash)
 
     if cached:
         logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
         structure = _build_structure_from_cached_mapping(sample, cached)
     else:
         structure = await detect_structure(sample)
-        _header_cache[header_hash] = {
-            "column_mapping": dict(structure.column_mapping),
-            # Persist hierarchy-related mapping keys so cache hits can preserve
-            # parent/summary/level/zone metadata when those columns exist.
-            "hierarchy_mapping": {
-                key: structure.column_mapping[key]
-                for key in ("parent_id", "is_summary", "level_name", "zone_name")
-                if key in structure.column_mapping
-            },
-        }
+        with _header_cache_lock:
+            _header_cache[header_hash] = {
+                "column_mapping": dict(structure.column_mapping),
+                # Persist hierarchy-related mapping keys so cache hits can preserve
+                # parent/summary/level/zone metadata when those columns exist.
+                "hierarchy_mapping": {
+                    key: structure.column_mapping[key]
+                    for key in ("parent_id", "is_summary", "level_name", "zone_name")
+                    if key in structure.column_mapping
+                },
+            }
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
@@ -337,7 +341,7 @@ def _parse_file(
             ws = wb.active
             rows_iter = ws.iter_rows(values_only=True)
             headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(next(rows_iter, []))]
-            result = [dict(zip(headers, row)) for row in rows_iter]
+            result = [dict(zip(headers, row, strict=False)) for row in rows_iter]
             wb.close()
             return result, None
 

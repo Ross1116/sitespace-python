@@ -129,8 +129,8 @@ async def upload_programme(
 
     try:
         storage_path = await storage.save(file_bytes, filename)
-    except Exception as exc:
-        logger.error("Failed to save programme file: %s", exc)
+    except Exception:
+        logger.exception("Failed to save programme file")
         raise HTTPException(status_code=500, detail="File storage failed.") from exc
 
     # Create StoredFile record

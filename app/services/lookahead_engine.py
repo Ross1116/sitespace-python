@@ -274,24 +274,42 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         current_mapping_set=current_mapping_set,
     )
 
-    snapshot = LookaheadSnapshot(
-        id=uuid.uuid4(),
-        project_id=project_id,
-        programme_upload_id=latest_upload.id,
-        snapshot_date=datetime.now(tz).date(),
-        data={
-            "timezone": timezone_name,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "activity_count": activity_count,
-            "rows": current_rows_payload,
-            "mapping_set": [
-                {"activity_id": activity_id, "asset_type": asset_type}
-                for activity_id, asset_type in sorted(current_mapping_set)
-            ],
-        },
-        anomaly_flags=anomaly_flags,
+    snapshot_date = datetime.now(tz).date()
+    snapshot_payload = {
+        "timezone": timezone_name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "activity_count": activity_count,
+        "rows": current_rows_payload,
+        "mapping_set": [
+            {"activity_id": activity_id, "asset_type": asset_type}
+            for activity_id, asset_type in sorted(current_mapping_set)
+        ],
+    }
+
+    snapshot = (
+        db.query(LookaheadSnapshot)
+        .filter(
+            LookaheadSnapshot.project_id == project_id,
+            LookaheadSnapshot.snapshot_date == snapshot_date,
+        )
+        .first()
     )
-    db.add(snapshot)
+
+    if snapshot:
+        snapshot.programme_upload_id = latest_upload.id
+        snapshot.data = snapshot_payload
+        snapshot.anomaly_flags = anomaly_flags
+    else:
+        snapshot = LookaheadSnapshot(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            programme_upload_id=latest_upload.id,
+            snapshot_date=snapshot_date,
+            data=snapshot_payload,
+            anomaly_flags=anomaly_flags,
+        )
+        db.add(snapshot)
+
     db.commit()
     db.refresh(snapshot)
     return snapshot
