@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, DateTime, ForeignKey, String
+from sqlalchemy import Column, Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -9,6 +9,9 @@ from app.core.database import Base
 
 class LookaheadSnapshot(Base):
     __tablename__ = "lookahead_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="uq_lookahead_snapshots_project_date"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(

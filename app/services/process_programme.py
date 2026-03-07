@@ -20,6 +20,7 @@ in a degraded commit rather than a silent failure.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import importlib
@@ -46,15 +47,15 @@ _header_cache: dict[str, dict[str, Any]] = {}
 _header_cache_lock = threading.Lock()
 
 
-async def process_programme(upload_id: str) -> None:
+def process_programme(upload_id: str) -> None:
     """
     Entry point called by BackgroundTasks.
     Opens its own DB session — never shares with the request session.
     """
     db = SessionLocal()
     try:
-        await _run(upload_id, db)
-    except Exception as exc:
+        asyncio.run(_run(upload_id, db))
+    except Exception:
         logger.exception("Unhandled error in process_programme for upload %s", upload_id)
         try:
             db.rollback()

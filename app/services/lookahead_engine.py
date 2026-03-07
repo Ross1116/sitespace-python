@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.database import SessionLocal
@@ -138,6 +139,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         tz = ZoneInfo(timezone_name)
     except Exception:
         logger.warning("Invalid project timezone '%s'; using Australia/Adelaide", timezone_name)
+        timezone_name = "Australia/Adelaide"
         tz = ZoneInfo("Australia/Adelaide")
 
     mapping_rows = (
@@ -310,7 +312,25 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         )
         db.add(snapshot)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent runs can race on (project_id, snapshot_date); reload and update.
+        db.rollback()
+        snapshot = (
+            db.query(LookaheadSnapshot)
+            .filter(
+                LookaheadSnapshot.project_id == project_id,
+                LookaheadSnapshot.snapshot_date == snapshot_date,
+            )
+            .first()
+        )
+        if snapshot is None:
+            raise
+        snapshot.programme_upload_id = latest_upload.id
+        snapshot.data = snapshot_payload
+        snapshot.anomaly_flags = anomaly_flags
+        db.commit()
     db.refresh(snapshot)
     return snapshot
 
