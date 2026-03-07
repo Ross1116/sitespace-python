@@ -71,6 +71,7 @@ class SiteProject(Base):
     start_date = Column(Date, nullable=True)       # Optional
     end_date = Column(Date, nullable=True)         # Optional  
     status = Column(String(50), nullable=True, default="active")  # Optional
+    timezone = Column(String(64), nullable=False, default="Australia/Adelaide", server_default="Australia/Adelaide")
     
     # Audit Fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -5,6 +5,7 @@ from .site_project import SiteProject
 from .subcontractor import Subcontractor
 from .file_upload import FileUpload
 from .booking_audit import BookingAuditLog
+from .lookahead import LookaheadSnapshot, Notification
 
 __all__ = [
     "User",
@@ -14,4 +15,6 @@ __all__ = [
     "Subcontractor",
     "FileUpload",
     "BookingAuditLog",
+    "LookaheadSnapshot",
+    "Notification",
 ]

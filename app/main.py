@@ -1,5 +1,6 @@
 import os
 import logging
+import importlib
 import sentry_sdk
 
 send_default_pii = os.getenv("SENTRY_SEND_PII", "false").strip().lower() in (
@@ -39,10 +40,23 @@ from slowapi.errors import RateLimitExceeded
 from .core.config import settings
 from .core.database import engine, Base
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
-from .api.v1 import auth, assets, file_upload, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans
+from .api.v1 import auth, assets, file_upload, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
+from .services.lookahead_engine import nightly_lookahead_job
 
 # Import all models so SQLAlchemy knows about them
-from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model, stored_file as stored_file_model, site_plan as site_plan_model
+from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, file_upload as file_upload_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models
+
+try:
+    _aps_scheduler_module = importlib.import_module("apscheduler.schedulers.asyncio")
+    _aps_jobstore_module = importlib.import_module("apscheduler.jobstores.sqlalchemy")
+    AsyncIOScheduler = _aps_scheduler_module.AsyncIOScheduler
+    SQLAlchemyJobStore = _aps_jobstore_module.SQLAlchemyJobStore
+    scheduler = AsyncIOScheduler(
+        jobstores={"default": SQLAlchemyJobStore(url=settings.database_url)}
+    )
+except Exception as exc:
+    scheduler = None
+    logger.warning("APScheduler unavailable; nightly lookahead job disabled. Error: %s", exc)
 
 # Create database tables (optional for testing) - Non-blocking
 def create_tables_if_possible():
@@ -65,8 +79,20 @@ except Exception as e:
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
+    if scheduler is not None:
+        scheduler.add_job(
+            nightly_lookahead_job,
+            trigger="cron",
+            hour=17,
+            minute=0,
+            id="nightly_lookahead_job",
+            replace_existing=True,
+        )
+        scheduler.start()
     yield
     # Shutdown
+    if scheduler is not None and scheduler.running:
+        scheduler.shutdown()
     logger.info("Shutting down Sitespace FastAPI application...")
 
 # Create FastAPI app
@@ -144,6 +170,8 @@ app.include_router(users.router, prefix="/api")
 app.include_router(booking_audit.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(site_plans.router, prefix="/api")
+app.include_router(programmes.router, prefix="/api")
+app.include_router(lookahead.router, prefix="/api")
 
 # Root endpoint
 @app.get("/")

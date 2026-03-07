@@ -71,6 +71,12 @@ from .booking_audit import (
     BookingAuditTrailResponse
 )
 
+# Programme schemas
+from .programme import (
+    ActivityMappingResponse,
+    MappingCorrectionRequest,
+)
+
 __all__ = [
     # User
     "UserBase", "UserCreate", "UserUpdate", "UserResponse",
@@ -116,5 +122,8 @@ __all__ = [
     #Booking Audit
     "BookingAuditAction", "BookingAuditBase",
     "BookingAuditCreate", "BookingAuditResponse",
-    "BookingAuditTrailResponse"
+    "BookingAuditTrailResponse",
+
+    # Programme
+    "ActivityMappingResponse", "MappingCorrectionRequest",
 ]

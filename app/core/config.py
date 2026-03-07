@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # App settings
     APP_NAME: str = "Sitespace"
 
+    # AI / LLM
+    AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic")
+    AI_API_KEY: Optional[str] = os.getenv("AI_API_KEY")
+    AI_MODEL: str = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
+    AI_ENABLED: bool = os.getenv("AI_ENABLED", "True").strip().lower() in ("true", "1", "yes", "on")
+    AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "8"))
+    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "3"))
+
     class Config:
         env_file = ".env"
 
