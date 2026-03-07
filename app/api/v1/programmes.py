@@ -1,7 +1,7 @@
 """
 Programme upload and management routes.
 
-POST /api/programmes/upload    — receive CSV/XLSX, return 202, run pipeline in background
+POST /api/programmes/upload    — receive CSV/XLSX/XLSM, return 202, run pipeline in background
 GET  /api/programmes/{project_id}             — list versions for project
 GET  /api/programmes/{upload_id}/status       — poll processing status
 GET  /api/programmes/{upload_id}/activities   — activity tree
@@ -100,7 +100,7 @@ async def upload_programme(
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> dict[str, Any]:
     """
-    Accept a CSV or XLSX programme file. Returns 202 immediately.
+    Accept a CSV, XLSX, or XLSM programme file. Returns 202 immediately.
     Processing (AI structure detection → activity import) runs in background.
     Poll GET /api/programmes/{upload_id}/status for completion.
     """

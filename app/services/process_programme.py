@@ -2,7 +2,7 @@
 Background orchestrator for programme upload processing.
 
 Flow:
-  1. Read uploaded file (CSV or XLSX)
+    1. Read uploaded file (CSV or XLSX/XLSM)
   2. Call ai_service.detect_structure() on first 100 rows
      (falls back to regex if AI unavailable/fails — always produces a result)
   3. Convert completeness_score int → float, write to programme_uploads
@@ -77,7 +77,7 @@ async def _run(upload_id: str, db: Session) -> None:
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
-    # 2. Parse rows from CSV or XLSX
+    # 2. Parse rows from CSV or XLSX/XLSM
     rows, parse_error = _parse_file(file_bytes, upload.file_name)
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
@@ -228,7 +228,7 @@ def _parse_file(
     file_name: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """
-    Parse CSV or XLSX bytes into a list of row dicts.
+    Parse CSV or XLSX/XLSM bytes into a list of row dicts.
     Returns (rows, error_message). error_message is None on success.
     """
     name_lower = file_name.lower()
