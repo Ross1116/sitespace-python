@@ -223,6 +223,7 @@ def _insert_activities(
             level_name=item.level_name,
             zone_name=item.zone_name,
             is_summary=item.is_summary,
+            wbs_code=source_id,
             sort_order=sort_order,
             import_flags=flags if flags else None,
         ))
@@ -251,14 +252,17 @@ def _apply_mapping(
 
     items: list[ActivityItem] = []
     for i, row in enumerate(rows):
-        name = str(row.get(name_col, "")).strip() if name_col else ""
+        name_raw = row.get(name_col) if name_col else None
+        name = "" if name_raw is None else str(name_raw).strip()
         if not name:
             continue
         start_value = _normalize_date_cell(row.get(start_col)) if start_col else None
         end_value = _normalize_date_cell(row.get(end_col)) if end_col else None
         parent_value = _normalize_parent_token(row.get(parent_col)) if parent_col else None
-        level_value = str(row.get(level_col, "")).strip() if level_col else None
-        zone_value = str(row.get(zone_col, "")).strip() if zone_col else None
+        level_raw = row.get(level_col) if level_col else None
+        zone_raw = row.get(zone_col) if zone_col else None
+        level_value = "" if level_raw is None else str(level_raw).strip()
+        zone_value = "" if zone_raw is None else str(zone_raw).strip()
         source_value = _normalize_parent_token(row.get(source_id_col)) if source_id_col else None
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
         items.append(ActivityItem(

@@ -105,8 +105,17 @@ def _compute_anomaly_flags(
                 break
 
     if previous_mapping_set:
-        changed = len(previous_mapping_set.symmetric_difference(current_mapping_set))
-        ratio = changed / max(len(previous_mapping_set), 1)
+        prev_by_activity = {activity_id: asset_type for activity_id, asset_type in previous_mapping_set}
+        curr_by_activity = {activity_id: asset_type for activity_id, asset_type in current_mapping_set}
+        activity_ids = set(prev_by_activity) | set(curr_by_activity)
+
+        changed = sum(
+            1
+            for activity_id in activity_ids
+            if prev_by_activity.get(activity_id) != curr_by_activity.get(activity_id)
+        )
+
+        ratio = changed / max(len(prev_by_activity), 1)
         flags["mapping_change_ratio"] = round(ratio, 4)
         if ratio >= 0.4:
             flags["mapping_changes_over_40pct"] = True
@@ -184,7 +193,10 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     booking_rows = (
         db.query(SlotBooking, Asset)
         .join(Asset, Asset.id == SlotBooking.asset_id)
-        .filter(SlotBooking.project_id == project_id)
+        .filter(
+            SlotBooking.project_id == project_id,
+            SlotBooking.status.notin_(["cancelled", "denied"]),
+        )
         .all()
     )
 
