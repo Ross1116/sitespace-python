@@ -1,6 +1,6 @@
 # Sitespace API
 
-Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, and subcontractor management.
+Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, subcontractor management, programme ingestion, and lookahead planning.
 
 ## Quick Start
 
@@ -134,6 +134,42 @@ tests/                  Test suite
 | DELETE | `/{project_id}/subcontractors/{sub_id}`  | Remove subcontractor                                   |
 | GET    | `/{project_id}/available-subcontractors` | List unassigned subcontractors                         |
 | GET    | `/{project_id}/statistics`               | Project statistics                                     |
+
+### Programmes (`/api/programmes`)
+
+| Method | Path                                                | Description                                                                  |
+| ------ | --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| POST   | `/upload?project_id={project_id}`                   | Upload CSV/XLSX/XLSM programme file; returns 202 and processes in background |
+| GET    | `/{upload_id}/status`                               | Poll processing status (`processing`, `committed`, `degraded`)               |
+| GET    | `/{project_id}`                                     | List programme versions for project                                          |
+| GET    | `/{upload_id}/activities`                           | List imported activities                                                     |
+| GET    | `/{upload_id}/activities?subcontractor_id={sub_id}` | Subcontractor-scoped activities for assigned subcontractor                   |
+| GET    | `/{upload_id}/diff`                                 | Compare against latest earlier committed version                             |
+| GET    | `/{upload_id}/mappings`                             | List activity asset mappings                                                 |
+| GET    | `/{upload_id}/mappings/unclassified`                | Low-confidence unresolved mappings                                           |
+| PATCH  | `/mappings/{mapping_id}`                            | Apply PM correction to mapping                                               |
+
+Notes:
+
+- Upload processing failures are terminal but non-source (`degraded`) and are excluded from committed-source workflows.
+- Upload metadata write failures clean up orphaned stored blobs.
+- Activity parent/child links are preserved during import, including cached-header paths.
+
+### Lookahead (`/api/lookahead`)
+
+| Method | Path                         | Description                                            |
+| ------ | ---------------------------- | ------------------------------------------------------ |
+| GET    | `/{project_id}`              | Latest lookahead snapshot rows (demand/booked/gap)     |
+| GET    | `/{project_id}/alerts`       | Latest anomaly flags                                   |
+| GET    | `/{project_id}/history`      | Snapshot history                                       |
+| GET    | `/{project_id}/sub/{sub_id}` | Subcontractor-facing lookahead + related notifications |
+
+Notes:
+
+- Demand is split by week boundaries across activity spans.
+- Overnight bookings are split across day/week boundaries in project timezone.
+- Nightly recalculation uses APScheduler with SQLAlchemy jobstore and reuses the app DB engine.
+- Duplicate same-day snapshots are prevented by update-on-existing (`project_id` + `snapshot_date`).
 
 ### Subcontractors (`/api/subcontractors`)
 
@@ -452,6 +488,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | ORM              | SQLAlchemy 2.0.23        |
 | Database         | PostgreSQL 15            |
 | Migrations       | Alembic 1.12.1           |
+| Scheduling       | APScheduler 3.11.x       |
 | Auth             | JWT (python-jose, HS512) |
 | Password hashing | bcrypt + argon2          |
 | Validation       | Pydantic 2.5.0           |

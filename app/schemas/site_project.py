@@ -17,6 +17,7 @@ class SiteProjectBase(BaseSchema):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     status: Optional[ProjectStatus] = Field(default=ProjectStatus.ACTIVE)
+    timezone: Optional[str] = Field(None, max_length=64)
 
 class SiteProjectCreate(SiteProjectBase):
     """Site project creation schema"""
@@ -31,6 +32,7 @@ class SiteProjectUpdate(BaseSchema):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     status: Optional[str] = Field(None, max_length=50)
+    timezone: Optional[str] = Field(None, max_length=64)
     manager_ids: Optional[List[UUID]] = None
     subcontractor_ids: Optional[List[UUID]] = None
 

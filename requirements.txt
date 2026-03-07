@@ -20,4 +20,7 @@ slowapi==0.1.9
 sentry-sdk[fastapi]==2.52.0
 pypdf>=4.0.0
 pypdfium2>=4.30.0
-Pillow>=10.0.0
+Pillow>=12.1.1,<13.0.0
+openpyxl~=3.1.5
+apscheduler~=3.11.2
+anthropic~=0.84.0

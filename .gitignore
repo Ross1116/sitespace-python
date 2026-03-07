@@ -110,6 +110,9 @@ ENV/
 env.bak/
 venv.bak/
 CODEBASE_AUDIT.md
+be-dev-guide.md
+AI_DEV_HANDOFF.md
+team-split-plan.md
 
 # Spyder project settings
 .spyderproject
