@@ -4,7 +4,7 @@ import logging
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -237,7 +237,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         snapshot_date=datetime.now(tz).date(),
         data={
             "timezone": timezone_name,
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "activity_count": activity_count,
             "rows": current_rows_payload,
             "mapping_set": [

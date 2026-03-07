@@ -124,7 +124,7 @@ async def upload_programme(
         storage_path = await storage.save(file_bytes, filename)
     except Exception as exc:
         logger.error("Failed to save programme file: %s", exc)
-        raise HTTPException(status_code=500, detail="File storage failed.")
+        raise HTTPException(status_code=500, detail="File storage failed.") from exc
 
     # Create StoredFile record
     stored_file = StoredFile(
@@ -136,37 +136,56 @@ async def upload_programme(
         file_size=len(file_bytes),
         uploaded_by_id=current_user.id,
     )
-    db.add(stored_file)
-    db.flush()
-
-    # Lock project row to serialize per-project version allocation.
-    db.query(SiteProject).filter(SiteProject.id == project_id).with_for_update().first()
-    latest_version = (
-        db.query(func.max(ProgrammeUpload.version_number))
-        .filter(ProgrammeUpload.project_id == project_id)
-        .scalar()
-    )
-    version_number = int(latest_version or 0) + 1
-
-    # Create ProgrammeUpload record (status=processing)
-    upload = ProgrammeUpload(
-        id=uuid.uuid4(),
-        project_id=project_id,
-        uploaded_by=current_user.id,
-        file_id=stored_file.id,
-        file_name=filename,
-        version_number=version_number,
-        status="processing",
-    )
-    db.add(upload)
     try:
+        db.add(stored_file)
+        db.flush()
+
+        # Lock project row to serialize per-project version allocation.
+        db.query(SiteProject).filter(SiteProject.id == project_id).with_for_update().first()
+        latest_version = (
+            db.query(func.max(ProgrammeUpload.version_number))
+            .filter(ProgrammeUpload.project_id == project_id)
+            .scalar()
+        )
+        version_number = int(latest_version or 0) + 1
+
+        # Create ProgrammeUpload record (status=processing)
+        upload = ProgrammeUpload(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            uploaded_by=current_user.id,
+            file_id=stored_file.id,
+            file_name=filename,
+            version_number=version_number,
+            status="processing",
+        )
+        db.add(upload)
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        try:
+            storage.delete(stored_file.storage_path)
+        except Exception as delete_exc:
+            logger.error(
+                "Failed to delete orphaned programme blob after IntegrityError path=%s err=%s",
+                stored_file.storage_path,
+                delete_exc,
+            )
         raise HTTPException(
             status_code=409,
             detail="Concurrent upload detected. Please retry.",
-        )
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        try:
+            storage.delete(stored_file.storage_path)
+        except Exception as delete_exc:
+            logger.error(
+                "Failed to delete orphaned programme blob after DB error path=%s err=%s",
+                stored_file.storage_path,
+                delete_exc,
+            )
+        raise HTTPException(status_code=500, detail="Failed to persist upload metadata.") from exc
 
     upload_id = str(upload.id)
 

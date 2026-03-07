@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Integer, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 from sqlalchemy.sql import func
 import uuid
 
@@ -84,6 +84,7 @@ class ProgrammeActivity(Base):
             ["parent_id"],
             ["programme_activities.id"],
             name="fk_programme_activities_parent_id",
+            ondelete="SET NULL",
             deferrable=True,
             initially="DEFERRED",
         ),
@@ -99,7 +100,7 @@ class ProgrammeActivity(Base):
         "ProgrammeActivity",
         remote_side="ProgrammeActivity.id",
         foreign_keys=[parent_id],
-        backref="children",
+        backref=backref("children", passive_deletes=True),
     )
 
     def __repr__(self) -> str:

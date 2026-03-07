@@ -26,7 +26,7 @@ import importlib
 import io
 import logging
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -38,9 +38,9 @@ from .ai_service import ALLOWED_ASSET_TYPES, ActivityItem, ClassificationResult,
 
 logger = logging.getLogger(__name__)
 
-# Header hash cache: sha256(headers_tuple) -> column_mapping
+# Header hash cache: sha256(headers_tuple) -> cached structure metadata
 # Reused across uploads with identical column headers — skips AI entirely.
-_header_cache: dict[str, dict[str, str]] = {}
+_header_cache: dict[str, dict[str, Any]] = {}
 
 
 async def process_programme(upload_id: str) -> None:
@@ -73,7 +73,7 @@ async def _run(upload_id: str, db: Session) -> None:
     try:
         file_bytes = storage.read(stored_file.storage_path)
     except Exception as exc:
-        logger.error("Could not read file for upload %s: %s", upload_id, exc)
+        logger.exception("Could not read file for upload %s: %s", upload_id, exc)
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
@@ -91,11 +91,20 @@ async def _run(upload_id: str, db: Session) -> None:
     cached = _header_cache.get(header_hash)
 
     if cached:
-        logger.info("Header hash cache hit for upload %s — reusing column_mapping", upload_id)
+        logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
         structure = _build_structure_from_cached_mapping(sample, cached)
     else:
         structure = await detect_structure(sample)
-        _header_cache[header_hash] = dict(structure.column_mapping)
+        _header_cache[header_hash] = {
+            "column_mapping": dict(structure.column_mapping),
+            # Persist hierarchy-related mapping keys so cache hits can preserve
+            # parent/summary/level/zone metadata when those columns exist.
+            "hierarchy_mapping": {
+                key: structure.column_mapping[key]
+                for key in ("parent_id", "is_summary", "level_name", "zone_name")
+                if key in structure.column_mapping
+            },
+        }
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
@@ -128,7 +137,7 @@ async def _run(upload_id: str, db: Session) -> None:
     #    Pass real UUID strings so classify_assets() can return them in classifications[].activity_id
     activity_dicts = [
         {"id": str(real_id), "name": item.name}
-        for item, real_id in zip(all_activity_items, [id_map[i.id] for i in all_activity_items])
+        for item, real_id in zip(all_activity_items, [id_map[i.id] for i in all_activity_items], strict=True)
     ]
     try:
         classification = await classify_assets(activity_dicts)
@@ -204,23 +213,59 @@ def _apply_mapping(
     name_col = column_mapping.get("name")
     start_col = column_mapping.get("start_date")
     end_col = column_mapping.get("end_date")
+    parent_col = column_mapping.get("parent_id")
+    is_summary_col = column_mapping.get("is_summary")
+    level_col = column_mapping.get("level_name")
+    zone_col = column_mapping.get("zone_name")
 
     items: list[ActivityItem] = []
     for i, row in enumerate(rows):
         name = str(row.get(name_col, "")).strip() if name_col else ""
         if not name:
             continue
+        start_value = _normalize_date_cell(row.get(start_col)) if start_col else None
+        end_value = _normalize_date_cell(row.get(end_col)) if end_col else None
+        parent_value = str(row.get(parent_col, "")).strip() if parent_col else None
+        level_value = str(row.get(level_col, "")).strip() if level_col else None
+        zone_value = str(row.get(zone_col, "")).strip() if zone_col else None
+        is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
         items.append(ActivityItem(
             id=f"extra-{start_index + i}",
             name=name,
-            start=str(row.get(start_col, "")).strip() if start_col else None,
-            finish=str(row.get(end_col, "")).strip() if end_col else None,
-            parent_id=None,
-            is_summary=False,
-            level_name=None,
-            zone_name=None,
+            start=start_value,
+            finish=end_value,
+            parent_id=parent_value or None,
+            is_summary=is_summary,
+            level_name=level_value or None,
+            zone_name=zone_value or None,
         ))
     return items
+
+
+def _normalize_date_cell(value: Any) -> str | None:
+    """Normalize spreadsheet date/datetime cells to ISO date strings."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text_value = str(value).strip()
+    return text_value or None
+
+
+def _to_bool(value: Any) -> bool:
+    """Convert common spreadsheet boolean representations to bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "true", "yes", "y", "t"}
 
 
 def _parse_file(
@@ -267,7 +312,7 @@ def _compute_header_hash(rows: list[dict[str, Any]]) -> str:
 
 def _build_structure_from_cached_mapping(
     rows: list[dict[str, Any]],
-    column_mapping: dict[str, str],
+    cached_structure: dict[str, Any],
 ) -> StructureResult:
     """
     Build a fresh per-file StructureResult using cached header mapping only.
@@ -275,7 +320,11 @@ def _build_structure_from_cached_mapping(
     Row-derived fields (activities, completeness, notes, missing_fields) are
     recalculated for each upload to avoid cross-file contamination.
     """
-    activities = _apply_mapping(rows, column_mapping, start_index=0)
+    column_mapping = dict(cached_structure.get("column_mapping", {}))
+    hierarchy_mapping = dict(cached_structure.get("hierarchy_mapping", {}))
+    merged_mapping = {**column_mapping, **hierarchy_mapping}
+
+    activities = _apply_mapping(rows, merged_mapping, start_index=0)
     total_rows = len(rows)
     dated_rows = 0
     for item in activities:
@@ -286,7 +335,7 @@ def _build_structure_from_cached_mapping(
     missing_fields = [
         field_name
         for field_name in ("name", "start_date", "end_date")
-        if field_name not in column_mapping
+        if field_name not in merged_mapping
     ]
 
     return StructureResult(
@@ -302,7 +351,6 @@ def _parse_date(value: str | None) -> date | None:
     """Parse ISO date string to Python date. Returns None if unparseable."""
     if not value:
         return None
-    from datetime import datetime
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
         try:
             return datetime.strptime(value.strip(), fmt).date()
@@ -372,7 +420,7 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
                 activity_id=item.activity_id,
                 suggested_asset_type=item.asset_type,
                 confidence=confidence,
-                accepted=True,
+                accepted=auto_commit,
                 correction=None,
             )
         )
@@ -394,7 +442,7 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
                 activity_id=skipped_activity_id,
                 suggested_asset_type=None,
                 confidence="low",
-                accepted=True,
+                accepted=False,
                 correction=None,
             )
         )

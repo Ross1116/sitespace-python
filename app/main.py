@@ -52,7 +52,7 @@ try:
     AsyncIOScheduler = _aps_scheduler_module.AsyncIOScheduler
     SQLAlchemyJobStore = _aps_jobstore_module.SQLAlchemyJobStore
     scheduler = AsyncIOScheduler(
-        jobstores={"default": SQLAlchemyJobStore(url=settings.database_url)}
+        jobstores={"default": SQLAlchemyJobStore(engine=engine)}
     )
 except Exception as exc:
     scheduler = None
@@ -80,8 +80,8 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
     if scheduler is not None:
-        hour = int(settings.NIGHTLY_LOOKAHEAD_HOUR)
-        minute = int(settings.NIGHTLY_LOOKAHEAD_MINUTE)
+        hour = settings.NIGHTLY_LOOKAHEAD_HOUR
+        minute = settings.NIGHTLY_LOOKAHEAD_MINUTE
         scheduler.add_job(
             nightly_lookahead_job,
             trigger="cron",
