@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from ..core.database import SessionLocal
@@ -51,6 +52,27 @@ def _demand_level(hours: float) -> str:
     if hours < 40:
         return "high"
     return "critical"
+
+
+def _iter_weekly_activity_hours(start_date: date, end_date: date) -> list[tuple[date, float]]:
+    """Split an activity span into per-week demand buckets at 8h/day."""
+    span_start = min(start_date, end_date)
+    span_end = max(start_date, end_date)
+
+    buckets: list[tuple[date, float]] = []
+    week = _week_start(span_start)
+    last_week = _week_start(span_end)
+
+    while week <= last_week:
+        week_end = week + timedelta(days=6)
+        overlap_start = max(span_start, week)
+        overlap_end = min(span_end, week_end)
+        if overlap_end >= overlap_start:
+            overlap_days = (overlap_end - overlap_start).days + 1
+            buckets.append((week, float(overlap_days * 8)))
+        week += timedelta(days=7)
+
+    return buckets
 
 
 def _compute_anomaly_flags(
@@ -123,7 +145,14 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .filter(
             ProgrammeActivity.programme_upload_id == latest_upload.id,
-            ActivityAssetMapping.auto_committed.is_(True),
+            or_(
+                ActivityAssetMapping.auto_committed.is_(True),
+                and_(
+                    ActivityAssetMapping.manually_corrected.is_(True),
+                    ActivityAssetMapping.source == "manual",
+                    ActivityAssetMapping.auto_committed.is_(False),
+                ),
+            ),
             ActivityAssetMapping.asset_type.isnot(None),
             ActivityAssetMapping.confidence.in_(["high", "medium"]),
         )
@@ -141,12 +170,8 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         if not activity.start_date or not activity.end_date:
             continue
 
-        duration_days = max((activity.end_date - activity.start_date).days + 1, 1)
-        demand_hours = float(duration_days * 8)
-
-        local_start = activity.start_date
-        week = _week_start(local_start)
-        demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
+        for week, demand_hours in _iter_weekly_activity_hours(activity.start_date, activity.end_date):
+            demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
 
         current_mapping_set.add((str(activity.id), mapping.asset_type))
         activity_ids.append(activity.id)

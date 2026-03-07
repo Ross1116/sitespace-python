@@ -37,6 +37,7 @@ from ..utils.storage import storage
 from .ai_service import ALLOWED_ASSET_TYPES, ActivityItem, ClassificationResult, StructureResult, classify_assets, detect_structure
 
 logger = logging.getLogger(__name__)
+SAFE_FAILURE_REASON = "processing_failed"
 
 # Header hash cache: sha256(headers_tuple) -> cached structure metadata
 # Reused across uploads with identical column headers — skips AI entirely.
@@ -57,7 +58,7 @@ async def process_programme(upload_id: str) -> None:
             db.rollback()
         except Exception:
             logger.exception("Rollback failed in process_programme for upload %s", upload_id)
-        _mark_failed_as_committed(upload_id, db, str(exc))
+        _mark_failed_as_committed(upload_id, db, SAFE_FAILURE_REASON)
     finally:
         db.close()
 
@@ -137,7 +138,15 @@ async def _run(upload_id: str, db: Session) -> None:
     #    Pass real UUID strings so classify_assets() can return them in classifications[].activity_id
     activity_dicts = [
         {"id": str(real_id), "name": item.name}
-        for item, real_id in zip(all_activity_items, [id_map[i.id] for i in all_activity_items], strict=True)
+        for item, real_id in zip(
+            all_activity_items,
+            [
+                id_map.get(_normalize_parent_token(i.id) or f"__idx_{idx}")
+                for idx, i in enumerate(all_activity_items)
+            ],
+            strict=True,
+        )
+        if real_id is not None
     ]
     try:
         classification = await classify_assets(activity_dicts)
@@ -166,12 +175,20 @@ def _insert_activities(
     Insert all activities. Returns (count, temp_id → real_uuid mapping).
     The id_map is used by the classification step to pass real UUIDs to classify_assets().
     """
-    id_map: dict[str, uuid.UUID] = {item.id: uuid.uuid4() for item in items}
+    # Pass 1: allocate real UUIDs keyed by normalized source identifiers.
+    # This lets parent tokens from spreadsheets resolve even with formatting differences.
+    id_map: dict[str, uuid.UUID] = {}
+    for idx, item in enumerate(items):
+        source_id = _normalize_parent_token(item.id) or f"__idx_{idx}"
+        id_map[source_id] = uuid.uuid4()
 
+    # Pass 2: build rows with resolved parent links.
     db_rows: list[ProgrammeActivity] = []
     for sort_order, item in enumerate(items):
-        real_id = id_map[item.id]
-        real_parent = id_map.get(item.parent_id) if item.parent_id else None
+        source_id = _normalize_parent_token(item.id) or f"__idx_{sort_order}"
+        real_id = id_map[source_id]
+        parent_token = _normalize_parent_token(item.parent_id)
+        real_parent = id_map.get(parent_token) if parent_token else None
 
         start = _parse_date(item.start)
         end = _parse_date(item.finish)
@@ -225,7 +242,7 @@ def _apply_mapping(
             continue
         start_value = _normalize_date_cell(row.get(start_col)) if start_col else None
         end_value = _normalize_date_cell(row.get(end_col)) if end_col else None
-        parent_value = str(row.get(parent_col, "")).strip() if parent_col else None
+        parent_value = _normalize_parent_token(row.get(parent_col)) if parent_col else None
         level_value = str(row.get(level_col, "")).strip() if level_col else None
         zone_value = str(row.get(zone_col, "")).strip() if zone_col else None
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
@@ -253,6 +270,23 @@ def _normalize_date_cell(value: Any) -> str | None:
 
     text_value = str(value).strip()
     return text_value or None
+
+
+def _normalize_parent_token(value: Any) -> str | None:
+    """Normalize source tokens used to resolve parent-child activity links."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    token = str(value).strip()
+    return token or None
 
 
 def _to_bool(value: Any) -> bool:
@@ -459,21 +493,21 @@ def _commit_degraded(
     completeness_score: float,
     notes: list[str],
 ) -> None:
-    """Mark upload as committed with zero/low completeness rather than leaving it stuck."""
+    """Mark upload as degraded terminal state instead of committed source data."""
     upload.completeness_score = completeness_score
     upload.completeness_notes = {"missing_fields": notes, "notes": "Processing degraded."}
-    upload.status = "committed"
+    upload.status = "degraded"
     db.commit()
 
 
 def _mark_failed_as_committed(upload_id: str, db: Session, reason: str) -> None:
-    """Last-resort: if _run itself raises, still mark committed so PM isn't blocked."""
+    """Last-resort: if _run raises, mark as degraded without leaking internals."""
     try:
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload and upload.status == "processing":
             upload.completeness_score = 0.0
             upload.completeness_notes = {"missing_fields": ["unknown_error"], "notes": reason}
-            upload.status = "committed"
+            upload.status = "degraded"
             db.commit()
     except Exception:
         logger.exception("Could not mark upload %s as committed after failure", upload_id)

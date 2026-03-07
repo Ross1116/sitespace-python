@@ -26,6 +26,7 @@ from ...core.security import require_role
 from ...models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ...models.site_project import SiteProject
 from ...models.stored_file import StoredFile
+from ...models.subcontractor import Subcontractor
 from ...models.user import User
 from ...schemas.programme import ActivityMappingResponse, MappingCorrectionRequest
 from ...schemas.enums import UserRole
@@ -65,6 +66,12 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
     return project
+
+
+def _check_subcontractor_project_access(project: SiteProject, current_sub: Subcontractor) -> None:
+    is_assigned_sub = any(str(sub.id) == str(current_sub.id) for sub in project.subcontractors)
+    if not is_assigned_sub:
+        raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
 
 def _serialize_mapping(
@@ -272,24 +279,65 @@ def list_programme_versions(
 @router.get("/{upload_id}/activities")
 def get_activities(
     upload_id: UUID,
+    subcontractor_id: UUID | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+    current_entity: User | Subcontractor = Depends(
+        require_role([UserRole.MANAGER, UserRole.ADMIN, UserRole.SUBCONTRACTOR])
+    ),
 ) -> list[dict[str, Any]]:
-    """Return all activities for a programme version, ordered by sort_order."""
+    """
+    Return activities for a programme version.
+
+    - Managers/admins: full activity list, or filtered by subcontractor_id when provided.
+    - Subcontractors: must provide subcontractor_id matching their own identity.
+    """
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
     if upload.status != "committed":
+        if upload.status in {"degraded", "failed"}:
+            raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
         raise HTTPException(status_code=409, detail="Programme is still processing.")
 
-    _check_project_access(upload.project_id, current_user, db)
+    role = _normalize_role(getattr(current_entity, "role", "subcontractor"))
+    is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
 
-    activities = (
-        db.query(ProgrammeActivity)
-        .filter(ProgrammeActivity.programme_upload_id == upload_id)
-        .order_by(ProgrammeActivity.sort_order)
-        .all()
-    )
+    if is_subcontractor:
+        if subcontractor_id is None:
+            raise HTTPException(status_code=400, detail="subcontractor_id is required for subcontractor access")
+
+        if str(current_entity.id) != str(subcontractor_id):
+            raise HTTPException(status_code=403, detail="You can only view your own assigned activities")
+
+        project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        _check_subcontractor_project_access(project, current_entity)
+
+        activities = (
+            db.query(ProgrammeActivity)
+            .join(ActivityAssetMapping, ActivityAssetMapping.programme_activity_id == ProgrammeActivity.id)
+            .filter(
+                ProgrammeActivity.programme_upload_id == upload_id,
+                ActivityAssetMapping.subcontractor_id == subcontractor_id,
+            )
+            .distinct(ProgrammeActivity.id)
+            .order_by(ProgrammeActivity.sort_order)
+            .all()
+        )
+    else:
+        _check_project_access(upload.project_id, current_entity, db)
+
+        activities_query = db.query(ProgrammeActivity).filter(ProgrammeActivity.programme_upload_id == upload_id)
+        if subcontractor_id is not None:
+            activities_query = (
+                activities_query
+                .join(ActivityAssetMapping, ActivityAssetMapping.programme_activity_id == ProgrammeActivity.id)
+                .filter(ActivityAssetMapping.subcontractor_id == subcontractor_id)
+                .distinct(ProgrammeActivity.id)
+            )
+
+        activities = activities_query.order_by(ProgrammeActivity.sort_order).all()
 
     return [
         {
@@ -329,6 +377,8 @@ def get_programme_diff(
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
     if upload.status != "committed":
+        if upload.status in {"degraded", "failed"}:
+            raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
         raise HTTPException(status_code=409, detail="Programme is still processing.")
 
     _check_project_access(upload.project_id, current_user, db)
