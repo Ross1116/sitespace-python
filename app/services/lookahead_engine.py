@@ -154,7 +154,10 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
                 ),
             ),
             ActivityAssetMapping.asset_type.isnot(None),
-            ActivityAssetMapping.confidence.in_(["high", "medium"]),
+            or_(
+                ActivityAssetMapping.confidence.in_(["high", "medium"]),
+                ActivityAssetMapping.manually_corrected.is_(True),
+            ),
         )
         .all()
     )
@@ -192,9 +195,25 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue
 
-        local_day = datetime.combine(booking.booking_date, time.min, tzinfo=tz).date()
-        week = _week_start(local_day)
-        booked_by_week_asset[(week, asset_type)] += _hours_between(booking.start_time, booking.end_time)
+        start_dt = datetime.combine(booking.booking_date, booking.start_time, tzinfo=tz)
+        end_dt = datetime.combine(booking.booking_date, booking.end_time, tzinfo=tz)
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+
+        segment_start = start_dt
+        while segment_start < end_dt:
+            next_day_start = datetime.combine(
+                (segment_start + timedelta(days=1)).date(),
+                time.min,
+                tzinfo=tz,
+            )
+            segment_end = min(end_dt, next_day_start)
+            segment_hours = _hours_between(segment_start.time(), segment_end.time())
+            if segment_hours > 0:
+                local_day = segment_start.date()
+                week = _week_start(local_day)
+                booked_by_week_asset[(week, asset_type)] += segment_hours
+            segment_start = segment_end
 
     all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
     rows: list[LookaheadRow] = []

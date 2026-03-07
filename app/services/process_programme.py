@@ -150,7 +150,15 @@ async def _run(upload_id: str, db: Session) -> None:
     ]
     try:
         classification = await classify_assets(activity_dicts)
-        _write_classifications(classification, db)
+        try:
+            with db.begin_nested():
+                _write_classifications(classification, db)
+        except Exception as exc:
+            logger.warning(
+                "Classification persistence failed for upload %s (%s) — continuing without mappings",
+                upload_id,
+                exc,
+            )
     except Exception as exc:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
@@ -231,6 +239,7 @@ def _apply_mapping(
     start_col = column_mapping.get("start_date")
     end_col = column_mapping.get("end_date")
     parent_col = column_mapping.get("parent_id")
+    source_id_col = column_mapping.get("id") or column_mapping.get("wbs_code")
     is_summary_col = column_mapping.get("is_summary")
     level_col = column_mapping.get("level_name")
     zone_col = column_mapping.get("zone_name")
@@ -245,9 +254,10 @@ def _apply_mapping(
         parent_value = _normalize_parent_token(row.get(parent_col)) if parent_col else None
         level_value = str(row.get(level_col, "")).strip() if level_col else None
         zone_value = str(row.get(zone_col, "")).strip() if zone_col else None
+        source_value = _normalize_parent_token(row.get(source_id_col)) if source_id_col else None
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
         items.append(ActivityItem(
-            id=f"extra-{start_index + i}",
+            id=source_value or f"extra-{start_index + i}",
             name=name,
             start=start_value,
             finish=end_value,

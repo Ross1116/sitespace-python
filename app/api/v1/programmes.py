@@ -59,10 +59,10 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
         raise HTTPException(status_code=404, detail="Project not found")
 
     role = _normalize_role(getattr(current_user, "role", ""))
-    is_manager = role in ("manager", "admin")
+    is_admin = role == "admin"
     is_project_manager = any(str(m.id) == str(current_user.id) for m in project.managers)
 
-    if not is_manager and not is_project_manager:
+    if not is_admin and not is_project_manager:
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
     return project
@@ -321,7 +321,7 @@ def get_activities(
                 ProgrammeActivity.programme_upload_id == upload_id,
                 ActivityAssetMapping.subcontractor_id == subcontractor_id,
             )
-            .distinct(ProgrammeActivity.id)
+            .distinct()
             .order_by(ProgrammeActivity.sort_order)
             .all()
         )
@@ -334,7 +334,7 @@ def get_activities(
                 activities_query
                 .join(ActivityAssetMapping, ActivityAssetMapping.programme_activity_id == ProgrammeActivity.id)
                 .filter(ActivityAssetMapping.subcontractor_id == subcontractor_id)
-                .distinct(ProgrammeActivity.id)
+                .distinct()
             )
 
         activities = activities_query.order_by(ProgrammeActivity.sort_order).all()
@@ -388,9 +388,10 @@ def get_programme_diff(
         db.query(ProgrammeUpload)
         .filter(
             ProgrammeUpload.project_id == upload.project_id,
-            ProgrammeUpload.version_number == upload.version_number - 1,
+            ProgrammeUpload.version_number < upload.version_number,
             ProgrammeUpload.status == "committed",
         )
+        .order_by(ProgrammeUpload.version_number.desc())
         .first()
     )
 
@@ -420,7 +421,7 @@ def get_programme_diff(
     return {
         "upload_id": str(upload_id),
         "version_number": upload.version_number,
-        "previous_version": upload.version_number - 1,
+        "previous_version": previous.version_number,
         "activity_count": current_count,
         "previous_activity_count": previous_count,
         "activity_delta": delta,
