@@ -17,6 +17,7 @@ from ..models.lookahead import LookaheadSnapshot, Notification
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
+from ..schemas.enums import BookingStatus
 from .ai_service import ALLOWED_ASSET_TYPES
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         .join(Asset, Asset.id == SlotBooking.asset_id)
         .filter(
             SlotBooking.project_id == project_id,
-            SlotBooking.status.notin_(["cancelled", "denied"]),
+            SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.DENIED]),
         )
         .all()
     )

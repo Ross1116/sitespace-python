@@ -145,10 +145,7 @@ async def _run(upload_id: str, db: Session) -> None:
         {"id": str(real_id), "name": item.name}
         for item, real_id in zip(
             all_activity_items,
-            [
-                id_map.get(_normalize_parent_token(i.id) or f"__idx_{idx}")
-                for idx, i in enumerate(all_activity_items)
-            ],
+            [id_map.get(f"__idx_{idx}") for idx, _ in enumerate(all_activity_items)],
             strict=True,
         )
         if real_id is not None
@@ -188,20 +185,24 @@ def _insert_activities(
     Insert all activities. Returns (count, temp_id → real_uuid mapping).
     The id_map is used by the classification step to pass real UUIDs to classify_assets().
     """
-    # Pass 1: allocate real UUIDs keyed by normalized source identifiers.
-    # This lets parent tokens from spreadsheets resolve even with formatting differences.
-    id_map: dict[str, uuid.UUID] = {}
+    # Pass 1: allocate a per-row identity and a separate token lookup.
+    # row_id_map prevents duplicate source tokens from overwriting earlier UUIDs.
+    row_id_map: dict[int, uuid.UUID] = {idx: uuid.uuid4() for idx, _ in enumerate(items)}
+    token_map: dict[str, list[uuid.UUID]] = {}
     for idx, item in enumerate(items):
-        source_id = _normalize_parent_token(item.id) or f"__idx_{idx}"
-        id_map[source_id] = uuid.uuid4()
+        source_id = _normalize_parent_token(item.id)
+        if not source_id:
+            continue
+        token_map.setdefault(source_id, []).append(row_id_map[idx])
 
     # Pass 2: build rows with resolved parent links.
     db_rows: list[ProgrammeActivity] = []
     for sort_order, item in enumerate(items):
         source_id = _normalize_parent_token(item.id) or f"__idx_{sort_order}"
-        real_id = id_map[source_id]
+        real_id = row_id_map[sort_order]
         parent_token = _normalize_parent_token(item.parent_id)
-        real_parent = id_map.get(parent_token) if parent_token else None
+        parent_candidates = token_map.get(parent_token, []) if parent_token else []
+        real_parent = parent_candidates[0] if parent_candidates else None
 
         start = _parse_date(item.start)
         end = _parse_date(item.finish)
@@ -229,6 +230,11 @@ def _insert_activities(
         ))
 
     db.bulk_save_objects(db_rows)
+    id_map: dict[str, uuid.UUID] = {f"__idx_{idx}": row_uuid for idx, row_uuid in row_id_map.items()}
+    # Preserve first-seen token lookup for any downstream callers that still use token keys.
+    for token, uuids in token_map.items():
+        if uuids:
+            id_map[token] = uuids[0]
     return len(db_rows), id_map
 
 
@@ -401,12 +407,38 @@ def _build_structure_from_cached_mapping(
 
 
 def _parse_date(value: str | None) -> date | None:
-    """Parse ISO date string to Python date. Returns None if unparseable."""
+    """Parse date/datetime strings to Python date. Returns None if unparseable."""
     if not value:
         return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    # Fast path: datetime/date ISO variants (with optional trailing Z).
+    iso_candidate = text[:-1] if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(iso_candidate).date()
+    except ValueError:
+        pass
+
+    # Common datetime variants with explicit separator.
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+
+    # If datetime-like text includes a date prefix, parse only the date portion.
+    date_only_candidate = text
+    if "T" in text:
+        date_only_candidate = text.split("T", 1)[0].strip()
+    elif " " in text:
+        date_only_candidate = text.split(" ", 1)[0].strip()
+
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
         try:
-            return datetime.strptime(value.strip(), fmt).date()
+            return datetime.strptime(date_only_candidate, fmt).date()
         except (ValueError, AttributeError):
             pass
     return None
