@@ -270,12 +270,20 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
     date_cols = [h for h in headers if _looks_like_date(h)]
 
-    # Name column: first string column with most unique values
+    # Name column: prefer headers containing "name" (case-insensitive);
+    # exclude headers that look like IDs or numeric fields (contain "id", "%", "complete", "duration").
+    # Tiebreak: most unique values.
     def _unique_count(col: str) -> int:
         return len({str(r.get(col, "")) for r in rows if r.get(col)})
 
+    def _name_col_score(col: str) -> tuple[int, int]:
+        lower = col.lower()
+        preference = 1 if "name" in lower else 0
+        penalty = -1 if any(x in lower for x in ("id", "%", "complete", "duration", "code")) else 0
+        return (preference + penalty, _unique_count(col))
+
     string_cols = [h for h in headers if not _looks_like_date(h)]
-    name_col = max(string_cols, key=_unique_count) if string_cols else (headers[0] if headers else None)
+    name_col = max(string_cols, key=_name_col_score) if string_cols else (headers[0] if headers else None)
 
     column_mapping: dict[str, str] = {}
     missing: list[str] = []
