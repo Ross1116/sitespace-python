@@ -154,6 +154,7 @@ tests/                  Test suite
 | GET    | `/{upload_id}/mappings`                             | List activity asset mappings                                                 |
 | GET    | `/{upload_id}/mappings/unclassified`                | Low-confidence unresolved mappings                                           |
 | PATCH  | `/mappings/{mapping_id}`                            | Apply PM correction to mapping                                               |
+| DELETE | `/{upload_id}`                                      | Delete uploaded programme and all cascaded data (activities, mappings, snapshots) |
 
 Notes:
 
