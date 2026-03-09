@@ -54,7 +54,7 @@ app/
 │   ├── slot_booking.py Booking lifecycle & scheduling
 │   ├── site_project.py Project management & team assignments
 │   ├── subcontractor.py Subcontractor management & availability
-│   ├── programmes.py   Programme upload, versions, diff, mappings
+│   ├── programmes.py   Programme upload, versions, diff, mappings, deletion
 │   ├── lookahead.py    Lookahead snapshots, alerts, history
 │   ├── files.py        Stored file upload/preview/image/delete
 │   ├── site_plans.py   Site plan CRUD linked to stored files

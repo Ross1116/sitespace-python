@@ -306,7 +306,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not val:
             return None
         s = str(val).strip()
-        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%y", "%Y-%m-%d"):
             try:
                 return datetime.strptime(s, fmt).date().isoformat()
             except ValueError:
@@ -364,7 +364,7 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         name = str(activity.get("name", "")).lower()
 
         matched_type: str | None = None
-        for keyword, asset_type in _KEYWORD_MAP.items():
+        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name:
                 matched_type = asset_type
                 break

@@ -448,16 +448,27 @@ def delete_programme_upload(
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
 
+    _check_project_access(upload.project_id, current_user, db)
+
     if upload.status == "processing":
         raise HTTPException(
             status_code=409,
             detail="Cannot delete an upload that is still processing.",
         )
 
-    _check_project_access(upload.project_id, current_user, db)
-
+    storage_path = upload.file.storage_path if upload.file else None
     db.delete(upload)
     db.commit()
+
+    if storage_path:
+        try:
+            storage.delete(storage_path)
+        except Exception:
+            logger.warning(
+                "Could not delete blob for upload %s at path %s",
+                upload_id,
+                storage_path,
+            )
 
 
 # ---------------------------------------------------------------------------
