@@ -430,6 +430,48 @@ def get_programme_diff(
 
 
 # ---------------------------------------------------------------------------
+# DELETE /api/programmes/{upload_id}
+# ---------------------------------------------------------------------------
+
+@router.delete("/{upload_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+def delete_programme_upload(
+    upload_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> None:
+    """
+    Hard-delete a programme upload and all cascaded data (activities, mappings,
+    ai_suggestion_logs, lookahead_snapshots).
+    Returns 409 if the upload is still processing.
+    """
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    _check_project_access(upload.project_id, current_user, db)
+
+    if upload.status == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete an upload that is still processing.",
+        )
+
+    storage_path = upload.file.storage_path if upload.file else None
+    db.delete(upload)
+    db.commit()
+
+    if storage_path:
+        try:
+            storage.delete(storage_path)
+        except Exception:
+            logger.warning(
+                "Could not delete blob for upload %s at path %s",
+                upload_id,
+                storage_path,
+            )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/programmes/{upload_id}/mappings
 # ---------------------------------------------------------------------------
 
