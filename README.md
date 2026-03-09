@@ -2,6 +2,8 @@
 
 Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, subcontractor management, programme ingestion, and lookahead planning.
 
+Last updated: 2026-03-08
+
 ## Quick Start
 
 ### Prerequisites
@@ -52,8 +54,12 @@ app/
 │   ├── slot_booking.py Booking lifecycle & scheduling
 │   ├── site_project.py Project management & team assignments
 │   ├── subcontractor.py Subcontractor management & availability
+│   ├── programmes.py   Programme upload, versions, diff, mappings
+│   ├── lookahead.py    Lookahead snapshots, alerts, history
+│   ├── files.py        Stored file upload/preview/image/delete
+│   ├── site_plans.py   Site plan CRUD linked to stored files
 │   ├── users.py        User profile management
-│   ├── file_upload.py  File upload with validation
+│   ├── file_upload.py  Legacy upload endpoint (defunct feature)
 │   └── booking_audit.py Immutable audit trail
 ├── core/
 │   ├── config.py       Settings & environment variables
@@ -217,6 +223,26 @@ Note: File upload is currently defunct/disabled by product decision and is defer
 
 Allowed types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.csv`, `.txt`, `.json`
 
+### Files (`/api/files`)
+
+| Method | Path                 | Description                                            |
+| ------ | -------------------- | ------------------------------------------------------ |
+| POST   | `/upload`            | Upload file for two-phase site-plan flow (20 MB max)   |
+| GET    | `/{file_id}`         | Serve raw file                                         |
+| GET    | `/{file_id}/preview` | Render preview image (PDF page 1 or image passthrough) |
+| GET    | `/{file_id}/image`   | High-scale image render for detail views               |
+| DELETE | `/{file_id}`         | Delete file (409 if referenced by a site plan)         |
+
+### Site Plans (`/api/site-plans`)
+
+| Method | Path         | Description                                    |
+| ------ | ------------ | ---------------------------------------------- |
+| POST   | `/`          | Create site plan from uploaded file            |
+| GET    | `/`          | List site plans (optional `project_id` filter) |
+| GET    | `/{plan_id}` | Get site plan details                          |
+| PATCH  | `/{plan_id}` | Update title and/or replace linked file        |
+| DELETE | `/{plan_id}` | Delete site plan (and orphaned linked file)    |
+
 ### Users (`/api/users`)
 
 | Method | Path         | Description                  |
@@ -375,7 +401,7 @@ PostgreSQL with SQLAlchemy ORM. All primary keys are UUIDs.
 | `BookingStatus`  | `PENDING`, `CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`, `DENIED`                                     |
 | `AssetStatus`    | `available`, `maintenance`, `retired`                                                                         |
 | `ProjectStatus`  | `active`, `pending`, `completed`, `cancelled`, `on_hold`                                                      |
-| `UserRole`       | `manager`, `admin`, `subcontractor`                                                                           |
+| `UserRole`       | `manager`, `admin`, `subcontractor`, `tv`                                                                     |
 | `TradeSpecialty` | `electrician`, `plumber`, `carpenter`, `mason`, `painter`, `hvac`, `roofer`, `landscaper`, `general`, `other` |
 
 ### Connection Pool
@@ -446,7 +472,7 @@ pytest tests/test_auth.py -v
 locust -f locustfile.py --host=http://localhost:8080
 ```
 
-Test modules: `test_auth`, `test_assets`, `test_slot_booking`, `test_site_project`, `test_subcontractor`, `test_file_upload`, `test_forgot_password`
+Test modules: `test_auth`, `test_assets`, `test_slot_booking`, `test_site_project`, `test_subcontractor`, `test_file_upload`
 
 ---
 
