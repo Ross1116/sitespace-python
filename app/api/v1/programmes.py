@@ -433,7 +433,7 @@ def get_programme_diff(
 # DELETE /api/programmes/{upload_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{upload_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 def delete_programme_upload(
     upload_id: UUID,
     db: Session = Depends(get_db),
