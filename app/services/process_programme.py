@@ -35,8 +35,17 @@ from sqlalchemy.orm import Session
 
 from ..core.database import SessionLocal
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
+from ..models.site_project import SiteProject
 from ..utils.storage import storage
-from .ai_service import ALLOWED_ASSET_TYPES, ActivityItem, ClassificationResult, StructureResult, classify_assets, detect_structure
+from .ai_service import (
+    ALLOWED_ASSET_TYPES,
+    ActivityItem,
+    ClassificationResult,
+    StructureResult,
+    classify_assets,
+    detect_structure,
+    suggest_subcontractor_asset_types,
+)
 
 logger = logging.getLogger(__name__)
 SAFE_FAILURE_REASON = "processing_failed"
@@ -164,8 +173,20 @@ async def _run(upload_id: str, db: Session) -> None:
     except Exception as exc:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
-    # 9. Mark committed
+    # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
+    #     Best-effort — failure does not block commit.
+    try:
+        _assign_subcontractor_suggestions(upload.project_id, upload_id, db)
+    except Exception as exc:
+        logger.warning(
+            "Subcontractor suggestion assignment failed for upload %s (%s) — continuing",
+            upload_id,
+            exc,
+        )
+
+    # 10. Mark committed
     upload.status = "committed"
+
     db.commit()
 
     logger.info(
@@ -536,6 +557,68 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
         db.bulk_save_objects(mapping_rows)
     if suggestion_rows:
         db.bulk_save_objects(suggestion_rows)
+
+
+def _assign_subcontractor_suggestions(
+    project_id: str,
+    upload_id: str,
+    db: Session,
+) -> None:
+    """
+    Auto-assign subcontractor_id on ActivityAssetMapping rows when exactly one
+    subcontractor on the project has a trade_specialty that maps to that asset type.
+
+    Logic:
+    - Query all subcontractors assigned to the project.
+    - Build a map: asset_type → [subcontractor_ids] using suggest_subcontractor_asset_types().
+    - For each mapping row with auto_committed=True and a known asset_type:
+        - If exactly one subcontractor's trade matches → set subcontractor_id.
+        - If zero or multiple match → leave subcontractor_id null (ambiguous).
+    """
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    if not project or not project.subcontractors:
+        return
+
+    sub_dicts = [
+        {"id": str(sub.id), "trade_specialty": sub.trade_specialty or ""}
+        for sub in project.subcontractors
+    ]
+    suggestions = suggest_subcontractor_asset_types(sub_dicts)
+
+    # Build: asset_type → list of sub_ids whose trade maps to it
+    asset_to_subs: dict[str, list[str]] = {}
+    for suggestion in suggestions:
+        for asset_type in suggestion.suggested_asset_types:
+            asset_to_subs.setdefault(asset_type, []).append(suggestion.subcontractor_id)
+
+    # Fetch all auto-committed mapping rows for this upload
+    mapping_rows = (
+        db.query(ActivityAssetMapping)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .filter(
+            ProgrammeActivity.programme_upload_id == upload_id,
+            ActivityAssetMapping.auto_committed.is_(True),
+            ActivityAssetMapping.asset_type.isnot(None),
+            ActivityAssetMapping.subcontractor_id.is_(None),
+        )
+        .all()
+    )
+
+    assigned_count = 0
+    for mapping in mapping_rows:
+        asset_type = mapping.asset_type
+        matching_subs = asset_to_subs.get(asset_type, [])
+        if len(matching_subs) == 1:
+            mapping.subcontractor_id = uuid.UUID(matching_subs[0])
+            assigned_count += 1
+
+    if assigned_count:
+        db.flush()
+        logger.info(
+            "Subcontractor assignment: %d mappings auto-assigned for upload %s",
+            assigned_count,
+            upload_id,
+        )
 
 
 def _commit_degraded(
