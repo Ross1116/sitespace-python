@@ -456,8 +456,12 @@ def delete_programme_upload(
             detail="Cannot delete an upload that is still processing.",
         )
 
-    storage_path = upload.file.storage_path if upload.file else None
+    stored_file = upload.file
+    storage_path = stored_file.storage_path if stored_file else None
     db.delete(upload)
+    db.flush()
+    if stored_file:
+        db.delete(stored_file)
     db.commit()
 
     if storage_path:
