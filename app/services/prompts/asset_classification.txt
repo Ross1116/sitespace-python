@@ -35,7 +35,7 @@ RULES:
 - Milestone rows (is_milestone: true) → always "none"
 - Summary/phase rows (is_summary: true) → always "none"
 - Output ONLY valid JSON. No prose.
-- source: use "keyword" if the activity name has a direct keyword match, "ai" if inferred from context.
+- source: use "keyword_boost" if the activity name has a direct keyword match, "ai" if inferred from context.
 
 OUTPUT SCHEMA (return exactly this structure):
 {
@@ -45,7 +45,7 @@ OUTPUT SCHEMA (return exactly this structure):
       "asset_type": "<one of the allowed types above>",
       "confidence": "high | medium | low",
       "source": "keyword_boost | ai",
-      "reasoning": "<one short sentence, or null for high-keyword matches>"
+      "reasoning": "<one short sentence, or null for high keyword_boost matches>"
     }
   ],
   "skipped": ["<activity_id>", ...],

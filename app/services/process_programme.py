@@ -31,7 +31,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
@@ -595,7 +595,12 @@ def _assign_subcontractor_suggestions(
         - If exactly one subcontractor's trade matches → set subcontractor_id.
         - If zero or multiple match → leave subcontractor_id null (ambiguous).
     """
-    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
     if not project or not project.subcontractors:
         return
 

@@ -274,13 +274,33 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Last resort: find the largest JSON object in the response
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group())
-        except json.JSONDecodeError:
-            pass
+    # Last resort: balanced-brace extraction to handle nested objects correctly
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, ch in enumerate(text[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
 
     raise ValueError(f"Could not extract valid JSON from response: {text[:300]!r}")
 
@@ -370,6 +390,8 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
         timeout=float(settings.AI_TIMEOUT_STRUCTURE),
     )
 
+    if not response.content or not response.content[0].text:
+        raise ValueError("Empty or malformed API response from structure detection")
     data = _parse_json_response(response.content[0].text)
 
     # Extract mapping, dropping null values
@@ -436,9 +458,13 @@ async def _classify_batch(
         timeout=float(settings.AI_TIMEOUT_CLASSIFY),
     )
 
+    if not response.content or not response.content[0].text:
+        raise ValueError("Empty or malformed API response from classification batch")
     data = _parse_json_response(response.content[0].text)
+    usage = response.usage
     tokens_used = (
-        (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
+        (getattr(usage, "input_tokens", None) or 0)
+        + (getattr(usage, "output_tokens", None) or 0)
     )
 
     return {

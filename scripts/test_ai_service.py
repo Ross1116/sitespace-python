@@ -234,14 +234,14 @@ async def main():
         ext = filepath.suffix.lower()
         if ext == ".csv":
             rows = load_csv(str(filepath))
-        elif ext in (".xlsx", ".xlsm", ".xls"):
+        elif ext in (".xlsx", ".xlsm"):
             rows = load_xlsx(str(filepath))
         else:
             print(f"❌ Unsupported file type: {ext}")
             sys.exit(1)
         print(f"   File: {filepath.name} ({len(rows)} rows)")
         activities = [
-            {"id": str(i), "name": str(r.get(list(r.keys())[0], ""))}
+            {"id": str(i), "name": str(r.get(next(iter(r), ""), ""))}
             for i, r in enumerate(rows[:50])
         ]
     else:
