@@ -104,7 +104,7 @@ async def _run(upload_id: str, db: Session) -> None:
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
-    # 2. Parse rows from CSV or XLSX/XLSM
+    # 2. Parse rows from file (CSV, XLSX/XLSM, or PDF)
     rows, parse_error = _parse_file(file_bytes, upload.file_name)
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
@@ -369,7 +369,7 @@ def _parse_file(
     file_name: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """
-    Parse CSV or XLSX/XLSM bytes into a list of row dicts.
+    Parse CSV, XLSX/XLSM, or PDF bytes into a list of row dicts.
     Returns (rows, error_message). error_message is None on success.
     """
     name_lower = file_name.lower()
@@ -392,6 +392,40 @@ def _parse_file(
             result = [dict(zip(headers, row, strict=False)) for row in rows_iter]
             wb.close()
             return result, None
+
+        if name_lower.endswith(".pdf"):
+            pdfplumber = importlib.import_module("pdfplumber")
+            all_rows: list[dict[str, Any]] = []
+            headers: list[str] | None = None
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages:
+                    for table in page.extract_tables():
+                        if not table:
+                            continue
+                        if headers is None:
+                            # First table: first row is headers
+                            headers = [
+                                str(h).strip() if h is not None else f"col_{i}"
+                                for i, h in enumerate(table[0])
+                            ]
+                            data_rows = table[1:]
+                        else:
+                            # Subsequent pages: skip repeated header rows, use rest as data
+                            first = [str(c).strip() if c is not None else "" for c in table[0]]
+                            data_rows = table[1:] if first == headers else table
+                        for row in data_rows:
+                            # Collapse multi-line cell values (pdfplumber uses \n for wrapped text)
+                            cells = [
+                                " ".join(str(c).split()) if c is not None else ""
+                                for c in row
+                            ]
+                            all_rows.append(dict(zip(headers, cells, strict=False)))
+            if not all_rows:
+                return [], (
+                    "No extractable tables found in PDF. "
+                    "Export your schedule as CSV or XLSX for best results."
+                )
+            return all_rows, None
 
         return [], f"Unsupported file type: {file_name}"
     except Exception as exc:
@@ -466,6 +500,18 @@ def _parse_date(value: str | None) -> date | None:
         except ValueError:
             pass
 
+    # Space-separated text-month formats ("01 Mar 2026") must be tried on the
+    # full string before the space-split below strips the month and year away.
+    for fmt in ("%d %b %Y", "%d %b %y"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if "%y" in fmt and "%Y" not in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+            return parsed.date()
+        except (ValueError, AttributeError):
+            pass
+
     # If datetime-like text includes a date prefix, parse only the date portion.
     date_only_candidate = text
     if "T" in text:
@@ -473,10 +519,10 @@ def _parse_date(value: str | None) -> date | None:
     elif " " in text:
         date_only_candidate = text.split(" ", 1)[0].strip()
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%b-%Y", "%d-%b-%y"):
         try:
             parsed = datetime.strptime(date_only_candidate, fmt)
-            if "%y" in fmt:
+            if "%y" in fmt and "%Y" not in fmt:
                 yy = parsed.year % 100
                 parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
             return parsed.date()

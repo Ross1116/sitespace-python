@@ -741,9 +741,11 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
     # Detect date columns via regex on first 10 non-empty values
     date_patterns = [
-        re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"),   # dd/mm/yyyy
-        re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"),    # dd/mm/yy
-        re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # yyyy-mm-dd
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"),                      # dd/mm/yyyy
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"),                      # dd/mm/yy
+        re.compile(r"^\d{4}-\d{2}-\d{2}$"),                          # yyyy-mm-dd
+        re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{2,4}$"),                # dd-Mon-yy / dd-Mon-yyyy (P6 PDF)
+        re.compile(r"^\d{1,2} [A-Za-z]{3} \d{4}$"),                  # dd Mon yyyy
     ]
 
     def _looks_like_date(col: str) -> bool:
@@ -788,10 +790,10 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not val:
             return None
         s = str(val).strip()
-        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%d %b %y"):
             try:
                 parsed = datetime.strptime(s, fmt)
-                if "%y" in fmt:
+                if "%y" in fmt and "%Y" not in fmt:
                     yy = parsed.year % 100
                     parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
                 return parsed.date().isoformat()

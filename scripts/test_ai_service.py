@@ -34,6 +34,29 @@ def load_csv(filepath: str) -> list[dict]:
         return [row for row in reader]
 
 
+def load_pdf(filepath: str) -> list[dict]:
+    import pdfplumber
+    rows: list[dict] = []
+    headers: list[str] | None = None
+    with pdfplumber.open(filepath) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                if not table:
+                    continue
+                if headers is None:
+                    headers = [str(h).strip() if h is not None else f"col_{i}" for i, h in enumerate(table[0])]
+                    data_rows = table[1:]
+                else:
+                    first = [str(c).strip() if c is not None else "" for c in table[0]]
+                    data_rows = table[1:] if first == headers else table
+                for row in data_rows:
+                    cells = [" ".join(str(c).split()) if c is not None else "" for c in row]
+                    rows.append(dict(zip(headers, cells)))
+    if not rows:
+        raise ValueError("No extractable tables found in PDF.")
+    return rows
+
+
 def load_xlsx(filepath: str) -> list[dict]:
     if filepath.lower().endswith(".xls"):
         raise ValueError(f"Legacy .xls format is not supported. Convert '{filepath}' to .xlsx first.")
@@ -236,6 +259,8 @@ async def main():
             rows = load_csv(str(filepath))
         elif ext in (".xlsx", ".xlsm"):
             rows = load_xlsx(str(filepath))
+        elif ext == ".pdf":
+            rows = load_pdf(str(filepath))
         else:
             print(f"❌ Unsupported file type: {ext}")
             sys.exit(1)
