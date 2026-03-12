@@ -31,7 +31,7 @@ from ...models.user import User
 from ...schemas.programme import ActivityMappingResponse, MappingCorrectionRequest
 from ...schemas.enums import UserRole
 from ...utils.storage import storage
-from ...services.process_programme import process_programme
+from ...services.process_programme import preflight_validate, process_programme
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,10 @@ async def upload_programme(
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    parse_error = preflight_validate(file_bytes, filename)
+    if parse_error:
+        raise HTTPException(status_code=422, detail=f"File cannot be parsed: {parse_error}")
 
     try:
         storage_path = await storage.save(file_bytes, filename)

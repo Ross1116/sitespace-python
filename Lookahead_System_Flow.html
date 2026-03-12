@@ -230,11 +230,11 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
         <div class="step-tag tag-ext">Stream 3 &middot; Only human step</div>
       </div>
       <div class="step-body">
-        <div class="step-desc">PM assigns trade &rarr; sub. Can&rsquo;t automate &mdash; it&rsquo;s a contract relationship. Uses existing sub management.</div>
+        <div class="step-desc">Auto-assigns subcontractor when exactly one project sub matches the asset type. PM assigns manually only for ambiguous or unmatched cases. Uses existing sub management.</div>
         <div class="inner-flow">
           <div class="inner-node action">Existing sub<br>accounts</div>
           <div class="inner-arrow">&rarr;</div>
-          <div class="inner-node" style="flex:1;min-width:100px;padding:12px 14px;border-radius:8px;font-size:0.8rem;font-weight:500;text-align:center;display:flex;align-items:center;justify-content:center;background:rgba(184,134,11,0.06);border:1.5px solid rgba(184,134,11,0.2);color:var(--amber);">PM assigns<br>trade &rarr; sub</div>
+          <div class="inner-node" style="flex:1;min-width:100px;padding:12px 14px;border-radius:8px;font-size:0.8rem;font-weight:500;text-align:center;display:flex;align-items:center;justify-content:center;background:rgba(184,134,11,0.06);border:1.5px solid rgba(184,134,11,0.2);color:var(--amber);">Auto-assign if unique;<br>PM assigns if ambiguous</div>
           <div class="inner-arrow">&rarr;</div>
           <div class="inner-node outcome-node">Sub sees only<br>their activities</div>
         </div>

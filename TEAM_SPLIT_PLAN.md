@@ -91,7 +91,7 @@ BE Dev writes these directly into `activity_asset_mappings`. The `asset_type` va
 
 Agree and lock this list. BE Dev validates on write. AI Dev uses only these values in prompts:
 
-```
+```text
 crane | hoist | loading_bay | ewp | concrete_pump
 excavator | forklift | telehandler | compactor | other
 ```

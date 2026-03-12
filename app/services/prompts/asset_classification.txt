@@ -9,7 +9,8 @@ ALLOWED ASSET TYPES (use ONLY these exact strings):
 - ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom
 - concrete_pump  → Boom pump, line pump, concrete kibble
 - excavator      → Excavator, backhoe, mini excavator
-- forklift       → Forklift, telehandler, rough terrain forklift
+- forklift       → Forklift, rough terrain forklift (dedicated forklift only)
+- telehandler    → Telehandler, reach forklift, telescopic handler
 - compactor      → Plate compactor, roller, vibrating compactor
 - other          → Any asset need that doesn't fit above
 - none           → Activity genuinely requires no bookable site asset
@@ -43,7 +44,7 @@ OUTPUT SCHEMA (return exactly this structure):
       "activity_id": "<string id from input>",
       "asset_type": "<one of the allowed types above>",
       "confidence": "high | medium | low",
-      "source": "keyword | ai",
+      "source": "keyword_boost | ai",
       "reasoning": "<one short sentence, or null for high-keyword matches>"
     }
   ],

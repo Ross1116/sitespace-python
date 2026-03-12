@@ -35,6 +35,8 @@ def load_csv(filepath: str) -> list[dict]:
 
 
 def load_xlsx(filepath: str) -> list[dict]:
+    if filepath.lower().endswith(".xls"):
+        raise ValueError(f"Legacy .xls format is not supported. Convert '{filepath}' to .xlsx first.")
     import openpyxl
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
@@ -106,12 +108,12 @@ async def run_structure_test(rows: list[dict]):
         print(f"  missing_fields     : {result.missing_fields}")
         print(f"  notes              : {result.notes}")
 
-        print(f"\n  Column Mapping:")
+        print("\n  Column Mapping:")
         for field_name, col_header in result.column_mapping.items():
             print(f"    ✅  {field_name:20s} → {col_header}")
 
         if result.activities:
-            print(f"\n  First 3 activities:")
+            print("\n  First 3 activities:")
             for act in result.activities[:3]:
                 print(f"    id={act.id}  name={act.name!r}  start={act.start}  finish={act.finish}  summary={act.is_summary}")
 
@@ -140,7 +142,7 @@ async def run_classification_test(activities: list[dict]):
         low_kept = [c for c in result.classifications if c.confidence == "low"]
         print(f"\n  Confidence: high={len(high)}  medium={len(med)}  low(kept)={len(low_kept)}  skipped={len(result.skipped)}")
 
-        print(f"\n  Classifications:")
+        print("\n  Classifications:")
         for c in result.classifications:
             icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(c.confidence, "⚪")
             valid = "✅" if c.asset_type in ALLOWED_ASSET_TYPES else "❌ INVALID"
@@ -155,7 +157,7 @@ async def run_classification_test(activities: list[dict]):
         if invalid:
             print(f"\n  ❌ VALIDATION FAILED — {len(invalid)} invalid asset_type values!")
         else:
-            print(f"\n  ✅ All asset_type values are valid")
+            print("\n  ✅ All asset_type values are valid")
 
     except Exception as e:
         print(f"\n  ❌ Error: {e}")
@@ -188,11 +190,11 @@ async def run_fallback_test():
 
     result_struct = await ai_module.detect_structure(DEMO_ROWS[:10])
     print(f"  detect_structure fallback: completeness={result_struct.completeness_score}, activities={len(result_struct.activities)}")
-    print(f"  ✅ Returned StructureResult (no exception)")
+    print("  ✅ Returned StructureResult (no exception)")
 
     result_class = await ai_module.classify_assets(DEMO_ACTIVITIES[:5])
     print(f"  classify_assets fallback: classified={len(result_class.classifications)}, skipped={len(result_class.skipped)}, tokens={result_class.batch_tokens_used}")
-    print(f"  ✅ Returned ClassificationResult (no exception)")
+    print("  ✅ Returned ClassificationResult (no exception)")
 
     if original is None:
         del os.environ["AI_ENABLED"]

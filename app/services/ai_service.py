@@ -647,7 +647,7 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
     Returns ["other"] if no match found.
     """
     if not specialty:
-        return []
+        return ["other"]
 
     # Exact match
     if specialty in TRADE_TO_ASSET_TYPES:
