@@ -762,7 +762,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not val:
             return None
         s = str(val).strip()
-        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
             try:
                 parsed = datetime.strptime(s, fmt)
                 if "%y" in fmt:

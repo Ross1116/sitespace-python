@@ -460,23 +460,13 @@ def delete_programme_upload(
             detail="Cannot delete an upload that is still processing.",
         )
 
-    stored_file = upload.file
-    storage_path = stored_file.storage_path if stored_file else None
+    storage_path = upload.file.storage_path if upload.file else None
     db.delete(upload)
-    db.flush()
-    if stored_file:
-        db.delete(stored_file)
     db.commit()
 
     if storage_path:
         try:
-            deleted = storage.delete(storage_path)
-            if deleted is False:
-                logger.warning(
-                    "Blob deletion returned False for upload %s at path %s",
-                    upload_id,
-                    storage_path,
-                )
+            storage.delete(storage_path)
         except Exception:
             logger.warning(
                 "Could not delete blob for upload %s at path %s",
