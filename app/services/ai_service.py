@@ -478,7 +478,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         name_lower = str(act.get("name", "")).lower()
 
         matched_type: str | None = None
-        for keyword, asset_type in _KEYWORD_MAP.items():
+        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name_lower:
                 matched_type = asset_type
                 break
