@@ -31,7 +31,7 @@ from ...models.user import User
 from ...schemas.programme import ActivityMappingResponse, MappingCorrectionRequest
 from ...schemas.enums import UserRole
 from ...utils.storage import storage
-from ...services.process_programme import process_programme
+from ...services.process_programme import preflight_validate, process_programme
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,9 @@ ALLOWED_CONTENT_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/csv",
     "text/plain",  # some CSV uploads come through as text/plain
+    "application/pdf",
 }
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".pdf"}
 
 
 def _normalize_role(role: Any) -> str:
@@ -107,7 +108,7 @@ async def upload_programme(
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> dict[str, Any]:
     """
-    Accept a CSV, XLSX, or XLSM programme file. Returns 202 immediately.
+    Accept a CSV, XLSX, XLSM, or PDF programme file. Returns 202 immediately.
     Processing (AI structure detection → activity import) runs in background.
     Poll GET /api/programmes/{upload_id}/status for completion.
     """
@@ -119,13 +120,17 @@ async def upload_programme(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, or XLSM file.",
+            detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, XLSM, or PDF file.",
         )
 
     # Read and store via storage backend (same pattern as site_plans)
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    parse_error = preflight_validate(file_bytes, filename)
+    if parse_error:
+        raise HTTPException(status_code=422, detail=f"File cannot be parsed: {parse_error}")
 
     try:
         storage_path = await storage.save(file_bytes, filename)

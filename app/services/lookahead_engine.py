@@ -18,7 +18,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from .ai_service import ALLOWED_ASSET_TYPES
+from .ai_service import ALLOWED_ASSET_TYPES, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +378,74 @@ def get_sub_notifications(project_id: uuid.UUID, sub_id: uuid.UUID, db: Session)
         .order_by(Notification.created_at.desc())
         .all()
     )
+
+
+def get_sub_asset_suggestions_for_project(
+    project_id: uuid.UUID,
+    db: Session,
+) -> list[dict]:
+    """
+    Return per-subcontractor asset demand suggestions for a project.
+
+    For each subcontractor assigned to the project, uses their trade_specialty
+    to predict which asset types they are likely to need. Cross-references with
+    the latest lookahead snapshot to show actual projected demand hours by week.
+
+    Returns a list of dicts:
+    [
+      {
+        "subcontractor_id": "...",
+        "company_name": "...",
+        "trade_specialty": "...",
+        "suggested_asset_types": ["crane", "hoist"],
+        "demand_rows": [
+          {
+            "asset_type": "crane",
+            "week_start": "2026-04-07",
+            "demand_hours": 40.0,
+            "booked_hours": 16.0,
+            "gap_hours": 24.0,
+            "demand_level": "high"
+          }
+        ]
+      }
+    ]
+    """
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    if not project or not project.subcontractors:
+        return []
+
+    snapshot = get_latest_snapshot(project_id, db)
+    demand_rows: list[dict] = (snapshot.data or {}).get("rows", []) if snapshot else []
+
+    sub_dicts = [
+        {"id": str(sub.id), "trade_specialty": sub.trade_specialty or ""}
+        for sub in project.subcontractors
+    ]
+    suggestions = suggest_subcontractor_asset_types(sub_dicts)
+
+    result: list[dict] = []
+    sub_map = {str(sub.id): sub for sub in project.subcontractors}
+
+    for suggestion in suggestions:
+        sub = sub_map.get(suggestion.subcontractor_id)
+        if not sub:
+            continue
+
+        matching_demand = [
+            row for row in demand_rows
+            if row.get("asset_type") in suggestion.suggested_asset_types
+        ]
+
+        result.append({
+            "subcontractor_id": suggestion.subcontractor_id,
+            "company_name": getattr(sub, "company_name", None) or "",
+            "trade_specialty": suggestion.trade_specialty,
+            "suggested_asset_types": suggestion.suggested_asset_types,
+            "demand_rows": matching_demand,
+        })
+
+    return result
 
 
 def nightly_lookahead_job() -> None:

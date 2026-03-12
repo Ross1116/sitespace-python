@@ -16,6 +16,7 @@ from ...services.lookahead_engine import (
     get_latest_snapshot,
     get_snapshot_history,
     get_sub_notifications,
+    get_sub_asset_suggestions_for_project,
 )
 
 router = APIRouter(prefix="/lookahead", tags=["Lookahead"])
@@ -133,6 +134,59 @@ def get_subcontractor_lookahead(
             }
             for n in notifications
         ],
+    }
+
+
+@router.get("/{project_id}/sub-asset-suggestions")
+def get_subcontractor_asset_suggestions(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> dict:
+    """
+    Return per-subcontractor asset demand suggestions for lookahead planning.
+
+    Uses each subcontractor's registered trade_specialty to predict which
+    bookable site assets they are likely to need, and overlays projected
+    weekly demand hours from the latest snapshot.
+
+    Response shape:
+    {
+      "project_id": "...",
+      "snapshot_date": "2026-04-07",
+      "suggestions": [
+        {
+          "subcontractor_id": "...",
+          "company_name": "Smith Electrical",
+          "trade_specialty": "electrician",
+          "suggested_asset_types": ["ewp", "loading_bay"],
+          "demand_rows": [
+            {
+              "asset_type": "ewp",
+              "week_start": "2026-04-07",
+              "demand_hours": 40.0,
+              "booked_hours": 8.0,
+              "gap_hours": 32.0,
+              "demand_level": "high"
+            }
+          ]
+        }
+      ]
+    }
+    """
+    project = _check_project_exists(project_id, db)
+    _check_manager_project_access(project, _)
+
+    snapshot = get_latest_snapshot(project_id, db)
+    if not snapshot:
+        snapshot = calculate_lookahead_for_project(project_id, db)
+
+    suggestions = get_sub_asset_suggestions_for_project(project_id, db)
+
+    return {
+        "project_id": str(project_id),
+        "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot else None,
+        "suggestions": suggestions,
     }
 
 

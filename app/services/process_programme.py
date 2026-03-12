@@ -31,12 +31,21 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
+from ..models.site_project import SiteProject
 from ..utils.storage import storage
-from .ai_service import ALLOWED_ASSET_TYPES, ActivityItem, ClassificationResult, StructureResult, classify_assets, detect_structure
+from .ai_service import (
+    ALLOWED_ASSET_TYPES,
+    ActivityItem,
+    ClassificationResult,
+    StructureResult,
+    classify_assets,
+    detect_structure,
+    suggest_subcontractor_asset_types,
+)
 
 logger = logging.getLogger(__name__)
 SAFE_FAILURE_REASON = "processing_failed"
@@ -45,6 +54,20 @@ SAFE_FAILURE_REASON = "processing_failed"
 # Reused across uploads with identical column headers — skips AI entirely.
 _header_cache: dict[str, dict[str, Any]] = {}
 _header_cache_lock = threading.Lock()
+
+
+def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
+    """
+    Quick synchronous parse check — called before the background task is enqueued.
+    Returns an error message string if the file is corrupt or empty, None if valid.
+    This ensures corrupt/empty files fail with a hard 422 before the 202 is returned.
+    """
+    rows, error = _parse_file(file_bytes, file_name)
+    if error:
+        return error
+    if not rows:
+        return "File contains no data rows."
+    return None
 
 
 def process_programme(upload_id: str) -> None:
@@ -81,7 +104,7 @@ async def _run(upload_id: str, db: Session) -> None:
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
-    # 2. Parse rows from CSV or XLSX/XLSM
+    # 2. Parse rows from file (CSV, XLSX/XLSM, or PDF)
     rows, parse_error = _parse_file(file_bytes, upload.file_name)
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
@@ -164,8 +187,22 @@ async def _run(upload_id: str, db: Session) -> None:
     except Exception as exc:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
-    # 9. Mark committed
+    # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
+    #     Best-effort — failure does not block commit. Wrapped in a savepoint so any
+    #     SQL error rolls back only to here and does not poison the outer session.
+    try:
+        with db.begin_nested():
+            _assign_subcontractor_suggestions(upload.project_id, upload_id, db)
+    except Exception as exc:
+        logger.warning(
+            "Subcontractor suggestion assignment failed for upload %s (%s) — continuing",
+            upload_id,
+            exc,
+        )
+
+    # 10. Mark committed
     upload.status = "committed"
+
     db.commit()
 
     logger.info(
@@ -332,7 +369,7 @@ def _parse_file(
     file_name: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """
-    Parse CSV or XLSX/XLSM bytes into a list of row dicts.
+    Parse CSV, XLSX/XLSM, or PDF bytes into a list of row dicts.
     Returns (rows, error_message). error_message is None on success.
     """
     name_lower = file_name.lower()
@@ -355,6 +392,40 @@ def _parse_file(
             result = [dict(zip(headers, row, strict=False)) for row in rows_iter]
             wb.close()
             return result, None
+
+        if name_lower.endswith(".pdf"):
+            pdfplumber = importlib.import_module("pdfplumber")
+            all_rows: list[dict[str, Any]] = []
+            headers: list[str] | None = None
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages:
+                    for table in page.extract_tables():
+                        if not table:
+                            continue
+                        if headers is None:
+                            # First table: first row is headers
+                            headers = [
+                                str(h).strip() if h is not None else f"col_{i}"
+                                for i, h in enumerate(table[0])
+                            ]
+                            data_rows = table[1:]
+                        else:
+                            # Subsequent pages: skip repeated header rows, use rest as data
+                            first = [str(c).strip() if c is not None else "" for c in table[0]]
+                            data_rows = table[1:] if first == headers else table
+                        for row in data_rows:
+                            # Collapse multi-line cell values (pdfplumber uses \n for wrapped text)
+                            cells = [
+                                " ".join(str(c).split()) if c is not None else ""
+                                for c in row
+                            ]
+                            all_rows.append(dict(zip(headers, cells, strict=False)))
+            if not all_rows:
+                return [], (
+                    "No extractable tables found in PDF. "
+                    "Export your schedule as CSV or XLSX for best results."
+                )
+            return all_rows, None
 
         return [], f"Unsupported file type: {file_name}"
     except Exception as exc:
@@ -429,6 +500,20 @@ def _parse_date(value: str | None) -> date | None:
         except ValueError:
             pass
 
+    # Space-separated text-month formats ("01 Mar 2026") must be tried on the
+    # full string before the space-split below strips the month and year away.
+    # The manual %y pivot (yy >= 69 → 1900+yy, else 2000+yy) overrides Python's
+    # default strptime pivot of 2068/1969 to match our codebase-wide convention.
+    for fmt in ("%d %b %Y", "%d %b %y"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if "%y" in fmt and "%Y" not in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+            return parsed.date()
+        except (ValueError, AttributeError):
+            pass
+
     # If datetime-like text includes a date prefix, parse only the date portion.
     date_only_candidate = text
     if "T" in text:
@@ -436,10 +521,10 @@ def _parse_date(value: str | None) -> date | None:
     elif " " in text:
         date_only_candidate = text.split(" ", 1)[0].strip()
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%b-%Y", "%d-%b-%y"):
         try:
             parsed = datetime.strptime(date_only_candidate, fmt)
-            if "%y" in fmt:
+            if "%y" in fmt and "%Y" not in fmt:
                 yy = parsed.year % 100
                 parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
             return parsed.date()
@@ -540,6 +625,73 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
         db.bulk_save_objects(mapping_rows)
     if suggestion_rows:
         db.bulk_save_objects(suggestion_rows)
+
+
+def _assign_subcontractor_suggestions(
+    project_id: str,
+    upload_id: str,
+    db: Session,
+) -> None:
+    """
+    Auto-assign subcontractor_id on ActivityAssetMapping rows when exactly one
+    subcontractor on the project has a trade_specialty that maps to that asset type.
+
+    Logic:
+    - Query all subcontractors assigned to the project.
+    - Build a map: asset_type → [subcontractor_ids] using suggest_subcontractor_asset_types().
+    - For each mapping row with auto_committed=True and a known asset_type:
+        - If exactly one subcontractor's trade matches → set subcontractor_id.
+        - If zero or multiple match → leave subcontractor_id null (ambiguous).
+    """
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
+    if not project or not project.subcontractors:
+        return
+
+    sub_dicts = [
+        {"id": str(sub.id), "trade_specialty": sub.trade_specialty or ""}
+        for sub in project.subcontractors
+    ]
+    suggestions = suggest_subcontractor_asset_types(sub_dicts)
+
+    # Build: asset_type → list of sub_ids whose trade maps to it
+    asset_to_subs: dict[str, list[str]] = {}
+    for suggestion in suggestions:
+        for asset_type in suggestion.suggested_asset_types:
+            asset_to_subs.setdefault(asset_type, []).append(suggestion.subcontractor_id)
+
+    # Fetch all auto-committed mapping rows for this upload
+    mapping_rows = (
+        db.query(ActivityAssetMapping)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .filter(
+            ProgrammeActivity.programme_upload_id == upload_id,
+            ActivityAssetMapping.auto_committed.is_(True),
+            ActivityAssetMapping.asset_type.isnot(None),
+            ActivityAssetMapping.subcontractor_id.is_(None),
+        )
+        .all()
+    )
+
+    assigned_count = 0
+    for mapping in mapping_rows:
+        asset_type = mapping.asset_type
+        matching_subs = asset_to_subs.get(asset_type, [])
+        if len(matching_subs) == 1:
+            mapping.subcontractor_id = uuid.UUID(matching_subs[0])
+            assigned_count += 1
+
+    if assigned_count:
+        db.flush()
+        logger.info(
+            "Subcontractor assignment: %d mappings auto-assigned for upload %s",
+            assigned_count,
+            upload_id,
+        )
 
 
 def _commit_degraded(

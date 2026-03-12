@@ -70,8 +70,8 @@ class Settings(BaseSettings):
     AI_API_KEY: Optional[str] = os.getenv("AI_API_KEY")
     AI_MODEL: str = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_ENABLED: bool = os.getenv("AI_ENABLED", "True").strip().lower() in ("true", "1", "yes", "on")
-    AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "8"))
-    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "3"))
+    AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "15"))
+    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "30"))
 
     # Scheduler
     NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "17"))
