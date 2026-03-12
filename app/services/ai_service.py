@@ -309,8 +309,9 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
             try:
                 parsed = datetime.strptime(s, fmt)
-                if "%y" in fmt and parsed.year < 2000:
-                    parsed = parsed.replace(year=parsed.year + 100)
+                if "%y" in fmt:
+                    yy = parsed.year % 100
+                    parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
                 return parsed.date().isoformat()
             except ValueError:
                 pass

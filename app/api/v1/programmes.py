@@ -466,7 +466,13 @@ def delete_programme_upload(
 
     if storage_path:
         try:
-            storage.delete(storage_path)
+            deleted = storage.delete(storage_path)
+            if deleted is False:
+                logger.warning(
+                    "Blob deletion returned False for upload %s at path %s",
+                    upload_id,
+                    storage_path,
+                )
         except Exception:
             logger.warning(
                 "Could not delete blob for upload %s at path %s",

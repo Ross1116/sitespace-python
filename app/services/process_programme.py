@@ -439,8 +439,9 @@ def _parse_date(value: str | None) -> date | None:
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y"):
         try:
             parsed = datetime.strptime(date_only_candidate, fmt)
-            if "%y" in fmt and parsed.year < 2000:
-                parsed = parsed.replace(year=parsed.year + 100)
+            if "%y" in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
             return parsed.date()
         except (ValueError, AttributeError):
             pass
