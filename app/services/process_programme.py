@@ -56,6 +56,20 @@ _header_cache: dict[str, dict[str, Any]] = {}
 _header_cache_lock = threading.Lock()
 
 
+def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
+    """
+    Quick synchronous parse check — called before the background task is enqueued.
+    Returns an error message string if the file is corrupt or empty, None if valid.
+    This ensures corrupt/empty files fail with a hard 422 before the 202 is returned.
+    """
+    rows, error = _parse_file(file_bytes, file_name)
+    if error:
+        return error
+    if not rows:
+        return "File contains no data rows."
+    return None
+
+
 def process_programme(upload_id: str) -> None:
     """
     Entry point called by BackgroundTasks.
@@ -174,9 +188,11 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
     # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
-    #     Best-effort — failure does not block commit.
+    #     Best-effort — failure does not block commit. Wrapped in a savepoint so any
+    #     SQL error rolls back only to here and does not poison the outer session.
     try:
-        _assign_subcontractor_suggestions(upload.project_id, upload_id, db)
+        with db.begin_nested():
+            _assign_subcontractor_suggestions(upload.project_id, upload_id, db)
     except Exception as exc:
         logger.warning(
             "Subcontractor suggestion assignment failed for upload %s (%s) — continuing",
@@ -459,7 +475,11 @@ def _parse_date(value: str | None) -> date | None:
 
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y"):
         try:
-            return datetime.strptime(date_only_candidate, fmt).date()
+            parsed = datetime.strptime(date_only_candidate, fmt)
+            if "%y" in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+            return parsed.date()
         except (ValueError, AttributeError):
             pass
     return None

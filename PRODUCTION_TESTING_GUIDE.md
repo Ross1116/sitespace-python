@@ -345,8 +345,8 @@ Update your environment variables:
 
 | Variable | Current (INSECURE) | Action |
 |----------|-------------------|--------|
-| `JWT_SECRET` | `Paragon$123` | **CHANGE IMMEDIATELY** |
-| `SECRET_KEY` | `PARAGON$87654321` | **CHANGE IMMEDIATELY** |
+| `JWT_SECRET` | `<your-secret-here>` | **CHANGE IMMEDIATELY** |
+| `SECRET_KEY` | `<your-secret-here>` | **CHANGE IMMEDIATELY** |
 
 ### 3.6 Security Headers
 

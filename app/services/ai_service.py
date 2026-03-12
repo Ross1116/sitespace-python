@@ -478,7 +478,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         name_lower = str(act.get("name", "")).lower()
 
         matched_type: str | None = None
-        for keyword, asset_type in _KEYWORD_MAP.items():
+        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name_lower:
                 matched_type = asset_type
                 break
@@ -647,7 +647,7 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
     Returns ["other"] if no match found.
     """
     if not specialty:
-        return []
+        return ["other"]
 
     # Exact match
     if specialty in TRADE_TO_ASSET_TYPES:
@@ -764,7 +764,11 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         s = str(val).strip()
         for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
             try:
-                return datetime.strptime(s, fmt).date().isoformat()
+                parsed = datetime.strptime(s, fmt)
+                if "%y" in fmt:
+                    yy = parsed.year % 100
+                    parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+                return parsed.date().isoformat()
             except ValueError:
                 pass
         return None
