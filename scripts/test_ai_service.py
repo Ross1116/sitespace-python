@@ -195,12 +195,18 @@ def run_sub_suggestion_test():
 
     results = suggest_subcontractor_asset_types(DEMO_SUBCONTRACTORS)
     for suggestion in results:
-        valid = all(t in ALLOWED_ASSET_TYPES or t == "other" for t in suggestion.suggested_asset_types)
+        valid = all(t in ALLOWED_ASSET_TYPES for t in suggestion.suggested_asset_types)
         icon = "✅" if valid else "❌"
         print(f"  {icon}  [{suggestion.trade_specialty:20s}]  →  {suggestion.suggested_asset_types}")
 
 
 async def run_fallback_test():
+    # TEST-ONLY isolation technique: flip AI_ENABLED and reload the config + ai_service
+    # modules so the fallback path is exercised without a live API key.
+    # Caveats: (1) settings is module-level so reload order matters — config first,
+    # then ai_service; (2) any other module that already imported from ai_service
+    # holds its original references and won't see the reloaded symbols;
+    # (3) this pattern must NOT be used in production code.
     print_section("TEST 4: AI_ENABLED=false fallback")
     original = os.environ.get("AI_ENABLED")
     os.environ["AI_ENABLED"] = "false"

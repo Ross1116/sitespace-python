@@ -49,6 +49,7 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
     "telehandler",
     "compactor",
     "other",
+    "none",  # milestone/summary rows — classifier returns this; merge logic treats it as skip
 })
 
 # ---------------------------------------------------------------------------
@@ -700,7 +701,7 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
 # Keywords that map directly to asset types (keyword boost layer)
 _KEYWORD_MAP: dict[str, str] = {
     "crane": "crane",
-    "lift": "crane",
+    # "lift" removed — too ambiguous ("scissor lift", "boom lift" are ewp, not crane)
     "precast": "crane",
     "pre-cast": "crane",
     "column cage": "crane",
@@ -710,6 +711,10 @@ _KEYWORD_MAP: dict[str, str] = {
     "loading_bay": "loading_bay",
     "ewp": "ewp",
     "elevated work platform": "ewp",
+    "scissor lift": "ewp",
+    "boom lift": "ewp",
+    "man lift": "ewp",
+    "knuckle lift": "ewp",
     "concrete pump": "concrete_pump",
     "concrete_pump": "concrete_pump",
     "slab pour": "concrete_pump",

@@ -502,6 +502,8 @@ def _parse_date(value: str | None) -> date | None:
 
     # Space-separated text-month formats ("01 Mar 2026") must be tried on the
     # full string before the space-split below strips the month and year away.
+    # The manual %y pivot (yy >= 69 → 1900+yy, else 2000+yy) overrides Python's
+    # default strptime pivot of 2068/1969 to match our codebase-wide convention.
     for fmt in ("%d %b %Y", "%d %b %y"):
         try:
             parsed = datetime.strptime(text, fmt)
