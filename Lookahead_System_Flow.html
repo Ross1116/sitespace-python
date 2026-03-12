@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lookahead Asset Planning &mdash; System Flow v3</title>
+<title>Lookahead Asset Planning &mdash; System Flow v4</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -32,6 +32,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 .legend-dot.det { background: var(--navy); }
 .legend-dot.existing { background: var(--green); }
 .legend-dot.degrade { background: var(--amber); }
+.legend-dot.planned { background: var(--red); opacity: 0.5; }
 
 .connector { width: 3px; background: linear-gradient(to bottom, var(--teal), var(--navy)); margin: 0 auto; position: relative; }
 .connector::after { content:''; position:absolute; bottom:-8px; left:50%; transform:translateX(-50%); border-left:7px solid transparent; border-right:7px solid transparent; border-top:8px solid var(--navy); }
@@ -43,17 +44,20 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 .step.ai-step { border-color: var(--teal); border-left: 4px solid var(--teal); background: linear-gradient(135deg, #f0fafa 0%, #fff 40%); }
 .step.det-step { border-color: var(--navy); border-left: 4px solid var(--navy); }
 .step.existing-step { border-color: var(--green); border-left: 4px solid var(--green); background: linear-gradient(135deg, #f0f9f0 0%, #fff 40%); }
+.step.planned-step { border-color: rgba(198,40,40,0.3); border-left: 4px solid rgba(198,40,40,0.35); background: linear-gradient(135deg, #fdf5f5 0%, #fff 40%); opacity: 0.75; }
 
 .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .step-num { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; color: white; flex-shrink: 0; }
 .ai-step .step-num { background: var(--teal); }
 .det-step .step-num { background: var(--navy); }
 .existing-step .step-num { background: var(--green); }
+.planned-step .step-num { background: rgba(198,40,40,0.5); }
 .step-title { font-size: 1.15rem; font-weight: 700; color: var(--navy); }
 .step-tag { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; padding: 3px 10px; border-radius: 4px; margin-left: auto; flex-shrink: 0; }
 .tag-ai { background: rgba(46,139,139,0.12); color: var(--teal); }
 .tag-det { background: rgba(27,58,92,0.08); color: var(--navy); }
 .tag-ext { background: rgba(46,125,50,0.1); color: var(--green); }
+.tag-planned { background: rgba(198,40,40,0.08); color: var(--red); }
 
 .step-body { margin-left: 48px; }
 .step-desc { font-size: 0.92rem; color: var(--text); margin-bottom: 14px; }
@@ -96,6 +100,8 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 .info-box.conscious .info-text { color: var(--navy); }
 .info-box.conscious .info-text strong { color: #0d2340; }
 
+.not-built-banner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; background: rgba(198,40,40,0.05); border: 1px dashed rgba(198,40,40,0.3); font-size: 0.78rem; color: var(--red); font-weight: 500; }
+
 .comparison { margin-top: 56px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .comp-card { padding: 24px; border-radius: 14px; border: 1.5px solid var(--border); background: var(--card); }
 .comp-card.old { opacity: 0.5; }
@@ -130,10 +136,11 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
     <div class="sub">System flow &mdash; never block, always commit, degrade gracefully</div>
     <div class="sub2">PM uploads a file. Lands on the dashboard. That&rsquo;s it.</div>
     <div class="legend">
-      <div class="legend-item"><div class="legend-dot ai"></div>AI + auto-commit</div>
+      <div class="legend-item"><div class="legend-dot ai"></div>AI + auto-commit (live)</div>
       <div class="legend-item"><div class="legend-dot det"></div>Deterministic</div>
       <div class="legend-item"><div class="legend-dot existing"></div>Existing Sitespace</div>
       <div class="legend-item"><div class="legend-dot degrade"></div>Degraded fallback</div>
+      <div class="legend-item"><div class="legend-dot planned"></div>Not yet built</div>
     </div>
   </div>
 
@@ -147,9 +154,11 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
         <div class="step-tag tag-ai">Stream 1 &middot; Never blocks</div>
       </div>
       <div class="step-body">
-        <div class="step-desc">PM uploads a file. <strong>POST returns 202 immediately.</strong> AI + fallback chain runs in a BackgroundTasks coroutine. Frontend polls <code>/status</code>. System always commits something &mdash; problems produce a lower completeness score, not errors.</div>
+        <div class="step-desc">PM uploads a CSV or XLSX. <strong>Preflight validates the file synchronously</strong> &mdash; corrupt or empty files return a <code>422</code> immediately, before storage or DB are touched. Valid files return <code>202 Accepted</code> and run AI structure detection in a BackgroundTasks coroutine. Frontend polls <code>/status</code>. System always commits something &mdash; problems produce a lower completeness score, not errors. Identical column headers skip AI entirely (header hash cache).</div>
         <div class="inner-flow">
-          <div class="inner-node action">PM uploads<br>CSV / XLSX</div>
+          <div class="inner-node action" style="font-size:0.72rem;"><strong>PM uploads</strong><br>CSV / XLSX</div>
+          <div class="inner-arrow">&rarr;</div>
+          <div class="inner-node degrade-node" style="font-size:0.7rem;">Preflight<br>parse check</div>
           <div class="inner-arrow">&rarr;</div>
           <div class="inner-node action" style="font-size:0.72rem;"><strong>202 Accepted</strong><br>+ upload_id</div>
           <div class="inner-arrow">&rarr;</div>
@@ -158,25 +167,25 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
           <div class="inner-node degrade-node">Fallback<br>chain</div>
           <div class="inner-arrow">&rarr;</div>
           <div class="inner-node outcome-node">Always<br>commits</div>
-          <div class="inner-arrow">&rarr;</div>
-          <div class="inner-node action" style="font-size:0.72rem;">94%<br>complete</div>
         </div>
 
         <table class="fallback-table">
           <tr><th>Problem</th><th>Automatic recovery</th></tr>
-          <tr><td>Can&rsquo;t detect dates</td><td>Regex date detection across all columns. If nothing matches, import without dates, tag &ldquo;dates_missing&rdquo;</td></tr>
-          <tr><td>Can&rsquo;t detect name column</td><td>First string column with most unique values</td></tr>
+          <tr><td>File corrupt / empty</td><td>422 returned from preflight before 202. PM re-uploads. Nothing written to DB or storage.</td></tr>
+          <tr><td>Can&rsquo;t detect dates</td><td>Regex date detection across all columns (DD/MM/YYYY, DD/MM/YY, ISO). If nothing matches, import without dates, tag &ldquo;dates_missing&rdquo;</td></tr>
+          <tr><td>Can&rsquo;t detect name column</td><td>Score heuristic: prefer headers containing &ldquo;name&rdquo;, penalise &ldquo;id&rdquo; / &ldquo;%&rdquo; / &ldquo;complete&rdquo;. Fall back to first string column with most unique values.</td></tr>
           <tr><td>Row count mismatch</td><td>Import what parsed. Dashboard shows &ldquo;487 of 502 imported&rdquo;</td></tr>
           <tr><td>Orphaned children</td><td>Flatten to root, tag &ldquo;unstructured.&rdquo; Still classified, still in lookahead</td></tr>
           <tr><td>Some dates unparseable</td><td>Import row, null dates, tag &ldquo;date_parse_failed.&rdquo; Excluded from demand calc</td></tr>
-          <tr><td>AI timeout / bad JSON</td><td>Regex column detection + flat list. Lower completeness, but committed</td></tr>
-          <tr><td>File corrupt / empty</td><td>Only true hard failure. Error returned before 202. PM re-uploads</td></tr>
+          <tr><td>AI timeout / bad JSON</td><td>Regex column detection + flat list. Lower completeness, but committed (AI_TIMEOUT_STRUCTURE=15s, AI_TIMEOUT_CLASSIFY=30s)</td></tr>
         </table>
 
         <div class="caveats">
+          <div class="caveat-pill">422 preflight before 202</div>
           <div class="caveat-pill">JSONB dialect</div>
           <div class="caveat-pill">Deferred FK for parent_id</div>
           <div class="caveat-pill">Header hash cache skips AI on repeat</div>
+          <div class="caveat-pill">DD/MM date convention (Australian P6)</div>
           <div class="caveat-pill">202 + BackgroundTasks + poll /status</div>
         </div>
       </div>
@@ -191,14 +200,16 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
       <div class="step-header">
         <div class="step-num">2</div>
         <div class="step-title">Auto-Classification by Confidence Tier</div>
-        <div class="step-tag tag-ai">Stream 2 &middot; Never blocks</div>
+        <div class="step-tag tag-ai">Stream 2 &middot; Live Claude API</div>
       </div>
       <div class="step-body">
-        <div class="step-desc">AI classifies every activity. High + medium auto-commit. Low left unclassified (excluded from demand). PM sees a badge count only if low-confidence items exist.</div>
+        <div class="step-desc">Activities are first keyword pre-screened (sorted longest-match-first to avoid prefix collisions), then remaining unscreened activities are batched to Claude Haiku via the real AI pipeline. High + medium auto-commit to <code>activity_asset_mappings</code>. Low-confidence items are skipped (excluded from demand). PM sees a badge count only if unclassified items exist. Milestones and summary rows always return &ldquo;none&rdquo;.</div>
         <div class="inner-flow">
           <div class="inner-node action">Batch<br>activities</div>
           <div class="inner-arrow">&rarr;</div>
-          <div class="inner-node ai-node">&#9889; AI classifies<br>+ keyword boost</div>
+          <div class="inner-node action" style="font-size:0.72rem;">Keyword<br>pre-screen</div>
+          <div class="inner-arrow">&rarr;</div>
+          <div class="inner-node ai-node">&#9889; Claude Haiku<br>classify</div>
           <div class="inner-arrow">&rarr;</div>
           <div class="inner-node outcome-node" style="flex:0.8;">High<br><strong>commit</strong></div>
           <div class="inner-arrow"></div>
@@ -209,11 +220,13 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 
         <div class="info-box conscious">
           <div style="font-size:1rem; flex-shrink:0;">&#x1F50D;</div>
-          <div class="info-text"><strong>Mapping panel (collapsible, in PM dashboard) &mdash;</strong> Two tabs. &ldquo;Unclassified&rdquo; shows low-confidence items with badge count; PM can classify or ignore. &ldquo;Auto-classified&rdquo; shows all committed mappings sorted by confidence (medium first); PM can spot-check and correct inline. Corrections feed the learning loop. This is a surface, not a queue.</div>
+          <div class="info-text"><strong>Mapping panel (collapsible, in PM dashboard) &mdash;</strong> Two tabs. &ldquo;Unclassified&rdquo; shows low-confidence items with badge count; PM can classify or ignore. &ldquo;Auto-classified&rdquo; shows all committed mappings sorted by confidence (medium first); PM can spot-check and correct inline. Corrections stored in <code>ai_suggestion_logs</code>. Source field: <code>keyword_boost</code> or <code>ai</code>.</div>
         </div>
 
         <div class="caveats">
-          <div class="caveat-pill">assets.type is free-text &mdash; validate</div>
+          <div class="caveat-pill">11 asset types incl. telehandler</div>
+          <div class="caveat-pill">Keyword pre-screen: longest match first</div>
+          <div class="caveat-pill">Savepoint wraps sub-suggestion step</div>
         </div>
       </div>
     </div>
@@ -227,10 +240,10 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
       <div class="step-header">
         <div class="step-num">3</div>
         <div class="step-title">Subcontractor Scope Assignment</div>
-        <div class="step-tag tag-ext">Stream 3 &middot; Only human step</div>
+        <div class="step-tag tag-ext">Stream 3 &middot; Only human step (when needed)</div>
       </div>
       <div class="step-body">
-        <div class="step-desc">Auto-assigns subcontractor when exactly one project sub matches the asset type. PM assigns manually only for ambiguous or unmatched cases. Uses existing sub management.</div>
+        <div class="step-desc">After classification, <code>_assign_subcontractor_suggestions</code> runs automatically. If exactly one project subcontractor&rsquo;s <code>trade_specialty</code> matches the classified asset type, the sub is auto-assigned. PM assigns manually only for ambiguous cases (multiple matches) or unmatched asset types. Uses existing sub management. Wrapped in a DB savepoint &mdash; failure does not block programme commit.</div>
         <div class="inner-flow">
           <div class="inner-node action">Existing sub<br>accounts</div>
           <div class="inner-arrow">&rarr;</div>
@@ -253,7 +266,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
         <div class="step-tag tag-det">Stream 4 &middot; Deterministic</div>
       </div>
       <div class="step-body">
-        <div class="step-desc">Nightly job. Joins activities + mappings + bookings. Calculates demand. <strong>Anomaly detection lives here</strong> &mdash; compares new snapshot against previous, flags unusual shifts as a non-blocking notification.</div>
+        <div class="step-desc">Nightly APScheduler job fires at <code>NIGHTLY_LOOKAHEAD_HOUR:NIGHTLY_LOOKAHEAD_MINUTE</code> in <strong>Australia/Adelaide time (DST-aware)</strong>. Joins activities + mappings + bookings. Calculates weekly demand vs booked hours per asset type. Snapshot date is computed as <code>datetime.now(project_tz).date()</code> using each project&rsquo;s stored IANA timezone. <strong>Anomaly detection</strong> compares new snapshot against previous, flags unusual shifts.</div>
         <div class="inner-flow">
           <div class="inner-node action">programme<br>_activities</div>
           <div class="inner-arrow">+</div>
@@ -266,12 +279,15 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 
         <div class="anomaly-banner">
           <div style="font-size:1rem; flex-shrink:0;">&#x1F534;</div>
-          <div class="anomaly-text"><strong>Anomaly detection (in lookahead_engine.py) &rarr;</strong> Triggered on recalculation after new programme version. Thresholds: demand doubles for any asset type, 40%+ classifications changed, activity count shifts 30%+. Stored in anomaly_flags JSONB on lookahead_snapshots. PM dashboard reads via /api/lookahead &mdash; no writes to notifications table. Shows as dismissible info banner.</div>
+          <div class="anomaly-text"><strong>Anomaly detection (in lookahead_engine.py) &rarr;</strong> Triggered on recalculation after new programme version. Thresholds: demand doubles for any asset type, 40%+ classifications changed, activity count shifts 30%+. Stored in <code>anomaly_flags</code> JSONB on <code>lookahead_snapshots</code>. PM dashboard reads via <code>/api/lookahead</code> &mdash; no writes to notifications table. Shows as dismissible info banner.</div>
         </div>
 
         <div class="caveats">
+          <div class="caveat-pill">Scheduler TZ: Australia/Adelaide (DST-aware)</div>
+          <div class="caveat-pill">Snapshot date: datetime.now(project_tz).date()</div>
+          <div class="caveat-pill">ZoneInfo — no pytz</div>
           <div class="caveat-pill">Date + Time separate on slot_bookings</div>
-          <div class="caveat-pill">Timezone: bucket by project TZ</div>
+          <div class="caveat-pill">Upsert: one snapshot per project per local date</div>
           <div class="caveat-pill">APScheduler on Railway</div>
         </div>
       </div>
@@ -283,14 +299,14 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 
     <!-- BRANCH -->
     <div class="branch-container">
-      <div class="step existing-step">
+      <div class="step planned-step">
         <div class="step-header">
           <div class="step-num">5</div>
           <div class="step-title">Notifications</div>
-          <div class="step-tag tag-ext">Stream 5</div>
+          <div class="step-tag tag-planned">Stream 5 &middot; Not yet built</div>
         </div>
         <div class="step-body">
-          <div class="step-desc">6wk / 3wk / 1wk alerts. Suppressed if booked. Email + in-app.</div>
+          <div class="step-desc">6wk / 3wk / 1wk demand-gap alerts. Suppressed if already booked. Email + in-app.</div>
           <div class="inner-flow">
             <div class="inner-node action">Demand<br>gap</div>
             <div class="inner-arrow">&rarr;</div>
@@ -298,17 +314,15 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
             <div class="inner-arrow">&rarr;</div>
             <div class="inner-node outcome-node">Alert<br>sent</div>
           </div>
-          <div class="caveats">
-            <div class="caveat-pill">get_current_subcontractor</div>
-          </div>
+          <div class="not-built-banner">&#x26A0; notification_service.py not created. Nightly trigger not wired. Email templates missing. Table + model exist.</div>
         </div>
       </div>
 
-      <div class="step existing-step">
+      <div class="step planned-step">
         <div class="step-header">
           <div class="step-num">6</div>
           <div class="step-title">Book Now Deep Link</div>
-          <div class="step-tag tag-ext">Stream 6</div>
+          <div class="step-tag tag-planned">Stream 6 &middot; Not yet built</div>
         </div>
         <div class="step-body">
           <div class="step-desc">Pre-filled booking. Sub clicks &rarr; books &rarr; notification resolved.</div>
@@ -319,9 +333,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
             <div class="inner-arrow">&rarr;</div>
             <div class="inner-node outcome-node">POST<br>/bookings</div>
           </div>
-          <div class="caveats">
-            <div class="caveat-pill">source column</div>
-          </div>
+          <div class="not-built-banner">&#x26A0; source/notification_id params not yet wired into bookings endpoint. Frontend deep-link URL not defined.</div>
         </div>
       </div>
     </div>
@@ -385,7 +397,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
       <div class="comp-title">After &mdash; never blocked</div>
       <div class="comp-step"><div class="comp-icon">1</div><span>Upload file</span></div>
       <div class="comp-step"><div class="comp-icon" style="font-size:0.7rem;">&#x23F3;</div><span style="color:var(--muted);">Progress bar (~5&ndash;10 sec, polling /status)</span></div>
-      <div class="comp-step"><div class="comp-icon">2</div><span>Assign trades to subs</span></div>
+      <div class="comp-step"><div class="comp-icon">2</div><span>Review / assign trades to subs (auto if unique match)</span></div>
       <div class="comp-step"><div class="comp-icon">3</div><span>View heatmap</span></div>
       <div style="margin-top:16px; font-size:0.82rem; color:var(--teal); font-weight:600;">3 steps &middot; ~2 minutes &middot; always succeeds</div>
     </div>
@@ -397,15 +409,15 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
     <div class="safety-grid">
       <div class="step" style="padding:20px; border-color:var(--amber); border-top:3px solid var(--amber);">
         <div style="font-size:0.82rem; font-weight:700; color:var(--amber); margin-bottom:8px;">Degraded fallback chain</div>
-        <div style="font-size:0.8rem; color:var(--text);">Every failure has an automatic recovery. Can&rsquo;t detect dates? Regex. Orphaned rows? Flatten. AI timeout? Fall back to deterministic parsing. System always commits something &mdash; problems produce lower completeness, not errors.</div>
+        <div style="font-size:0.8rem; color:var(--text);">Every failure has an automatic recovery. Can&rsquo;t detect dates? Regex (DD/MM first, ISO fallback). Orphaned rows? Flatten. AI timeout? Deterministic keyword parsing. File corrupt? 422 before anything is stored. System always commits something &mdash; problems produce lower completeness, not errors.</div>
       </div>
       <div class="step" style="padding:20px; border-color:var(--teal); border-top:3px solid var(--teal);">
-        <div style="font-size:0.82rem; font-weight:700; color:var(--teal); margin-bottom:8px;">Learning loop</div>
-        <div style="font-size:0.8rem; color:var(--text);">Every correction feeds back via ai_suggestion_logs. After 50+ corrections per builder, few-shot examples injected per-customer. Header hash cache means repeat uploads skip AI entirely &mdash; 100% accuracy on known formats.</div>
+        <div style="font-size:0.82rem; font-weight:700; color:var(--teal); margin-bottom:8px;">Audit trail</div>
+        <div style="font-size:0.8rem; color:var(--text);">Every auto-committed mapping is tagged with confidence tier (<code>high/medium/low</code>), source (<code>keyword_boost/ai</code>), and timestamp. PM corrections stored in <code>ai_suggestion_logs</code>. Header hash cache means repeat uploads with identical columns skip AI entirely &mdash; 100% accuracy on known formats.</div>
       </div>
       <div class="step" style="padding:20px; border-color:var(--red); border-top:3px solid var(--red);">
         <div style="font-size:0.82rem; font-weight:700; color:var(--red); margin-bottom:8px;">Anomaly detection</div>
-        <div style="font-size:0.8rem; color:var(--text);">Lives in lookahead_engine.py. On recalculation after new programme version: compares snapshots. Demand doubles or 40%+ classifications shift = anomaly_flags written to lookahead_snapshots. PM dashboard reads via /api/lookahead. Notifications table stays sub-only.</div>
+        <div style="font-size:0.8rem; color:var(--text);">Lives in <code>lookahead_engine.py</code>. On recalculation after new programme version: compares snapshots. Demand doubles or 40%+ classifications shift = <code>anomaly_flags</code> written to <code>lookahead_snapshots</code>. PM dashboard reads via <code>/api/lookahead</code>. Notifications table stays sub-only.</div>
       </div>
     </div>
 
@@ -413,6 +425,15 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
     <div style="margin-top:20px; padding:16px 20px; border-radius:12px; background:rgba(27,58,92,0.04); border:1px solid rgba(27,58,92,0.12);">
       <div style="font-size:0.82rem; font-weight:700; color:var(--navy); margin-bottom:6px;">&#x26A0; Conscious decision: auto-commit in construction context</div>
       <div style="font-size:0.8rem; color:var(--text);">This system has no human sign-off step. Every auto-committed mapping is tagged with confidence tier, source, and timestamp. The audit trail exists &mdash; it just doesn&rsquo;t include manual confirmation. For MVP on one known project (Bowden, P6 format), the fallback chain + anomaly detection provides sufficient safety. At scale with unknown files, medium-confidence auto-commits will produce silent errors. If this causes problems post-MVP, adding an optional confirmation toggle per-project is a 1-day change, not an architecture change.</div>
+    </div>
+
+    <!-- What's not built -->
+    <div style="margin-top:20px; padding:16px 20px; border-radius:12px; background:rgba(198,40,40,0.03); border:1px dashed rgba(198,40,40,0.25);">
+      <div style="font-size:0.82rem; font-weight:700; color:var(--red); margin-bottom:8px;">&#x1F6A7; Not yet built (Streams 5 &amp; 6)</div>
+      <div style="font-size:0.8rem; color:var(--text); line-height:1.7;">
+        <strong>Stream 5 &mdash; Notifications:</strong> <code>notification_service.py</code> doesn&rsquo;t exist. The nightly job doesn&rsquo;t trigger notification sends. Email templates are missing. The <code>lookahead_notifications</code> DB table and model exist and are ready.<br>
+        <strong>Stream 6 &mdash; Book Now Deep Link:</strong> The <code>source</code> column on <code>slot_bookings</code> exists but <code>notification_id</code> param is not wired into the bookings endpoint. Frontend deep-link URL format is not defined.
+      </div>
     </div>
   </div>
 
