@@ -457,9 +457,13 @@ def _parse_date(value: str | None) -> date | None:
     elif " " in text:
         date_only_candidate = text.split(" ", 1)[0].strip()
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
         try:
-            return datetime.strptime(date_only_candidate, fmt).date()
+            parsed = datetime.strptime(date_only_candidate, fmt)
+            if "%y" in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+            return parsed.date()
         except (ValueError, AttributeError):
             pass
     return None

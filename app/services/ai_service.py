@@ -675,6 +675,10 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
 _KEYWORD_MAP: dict[str, str] = {
     "crane": "crane",
     "lift": "crane",
+    "precast": "crane",
+    "pre-cast": "crane",
+    "column cage": "crane",
+    "column cages": "crane",
     "hoist": "hoist",
     "loading bay": "loading_bay",
     "loading_bay": "loading_bay",
@@ -682,6 +686,8 @@ _KEYWORD_MAP: dict[str, str] = {
     "elevated work platform": "ewp",
     "concrete pump": "concrete_pump",
     "concrete_pump": "concrete_pump",
+    "slab pour": "concrete_pump",
+    "concrete pour": "concrete_pump",
     "excavator": "excavator",
     "forklift": "forklift",
     "telehandler": "telehandler",
@@ -710,6 +716,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
     # Detect date columns via regex on first 10 non-empty values
     date_patterns = [
         re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"),   # dd/mm/yyyy
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"),    # dd/mm/yy
         re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # yyyy-mm-dd
     ]
 
@@ -719,12 +726,20 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
     date_cols = [h for h in headers if _looks_like_date(h)]
 
-    # Name column: first string column with most unique values
+    # Name column: prefer headers containing "name" (case-insensitive);
+    # exclude headers that look like IDs or numeric fields (contain "id", "%", "complete", "duration").
+    # Tiebreak: most unique values.
     def _unique_count(col: str) -> int:
         return len({str(r.get(col, "")) for r in rows if r.get(col)})
 
+    def _name_col_score(col: str) -> tuple[int, int]:
+        lower = col.lower()
+        preference = 1 if "name" in lower else 0
+        penalty = -1 if any(x in lower for x in ("id", "%", "complete", "duration", "code")) else 0
+        return (preference + penalty, _unique_count(col))
+
     string_cols = [h for h in headers if not _looks_like_date(h)]
-    name_col = max(string_cols, key=_unique_count) if string_cols else (headers[0] if headers else None)
+    name_col = max(string_cols, key=_name_col_score) if string_cols else (headers[0] if headers else None)
 
     column_mapping: dict[str, str] = {}
     missing: list[str] = []
@@ -747,9 +762,13 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not val:
             return None
         s = str(val).strip()
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
             try:
-                return datetime.strptime(s, fmt).date().isoformat()
+                parsed = datetime.strptime(s, fmt)
+                if "%y" in fmt:
+                    yy = parsed.year % 100
+                    parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+                return parsed.date().isoformat()
             except ValueError:
                 pass
         return None
@@ -805,7 +824,7 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         name = str(activity.get("name", "")).lower()
 
         matched_type: str | None = None
-        for keyword, asset_type in _KEYWORD_MAP.items():
+        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name:
                 matched_type = asset_type
                 break
