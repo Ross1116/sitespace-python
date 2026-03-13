@@ -34,6 +34,29 @@ def load_csv(filepath: str) -> list[dict]:
         return [row for row in reader]
 
 
+def load_pdf(filepath: str) -> list[dict]:
+    import pdfplumber
+    rows: list[dict] = []
+    headers: list[str] | None = None
+    with pdfplumber.open(filepath) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                if not table:
+                    continue
+                if headers is None:
+                    headers = [str(h).strip() if h is not None else f"col_{i}" for i, h in enumerate(table[0])]
+                    data_rows = table[1:]
+                else:
+                    first = [str(c).strip() if c is not None else "" for c in table[0]]
+                    data_rows = table[1:] if first == headers else table
+                for row in data_rows:
+                    cells = [" ".join(str(c).split()) if c is not None else "" for c in row]
+                    rows.append(dict(zip(headers, cells)))
+    if not rows:
+        raise ValueError("No extractable tables found in PDF.")
+    return rows
+
+
 def load_xlsx(filepath: str) -> list[dict]:
     if filepath.lower().endswith(".xls"):
         raise ValueError(f"Legacy .xls format is not supported. Convert '{filepath}' to .xlsx first.")
@@ -172,12 +195,18 @@ def run_sub_suggestion_test():
 
     results = suggest_subcontractor_asset_types(DEMO_SUBCONTRACTORS)
     for suggestion in results:
-        valid = all(t in ALLOWED_ASSET_TYPES or t == "other" for t in suggestion.suggested_asset_types)
+        valid = all(t in ALLOWED_ASSET_TYPES for t in suggestion.suggested_asset_types)
         icon = "✅" if valid else "❌"
         print(f"  {icon}  [{suggestion.trade_specialty:20s}]  →  {suggestion.suggested_asset_types}")
 
 
 async def run_fallback_test():
+    # TEST-ONLY isolation technique: flip AI_ENABLED and reload the config + ai_service
+    # modules so the fallback path is exercised without a live API key.
+    # Caveats: (1) settings is module-level so reload order matters — config first,
+    # then ai_service; (2) any other module that already imported from ai_service
+    # holds its original references and won't see the reloaded symbols;
+    # (3) this pattern must NOT be used in production code.
     print_section("TEST 4: AI_ENABLED=false fallback")
     original = os.environ.get("AI_ENABLED")
     os.environ["AI_ENABLED"] = "false"
@@ -344,14 +373,16 @@ async def main():
 
         if ext == ".csv":
             rows = load_csv(str(filepath))
-        elif ext in (".xlsx", ".xlsm", ".xls"):
+        elif ext in (".xlsx", ".xlsm"):
             rows = load_xlsx(str(filepath))
+        elif ext == ".pdf":
+            rows = load_pdf(str(filepath))
         else:
             print(f"❌ Unsupported file type: {ext}. Use .csv, .xlsx, or .pdf")
             sys.exit(1)
         print(f"   File: {filepath.name} ({len(rows)} rows)")
         activities = [
-            {"id": str(i), "name": str(r.get(list(r.keys())[0], ""))}
+            {"id": str(i), "name": str(r.get(next(iter(r), ""), ""))}
             for i, r in enumerate(rows[:50])
         ]
     else:
