@@ -18,6 +18,7 @@ Contract:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import re
@@ -206,6 +207,181 @@ async def classify_assets(activities: list[dict[str, Any]]) -> ClassificationRes
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
         return _classify_assets_fallback(activities)
+
+
+_MS_PROJECT_ROW_RE = re.compile(
+    r"^(\d+)\s+(.+?)\s+(\d+)%\s+(\d+)\s+days?\s+"
+    r"(\w+\s+\d{1,2}/\d{1,2}/\d{2,4})\s+"
+    r"(\w+\s+\d{1,2}/\d{1,2}/\d{2,4})\s*$"
+)
+_DAY_PREFIX_RE = re.compile(r"^[A-Za-z]{3}\s+")
+
+
+def parse_ms_project_pdf(pdf_bytes: bytes) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Parse MS Project / P6 PDF Gantt exports using pypdf text extraction + regex.
+
+    These PDFs have a structured left-hand activity table with columns:
+        ID | Name | % Complete | Duration | Start | Finish
+    followed by a Gantt chart on the right whose extracted text is noise.
+
+    The regex naturally ignores all Gantt noise — no pdfplumber or Claude needed.
+    This is the fast path for the common Australian construction programme format.
+
+    Date format handled: "Mon 18/11/24" → stripped to "18/11/24" (DD/MM/YY).
+    Summary rows detected by: all-uppercase meaningful words OR "Zone X" pattern.
+
+    Returns (rows, error). Empty rows (not an error) if format doesn't match —
+    the caller should then try pdfplumber or Claude Vision.
+    """
+    try:
+        import pypdf as _pypdf
+    except ImportError:
+        return [], None
+
+    try:
+        reader = _pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    except Exception as exc:
+        return [], str(exc)
+
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            continue
+
+        for line in text.splitlines():
+            line = line.strip()
+            m = _MS_PROJECT_ROW_RE.match(line)
+            if not m:
+                continue
+
+            task_id, name, pct_str, dur_str, start_raw, finish_raw = m.groups()
+
+            if task_id in seen_ids:
+                continue
+            seen_ids.add(task_id)
+
+            # Strip "Mon ", "Tue " etc. day-of-week prefix from date strings
+            start_clean = _DAY_PREFIX_RE.sub("", start_raw).strip()
+            finish_clean = _DAY_PREFIX_RE.sub("", finish_raw).strip()
+
+            # Summary detection:
+            # (a) all meaningful words (len≥2) are uppercase → "SUPERSTRUCTURE",
+            #     "LEVEL 1 ~ 2,200m2 CARPARK" (the lone "m" in m2 is ignored)
+            # (b) "Zone A" / "Zone B" section-header pattern
+            words = re.sub(r"[^a-zA-Z\s]", " ", name).split()
+            meaningful = [w for w in words if len(w) >= 2]
+            is_summary = (
+                bool(meaningful) and all(w == w.upper() for w in meaningful)
+            ) or bool(re.match(r"^Zone\s+\w+$", name.strip(), re.IGNORECASE))
+
+            rows.append({
+                "ID": task_id,
+                "Name": name.strip(),
+                "% Complete": f"{pct_str}%",
+                "Duration": f"{dur_str} days",
+                "Start": start_clean,
+                "Finish": finish_clean,
+                "Is Summary": "Yes" if is_summary else "No",
+                "Is Milestone": "Yes" if dur_str == "0" else "No",
+            })
+
+    if rows:
+        logger.info(
+            "MS Project PDF parser: extracted %d rows from %d pages",
+            len(rows),
+            len(reader.pages),
+        )
+    return rows, None
+
+
+async def extract_pdf_activities(pdf_bytes: bytes) -> list[dict[str, Any]]:
+    """
+    Extract activity rows from a PDF programme file using Claude Vision.
+
+    Called when pdfplumber table extraction returns insufficient data — typically
+    for PDFs with complex Gantt chart layouts or image-heavy formatting.
+
+    Pipeline:
+    - Renders each PDF page to PNG at 1.5× scale using pypdfium2
+    - Sends all page images to Claude with the pdf_extraction.txt prompt
+    - Claude reads the visuals and returns structured JSON rows
+    - Returns list of row dicts compatible with the CSV/XLSX detect_structure pipeline
+
+    Hard timeout: 120 seconds (PDF vision is slower than text classification).
+    Raises ValueError if Claude cannot find any activity rows.
+    """
+    import base64
+    import io
+
+    import pypdfium2
+
+    client = _get_async_client()
+    system_prompt = _load_prompt("pdf_extraction.txt")
+
+    doc = pypdfium2.PdfDocument(pdf_bytes)
+    # Cap at 8 pages — beyond that we risk token limits; most PMP tables fit in first 8
+    n_pages = min(len(doc), 8)
+
+    content_parts: list[dict[str, Any]] = []
+    for i in range(n_pages):
+        page = doc[i]
+        # 1.5× scale: readable for Claude, ~half the token cost of 3×
+        bitmap = page.render(scale=1.5)
+        pil_img = bitmap.to_pil()
+        buf = io.BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_b64 = base64.standard_b64encode(buf.getvalue()).decode()
+        content_parts.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": img_b64,
+            },
+        })
+
+    doc.close()
+
+    content_parts.append({
+        "type": "text",
+        "text": (
+            f"This is a {n_pages}-page construction programme schedule PDF. "
+            "Extract all activity/task rows into structured JSON. "
+            "Return ONLY valid JSON."
+        ),
+    })
+
+    response = await asyncio.wait_for(
+        client.messages.create(
+            model=settings.AI_MODEL,
+            max_tokens=8192,
+            system=system_prompt,
+            messages=[{"role": "user", "content": content_parts}],
+        ),
+        timeout=120.0,
+    )
+
+    data = _parse_json_response(response.content[0].text)
+    rows: list[dict] = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
+
+    if not rows:
+        raise ValueError(
+            "Claude PDF vision returned no activity rows. "
+            f"Notes: {data.get('notes', 'none')}"
+        )
+
+    logger.info(
+        "PDF vision extraction: %d rows extracted from %d pages. Notes: %s",
+        len(rows),
+        n_pages,
+        data.get("notes"),
+    )
+    return rows
 
 
 def suggest_subcontractor_asset_types(
@@ -673,25 +849,106 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
 
 # Keywords that map directly to asset types (keyword boost layer)
 _KEYWORD_MAP: dict[str, str] = {
+    # ── Crane ────────────────────────────────────────────────────────────────
     "crane": "crane",
-    "lift": "crane",
-    "precast": "crane",
+    "precast": "crane",          # precast concrete panels always need a crane
     "pre-cast": "crane",
-    "column cage": "crane",
+    "column cage": "crane",      # column cage reo/formwork lifts
     "column cages": "crane",
+    "lift column": "crane",      # "Lift column cages", "Lift column formwork"
+    "lift bd false work": "crane",   # "Lift BD false work" — explicit lift, not inspect
+    "lift bd reo": "crane",
+    "lift bd panels": "crane",
+    "install bd false work": "crane",
+    "install bd panels": "crane",
+    "lift bd": "crane",          # "Lift BD reo / screw in bars" etc
+    "lift precast": "crane",
+    "install precast": "crane",
+    "lift reo": "crane",
+    "lift screw": "crane",
+    "column formwork install": "crane",
+    "install formwork": "crane",
+    # NOTE: "formwork" / "false work" alone is intentionally NOT a keyword because
+    # "BD false work inspection and sign off" should NOT match — AI handles that.
+    "bd panels": "crane",        # Bubbledeck panel installs (large precast units)
+    "bubbledeck": "crane",       # Bubbledeck = precast concrete deck system
+    # ── Hoist ────────────────────────────────────────────────────────────────
     "hoist": "hoist",
+    "jump the hoist": "hoist",   # MS Project specific phrasing
+    "materials hoist": "hoist",
+    "personnel hoist": "hoist",
+    "platform hoist": "hoist",
+    # ── Loading bay ──────────────────────────────────────────────────────────
     "loading bay": "loading_bay",
     "loading_bay": "loading_bay",
+    "unloading": "loading_bay",
+    "delivery": "loading_bay",   # material deliveries (reo delivery etc.)
+    "reo delivery": "loading_bay",
+    # ── EWP (Elevated Work Platform / scissor lift / boom lift) ──────────────
     "ewp": "ewp",
     "elevated work platform": "ewp",
+    "scissor lift": "ewp",
+    "boom lift": "ewp",
+    "scaffold": "ewp",           # scaffold erect/dismantle needs EWP
+    "scaffolding": "ewp",
+    "install scaffold": "ewp",
+    "handrail": "ewp",           # "Install scaffold handrail to live deck"
+    "hvac": "ewp",
+    "ductwork": "ewp",
+    "electrical conduit": "ewp",
+    "rough-in": "ewp",
+    "rough in": "ewp",
+    "ceiling": "ewp",
+    "suspended ceiling": "ewp",
+    "cladding": "ewp",
+    "external cladding": "ewp",
+    "waterproofing": "ewp",
+    "painting": "ewp",
+    # ── Concrete pump ────────────────────────────────────────────────────────
     "concrete pump": "concrete_pump",
     "concrete_pump": "concrete_pump",
-    "slab pour": "concrete_pump",
     "concrete pour": "concrete_pump",
-    "excavator": "excavator",
+    "slab pour": "concrete_pump",
+    "pour concrete": "concrete_pump",
+    "pour slab": "concrete_pump",
+    "column pour": "concrete_pump",  # "Ground floor column pour"
+    "pour columns": "concrete_pump",
+    "pour beam": "concrete_pump",
+    "concrete pour floor slab": "concrete_pump",
+    "slab and columns": "concrete_pump",
+    "floor slab": "concrete_pump",
+    "ramp infill": "concrete_pump",
+    "levelling pour": "concrete_pump",
+    "pour 1": "concrete_pump",   # "Slab pour, pour 1" / "Slab pour, pour 2"
+    "pour 2": "concrete_pump",
+    # ── Excavator ────────────────────────────────────────────────────────────
+    "excavat": "excavator",      # excavation / excavating / excavator
+    "bulk earthwork": "excavator",
+    "earthwork": "excavator",
+    "earthworks": "excavator",
+    "demolish": "excavator",
+    "demolition": "excavator",
+    # NOTE: "strip slab" intentionally excluded — "Strip slab edge and set downs - tidy up"
+    # is formwork clean-up (no asset), not excavation. Let AI handle it.
+    "site clearance": "excavator",
+    "site establishment": "excavator",
+    "cut and fill": "excavator",
+    "trenching": "excavator",
+    "footing": "excavator",
+    "footing excavation": "excavator",
+    "piling": "excavator",
+    # ── Forklift ─────────────────────────────────────────────────────────────
     "forklift": "forklift",
+    "pallet": "forklift",
+    "stack": "forklift",
+    # ── Telehandler ──────────────────────────────────────────────────────────
     "telehandler": "telehandler",
+    "telescopic": "telehandler",
+    # ── Compactor ────────────────────────────────────────────────────────────
     "compactor": "compactor",
+    "compaction": "compactor",
+    "roller": "compactor",
+    "vibrating plate": "compactor",
 }
 
 
@@ -758,6 +1015,26 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
     else:
         missing += ["start_date", "end_date"]
 
+    # Detect is_summary and id columns by exact or fuzzy header name match
+    _summary_col = next(
+        (h for h in headers if h.lower().replace(" ", "_") in ("is_summary", "summary")),
+        None,
+    )
+    _milestone_col = next(
+        (h for h in headers if h.lower().replace(" ", "_") in ("is_milestone", "milestone")),
+        None,
+    )
+    _id_col = next(
+        (h for h in headers if h.upper() in ("ID", "TASK ID", "ACTIVITY ID", "WBS")),
+        None,
+    )
+    if _summary_col:
+        column_mapping["is_summary"] = _summary_col
+    if _milestone_col:
+        column_mapping["is_milestone"] = _milestone_col
+    if _id_col:
+        column_mapping["id"] = _id_col
+
     def _parse_date(val: Any) -> str | None:
         if not val:
             return None
@@ -773,6 +1050,10 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
                 pass
         return None
 
+    def _is_truthy(val: Any) -> bool:
+        """Return True for Yes/True/1/true values used in summary/milestone flags."""
+        return str(val).strip().lower() in ("yes", "true", "1", "y")
+
     activities: list[ActivityItem] = []
 
     for i, row in enumerate(rows):
@@ -782,20 +1063,34 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
         start = _parse_date(row.get(column_mapping.get("start_date", ""), ""))
         finish = _parse_date(row.get(column_mapping.get("end_date", ""), ""))
+
+        is_summary = False
+        if _summary_col:
+            is_summary = _is_truthy(row.get(_summary_col, ""))
+        if not is_summary and _milestone_col:
+            is_summary = _is_truthy(row.get(_milestone_col, ""))
+
+        row_id = str(row.get(_id_col, "")).strip() if _id_col else f"row-{i}"
+        if not row_id:
+            row_id = f"row-{i}"
+
         activities.append(ActivityItem(
-            id=f"row-{i}",
+            id=row_id,
             name=name,
             start=start,
             finish=finish,
             parent_id=None,   # flat — no hierarchy in fallback
-            is_summary=False,
+            is_summary=is_summary,
             level_name=None,
             zone_name=None,
         ))
 
     imported = len(activities)
     total = len(rows)
-    score = int((imported / total) * 80) if total else 0  # cap at 80 for fallback
+    # Bonus points for detecting the is_summary and id columns (max 90 for fallback)
+    base = int((imported / total) * 75) if total else 0
+    bonus = (5 if _summary_col else 0) + (5 if _id_col else 0) + (5 if _milestone_col else 0)
+    score = min(90, base + bonus)
 
     notes_parts = ["Regex fallback — AI unavailable."]
     if missing:

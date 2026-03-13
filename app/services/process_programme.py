@@ -26,6 +26,7 @@ import hashlib
 import importlib
 import io
 import logging
+import re
 import threading
 import uuid
 from datetime import date, datetime
@@ -44,6 +45,8 @@ from .ai_service import (
     StructureResult,
     classify_assets,
     detect_structure,
+    extract_pdf_activities,
+    parse_ms_project_pdf,
     suggest_subcontractor_asset_types,
 )
 
@@ -60,14 +63,33 @@ def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
     """
     Quick synchronous parse check — called before the background task is enqueued.
     Returns an error message string if the file is corrupt or empty, None if valid.
-    This ensures corrupt/empty files fail with a hard 422 before the 202 is returned.
+
+    For PDFs: only validates the file is a readable PDF — rows are extracted in the
+    background (pdfplumber first, then Claude Vision if needed).
+    For CSV/XLSX: full parse to catch corrupt files immediately.
     """
+    if file_name.lower().endswith(".pdf"):
+        return _preflight_pdf(file_bytes)
+
     rows, error = _parse_file(file_bytes, file_name)
     if error:
         return error
     if not rows:
         return "File contains no data rows."
     return None
+
+
+def _preflight_pdf(file_bytes: bytes) -> str | None:
+    """Validate a PDF is readable and has at least one page."""
+    try:
+        import io
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        if len(reader.pages) == 0:
+            return "PDF contains no pages."
+        return None
+    except Exception as exc:
+        return f"Invalid or unreadable PDF: {exc}"
 
 
 def process_programme(upload_id: str) -> None:
@@ -104,8 +126,21 @@ async def _run(upload_id: str, db: Session) -> None:
         _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
-    # 2. Parse rows from CSV or XLSX/XLSM
+    # 2. Parse rows from CSV, XLSX/XLSM, or PDF (pdfplumber)
     rows, parse_error = _parse_file(file_bytes, upload.file_name)
+
+    # 2b. PDF fallback: pdfplumber returned no rows — try Claude Vision
+    is_pdf = upload.file_name.lower().endswith(".pdf")
+    if is_pdf and not parse_error and not rows:
+        logger.info("PDF pdfplumber extraction empty — trying Claude Vision for upload %s", upload_id)
+        try:
+            rows = await extract_pdf_activities(file_bytes)
+            logger.info("Claude Vision extracted %d rows for upload %s", len(rows), upload_id)
+        except Exception as exc:
+            logger.warning("Claude Vision PDF extraction failed for upload %s: %s", upload_id, exc)
+            _commit_degraded(upload, db, completeness_score=0.0, notes=["pdf_extraction_failed"])
+            return
+
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
         _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
@@ -369,8 +404,11 @@ def _parse_file(
     file_name: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """
-    Parse CSV or XLSX/XLSM bytes into a list of row dicts.
+    Parse CSV, XLSX/XLSM, or PDF bytes into a list of row dicts.
     Returns (rows, error_message). error_message is None on success.
+
+    For PDFs: attempts pdfplumber table extraction. Returns empty rows (not an error)
+    when no tables are found — the background pipeline will then call Claude Vision.
     """
     name_lower = file_name.lower()
     try:
@@ -393,9 +431,98 @@ def _parse_file(
             wb.close()
             return result, None
 
+        if name_lower.endswith(".pdf"):
+            # Try the fast MS Project / P6 text-regex parser first (no AI, no pdfplumber)
+            rows, error = parse_ms_project_pdf(file_bytes)
+            if rows:
+                return rows, None
+            # Fall back to pdfplumber for other PDF table formats
+            return _parse_pdf_with_pdfplumber(file_bytes)
+
         return [], f"Unsupported file type: {file_name}"
     except Exception as exc:
         return [], str(exc)
+
+
+def _parse_pdf_with_pdfplumber(file_bytes: bytes) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Extract tabular data from a PDF using pdfplumber.
+
+    Strategy:
+    - Scans every page for tables using pdfplumber's layout engine
+    - Combines tables across pages that share the same header structure
+      (handles multi-page activity lists where the header repeats each page)
+    - Returns empty rows (not an error) if no tables are found — the caller
+      (_run) will then fall back to Claude Vision extraction
+
+    Returns (rows, error). error is only set for hard failures (corrupt file, etc.).
+    """
+    try:
+        pdfplumber = importlib.import_module("pdfplumber")
+    except ImportError:
+        logger.warning("pdfplumber not installed — PDF table extraction unavailable")
+        return [], None  # Soft fail: let Claude Vision handle it
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            main_headers: list[str] | None = None
+            all_rows: list[dict[str, Any]] = []
+
+            for page in pdf.pages:
+                tables = page.extract_tables() or []
+                for table in tables:
+                    if not table or len(table) < 2:
+                        continue
+
+                    row0 = [str(c or "").strip() for c in table[0]]
+
+                    if main_headers is None:
+                        # First table found — use its header row
+                        main_headers = [h if h else f"col_{i}" for i, h in enumerate(row0)]
+                        data_rows = table[1:]
+                    elif row0 == main_headers or _headers_match(row0, main_headers):
+                        # Continuation of the same table on a new page — skip repeated header
+                        data_rows = table[1:]
+                    else:
+                        # Different table on this page — only adopt if it's much larger
+                        if len(table) > len(all_rows) + 10:
+                            main_headers = [h if h else f"col_{i}" for i, h in enumerate(row0)]
+                            all_rows = []
+                            data_rows = table[1:]
+                        else:
+                            continue
+
+                    for row in data_rows:
+                        row_dict: dict[str, Any] = {
+                            main_headers[i]: str(cell or "").strip() if cell is not None else ""
+                            for i, cell in enumerate(row)
+                            if i < len(main_headers)
+                        }
+                        if any(v for v in row_dict.values()):
+                            all_rows.append(row_dict)
+
+            if all_rows:
+                logger.info(
+                    "pdfplumber extracted %d rows with headers: %s",
+                    len(all_rows),
+                    main_headers,
+                )
+            else:
+                logger.info("pdfplumber found no tables in PDF — will try Claude Vision")
+
+            return all_rows, None
+
+    except Exception as exc:
+        logger.warning("pdfplumber parse error: %s — will try Claude Vision", exc)
+        return [], None  # Soft fail: let Claude Vision handle it
+
+
+def _headers_match(candidate: list[str], reference: list[str]) -> bool:
+    """Check if two header rows are substantially the same (continuation page detection)."""
+    if len(candidate) == 0 or len(reference) == 0:
+        return False
+    overlap = sum(1 for h in candidate if h in reference)
+    return overlap / max(len(candidate), len(reference)) >= 0.6
 
 
 def _compute_header_hash(rows: list[dict[str, Any]]) -> str:

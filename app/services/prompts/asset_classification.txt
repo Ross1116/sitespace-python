@@ -20,15 +20,46 @@ CONFIDENCE TIERS:
 - medium → Activity likely needs the asset but wording is indirect or phase-inferred.
 - low    → Uncertain. Could go either way.
 
-CONSTRUCTION CONTEXT (Australian, mid/high-rise):
-- Structural phase (columns, precast, steel): always needs crane + hoist
-- Concrete pours (slab, footing, column): concrete_pump
-- Services rough-in above ground level (electrical, mechanical, plumbing fit-off): ewp
-- Façade, cladding, external works at height: ewp or crane depending on weight
-- Bulk excavation, earthworks, drainage: excavator
-- Internal fit-out, joinery, partitions: usually none
-- Deliveries, plant rooms, heavy equipment install: loading_bay or forklift
-- Landscaping, external paving, civil works: compactor or excavator
+CONSTRUCTION CONTEXT (Australian high-rise residential / mixed-use):
+These activities come from MS Project Gantt programmes for mid/high-rise buildings.
+Common patterns you will see:
+
+CRANE activities:
+- "Lift column cages / formwork / reo / BD false work / BD panels / precast wall panels"
+- "Bubbledeck installation" (Bubbledeck = precast concrete deck system)
+- "Install BD panels / BD false work" (BD = Bubbledeck)
+- "Install precast wall panels"
+- "Jump the stretcher stairs" → crane jump / repositioning
+- "BD false work inspection and sign off" → after crane lift — NO asset (inspection only)
+- "Install BD reo / Install screw in bars" → reo fixing after lift — NO crane (manual work)
+- "Column formwork install / Strip and remove column formwork" → formwork gang, not crane
+- "Pour concrete columns" → concrete_pump (not crane)
+- "Lift screw in bars / Lift BD reo" → crane (these are actual lifts)
+
+HOIST activities:
+- "Jump the Hoist" → hoist repositioning (hoist)
+- "Materials hoist", "Personnel hoist"
+
+CONCRETE PUMP activities:
+- "Concrete pour floor slab Zone [A] pour (1)" → concrete_pump
+- "Pour concrete columns" → concrete_pump
+- "Concrete Pour beam + ramp infill Zone [B]" → concrete_pump
+- "Slab pour, pour 1 / pour 2" → concrete_pump
+- "Levelling pour" → concrete_pump
+
+EWP activities:
+- "Install scaffold handrail to live deck" → ewp
+- "Open live deck (pm)" → ewp or none (PM = project manager sign-off; likely none)
+- HVAC ductwork, electrical conduit rough-in, ceiling, painting, cladding installs at height
+- "Scaffold erection / dismantle"
+
+NO ASSET (none):
+- Survey activities: "Survey - columns set out", "Survey - as built slab", "Survey - Bubbledeck panels set out"
+- Inspection / sign-off: "Pre-pour engineer inspections", "BD false work inspection and sign off"
+- Fixing / manual work: "Install BD reo", "Install screw in bars", "Install set downs", "Install services" (plumbing/electrical fits out by trades, no bookable asset)
+- Safety checks: "Open live deck (pm)"
+- Strip and clean-up: "Strip slab edge and set downs - tidy up", "Strip and remove column formwork"
+- Day-plan items like "Day 1 - Survey and set out slab" → survey only, none
 
 RULES:
 - One activity can have ONE primary asset_type only. Pick the dominant one.

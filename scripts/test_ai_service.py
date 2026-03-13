@@ -204,10 +204,113 @@ async def run_fallback_test():
     importlib.reload(ai_module)
 
 
+async def run_pdf_test(filepath: Path):
+    """Test the full PDF extraction pipeline on a real PDF file."""
+    from app.services.ai_service import (
+        extract_pdf_activities,
+        parse_ms_project_pdf,
+    )
+
+    print_section("PDF EXTRACTION TEST")
+    print(f"  File: {filepath.name} ({filepath.stat().st_size // 1024} KB)")
+
+    pdf_bytes = filepath.read_bytes()
+    rows: list = []
+
+    # Stage 1: MS Project / P6 text-regex parser (fastest, no AI, handles Gantt PDFs)
+    print("\n  Stage 1: MS Project PDF text-regex parser...")
+    rows, error = parse_ms_project_pdf(pdf_bytes)
+    if error:
+        print(f"  ❌ MS Project parser error: {error}")
+    elif rows:
+        summary_count = sum(1 for r in rows if r.get("Is Summary") == "Yes")
+        milestone_count = sum(1 for r in rows if r.get("Is Milestone") == "Yes")
+        detail_count = len(rows) - summary_count - milestone_count
+        print(f"  ✅ MS Project parser extracted {len(rows)} rows "
+              f"({detail_count} detail, {summary_count} summary, {milestone_count} milestones)")
+        print(f"  Headers: {list(rows[0].keys())}")
+        print(f"  Sample rows:")
+        for r in rows[:4]:
+            flag = " [SUMMARY]" if r.get("Is Summary") == "Yes" else ""
+            print(f"    [{r.get('ID'):>5}] {r.get('Name', '')[:55]}{flag}")
+    else:
+        print("  ⚠️  MS Project parser found no rows — trying pdfplumber...")
+
+    # Stage 2: pdfplumber (for other structured PDF table formats)
+    if not rows:
+        print("\n  Stage 2: pdfplumber table extraction...")
+        try:
+            import pdfplumber as _pdfplumber
+            import io as _io
+            with _pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+                tables = []
+                for page in pdf.pages:
+                    t = page.extract_table()
+                    if t:
+                        tables.extend(t)
+                rows = tables  # type: ignore[assignment]
+                error = None
+        except Exception as exc:
+            rows = []
+            error = str(exc)
+        if error:
+            print(f"  ❌ pdfplumber error: {error}")
+        elif rows:
+            print(f"  ✅ pdfplumber found {len(rows)} rows")
+        else:
+            print("  ⚠️  pdfplumber found no tables — will try Claude Vision")
+
+    # Stage 3: Claude Vision (last resort for image/scanned PDFs)
+    if not rows:
+        print("\n  Stage 3: Claude Vision extraction...")
+        try:
+            rows = await extract_pdf_activities(pdf_bytes)
+            print(f"  ✅ Claude Vision extracted {len(rows)} rows")
+        except Exception as e:
+            print(f"  ❌ Claude Vision failed: {e}")
+            return
+
+    if not rows:
+        print("  ❌ No rows extracted from PDF — cannot continue")
+        return
+
+    # Stage 4: Structure detection
+    print(f"\n  Stage 4: Structure detection on {len(rows)} rows...")
+    from app.services.ai_service import detect_structure
+    result = await detect_structure(rows)
+    print(f"  completeness_score : {result.completeness_score}")
+    print(f"  activities parsed  : {len(result.activities)}")
+    print(f"  Column Mapping     :")
+    for field, col in result.column_mapping.items():
+        print(f"    {field:20s} → {col}")
+    if result.notes:
+        print(f"  notes              : {result.notes}")
+
+    # Stage 5: Classify first 30 non-summary activities
+    if result.activities:
+        non_summary = [a for a in result.activities if not a.is_summary][:30]
+        print(f"\n  Stage 5: Classifying {len(non_summary)} detail activities (first 30)...")
+        from app.services.ai_service import classify_assets
+        act_dicts = [{"id": a.id, "name": a.name} for a in non_summary]
+        classification = await classify_assets(act_dicts)
+        print(f"  Classified: {len(classification.classifications)}  Skipped (low-conf): {len(classification.skipped)}")
+        print(f"  Asset type breakdown:")
+        asset_counts: dict = {}
+        for c in classification.classifications:
+            asset_counts[c.asset_type] = asset_counts.get(c.asset_type, 0) + 1
+        for k, v in sorted(asset_counts.items(), key=lambda x: -x[1]):
+            print(f"    {k:20s}: {v}")
+        print(f"\n  Sample classifications:")
+        for c in classification.classifications[:15]:
+            icon = {"high": "✅", "medium": "⚡", "low": "⚠️ "}.get(c.confidence, "  ")
+            act_name = next((a.name for a in non_summary if str(a.id) == str(c.activity_id)), c.activity_id)
+            print(f"    {icon} [{c.confidence:6s}] {c.asset_type:15s}  {act_name[:55]}")
+
+
 async def main():
     import argparse
     parser = argparse.ArgumentParser(description="Test the SiteSpace AI service")
-    parser.add_argument("--file", help="Path to CSV or XLSX programme file")
+    parser.add_argument("--file", help="Path to CSV, XLSX, or PDF programme file")
     parser.add_argument("--demo", action="store_true", help="Use built-in demo data")
     parser.add_argument("--classify-only", action="store_true", help="Skip structure, run classification only")
     parser.add_argument("--sub-only", action="store_true", help="Run subcontractor suggestion test only")
@@ -232,12 +335,19 @@ async def main():
             print(f"❌ File not found: {filepath}")
             sys.exit(1)
         ext = filepath.suffix.lower()
+
+        # PDF gets its own dedicated test path
+        if ext == ".pdf":
+            await run_pdf_test(filepath)
+            run_sub_suggestion_test()
+            return
+
         if ext == ".csv":
             rows = load_csv(str(filepath))
         elif ext in (".xlsx", ".xlsm", ".xls"):
             rows = load_xlsx(str(filepath))
         else:
-            print(f"❌ Unsupported file type: {ext}")
+            print(f"❌ Unsupported file type: {ext}. Use .csv, .xlsx, or .pdf")
             sys.exit(1)
         print(f"   File: {filepath.name} ({len(rows)} rows)")
         activities = [

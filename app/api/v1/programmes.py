@@ -43,8 +43,9 @@ ALLOWED_CONTENT_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/csv",
     "text/plain",  # some CSV uploads come through as text/plain
+    "application/pdf",
 }
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".pdf"}
 
 
 def _normalize_role(role: Any) -> str:
@@ -107,8 +108,10 @@ async def upload_programme(
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> dict[str, Any]:
     """
-    Accept a CSV, XLSX, or XLSM programme file. Returns 202 immediately.
-    Processing (AI structure detection → activity import) runs in background.
+    Accept a CSV, XLSX, XLSM, or PDF programme file. Returns 202 immediately.
+    Processing runs in background:
+      CSV/XLSX  → detect_structure → classify_assets
+      PDF       → pdfplumber table extraction → (Claude Vision if no tables found) → detect_structure → classify_assets
     Poll GET /api/programmes/{upload_id}/status for completion.
     """
     _check_project_access(project_id, current_user, db)
@@ -119,7 +122,7 @@ async def upload_programme(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, or XLSM file.",
+            detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, XLSM, or PDF file.",
         )
 
     # Read and store via storage backend (same pattern as site_plans)
