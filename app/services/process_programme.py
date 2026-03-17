@@ -60,14 +60,45 @@ def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
     """
     Quick synchronous parse check — called before the background task is enqueued.
     Returns an error message string if the file is corrupt or empty, None if valid.
-    This ensures corrupt/empty files fail with a hard 422 before the 202 is returned.
+
+    PDFs get a lightweight check (page 1 only) — full parsing takes 30-60s on large
+    Gantt exports and must not block the async event loop. The background task does
+    the real parse. Run this via run_in_executor from async endpoints.
     """
+    name_lower = file_name.lower()
+    if name_lower.endswith(".pdf"):
+        return _preflight_pdf(file_bytes)
+
     rows, error = _parse_file(file_bytes, file_name)
     if error:
         return error
     if not rows:
         return "File contains no data rows."
     return None
+
+
+def _preflight_pdf(file_bytes: bytes) -> str | None:
+    """Check page 1 only — confirms the PDF is readable and has at least one activity row."""
+    import re as _re
+    try:
+        pdfplumber = importlib.import_module("pdfplumber")
+        _RE = _re.compile(
+            r"^(\d{3,6})\s+.+?\s+\d+%\s+\d+\s+days?"
+            r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}/\d{1,2}/\d{2,4}"
+        )
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if not pdf.pages:
+                return "PDF contains no pages."
+            text = pdf.pages[0].extract_text() or ""
+            for line in text.splitlines():
+                if _RE.match(line.strip()):
+                    return None  # found at least one activity row — good enough
+        return (
+            "No schedule activities found on page 1 of PDF. "
+            "Ensure the PDF is a P6 Gantt export with ID, Name, Start, and Finish columns."
+        )
+    except Exception as exc:
+        return f"Could not read PDF: {exc}"
 
 
 def process_programme(upload_id: str) -> None:
@@ -111,29 +142,35 @@ async def _run(upload_id: str, db: Session) -> None:
         _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
         return
 
-    sample = rows[:100]
-
-    # 3. Header hash cache — skip AI if same headers seen before
-    header_hash = _compute_header_hash(sample)
-    with _header_cache_lock:
-        cached = _header_cache.get(header_hash)
-
-    if cached:
-        logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
-        structure = _build_structure_from_cached_mapping(sample, cached)
+    # 3. Detect column structure.
+    #    PDFs bypass AI entirely — the regex parser always outputs fixed columns
+    #    (ID, Name, Start, Finish), so there is nothing to detect.
+    if upload.file_name.lower().endswith(".pdf"):
+        structure = _pdf_structure(rows)
+        logger.info(
+            "PDF upload %s — skipping detect_structure, using pre-determined column mapping (%d activities)",
+            upload_id, len(structure.activities),
+        )
     else:
-        structure = await detect_structure(sample)
+        sample = rows[:100]
+        header_hash = _compute_header_hash(sample)
         with _header_cache_lock:
-            _header_cache[header_hash] = {
-                "column_mapping": dict(structure.column_mapping),
-                # Persist hierarchy-related mapping keys so cache hits can preserve
-                # parent/summary/level/zone metadata when those columns exist.
-                "hierarchy_mapping": {
-                    key: structure.column_mapping[key]
-                    for key in ("parent_id", "is_summary", "level_name", "zone_name")
-                    if key in structure.column_mapping
-                },
-            }
+            cached = _header_cache.get(header_hash)
+
+        if cached:
+            logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
+            structure = _build_structure_from_cached_mapping(sample, cached)
+        else:
+            structure = await detect_structure(sample)
+            with _header_cache_lock:
+                _header_cache[header_hash] = {
+                    "column_mapping": dict(structure.column_mapping),
+                    "hierarchy_mapping": {
+                        key: structure.column_mapping[key]
+                        for key in ("parent_id", "is_summary", "level_name", "zone_name")
+                        if key in structure.column_mapping
+                    },
+                }
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
@@ -147,11 +184,11 @@ async def _run(upload_id: str, db: Session) -> None:
     }
     db.flush()
 
-    # 6. Build activity rows from AI output + remaining rows
-    #    AI analyses first 100 rows and returns the parsed activities array.
-    #    For files > 100 rows, apply column_mapping deterministically to the rest.
+    # 6. Build activity list.
+    #    PDFs: all rows already parsed into ActivityItems by _pdf_structure.
+    #    CSV/XLSX: AI analysed first 100 rows; apply mapping deterministically to the rest.
     ai_activities = structure.activities
-    extra_rows = rows[100:] if len(rows) > 100 else []
+    extra_rows = [] if upload.file_name.lower().endswith(".pdf") else (rows[100:] if len(rows) > 100 else [])
     extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
 
     all_activity_items = ai_activities + extra_activities
@@ -275,6 +312,22 @@ def _insert_activities(
     return len(db_rows), id_map
 
 
+def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
+    """
+    Build a StructureResult directly from PDF rows without calling detect_structure.
+    The PDF regex parser always outputs fixed columns: ID, Name, Start, Finish.
+    """
+    _PDF_MAPPING = {"id": "ID", "name": "Name", "start_date": "Start", "end_date": "Finish"}
+    activities = _apply_mapping(rows, _PDF_MAPPING, start_index=0)
+    return StructureResult(
+        column_mapping=_PDF_MAPPING,
+        activities=activities,
+        completeness_score=90,
+        missing_fields=[],
+        notes="P6 Gantt PDF — column structure pre-determined by parser.",
+    )
+
+
 def _apply_mapping(
     rows: list[dict[str, Any]],
     column_mapping: dict[str, str],
@@ -394,36 +447,46 @@ def _parse_file(
             return result, None
 
         if name_lower.endswith(".pdf"):
+            # P6 Gantt PDFs export as landscape tables where pdfplumber cannot
+            # reliably separate cells — Gantt bar labels bleed into date columns.
+            # Text extraction + regex is far more reliable for this format.
+            import re as _re
             pdfplumber = importlib.import_module("pdfplumber")
+
+            # Matches lines like:
+            #   1028 SITE CLEARANCE 100% 17 daysFri 17/01/25 Sat 8/02/25 SITE CLEARANCE
+            # Duration and start day-of-week are concatenated with no space in P6 exports.
+            _ACTIVITY_RE = _re.compile(
+                r"^(\d{3,6})\s+"                                  # ID
+                r"(.+?)\s+"                                        # Name (non-greedy)
+                r"\d+%\s+"                                         # % Complete (discard)
+                r"\d+\s+days?"                                     # Duration (discard)
+                r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Start DOW (discard)
+                r"(\d{1,2}/\d{1,2}/\d{2,4})\s+"                  # Start date
+                r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Finish DOW (discard)
+                r"(\d{1,2}/\d{1,2}/\d{2,4})",                    # Finish date
+            )
+
             all_rows: list[dict[str, Any]] = []
-            headers: list[str] | None = None
+            seen_ids: set[str] = set()
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
-                    for table in page.extract_tables():
-                        if not table:
-                            continue
-                        if headers is None:
-                            # First table: first row is headers
-                            headers = [
-                                str(h).strip() if h is not None else f"col_{i}"
-                                for i, h in enumerate(table[0])
-                            ]
-                            data_rows = table[1:]
-                        else:
-                            # Subsequent pages: skip repeated header rows, use rest as data
-                            first = [str(c).strip() if c is not None else "" for c in table[0]]
-                            data_rows = table[1:] if first == headers else table
-                        for row in data_rows:
-                            # Collapse multi-line cell values (pdfplumber uses \n for wrapped text)
-                            cells = [
-                                " ".join(str(c).split()) if c is not None else ""
-                                for c in row
-                            ]
-                            all_rows.append(dict(zip(headers, cells, strict=False)))
+                    text = page.extract_text() or ""
+                    for line in text.splitlines():
+                        m = _ACTIVITY_RE.match(line.strip())
+                        if m and m.group(1) not in seen_ids:
+                            seen_ids.add(m.group(1))
+                            all_rows.append({
+                                "ID": m.group(1),
+                                "Name": m.group(2).strip(),
+                                "Start": m.group(3),
+                                "Finish": m.group(4),
+                            })
+
             if not all_rows:
                 return [], (
-                    "No extractable tables found in PDF. "
-                    "Export your schedule as CSV or XLSX for best results."
+                    "No schedule activities found in PDF. "
+                    "Ensure the PDF is a P6 Gantt export with ID, Name, Start, and Finish columns."
                 )
             return all_rows, None
 

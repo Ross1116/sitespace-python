@@ -98,4 +98,10 @@ def get_db():
         db.rollback()
         raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except OperationalError:
+            # Connection already dead (e.g. SSL EOF after a successful commit).
+            # SQLAlchemy invalidates and discards the connection automatically —
+            # swallow the error so it doesn't surface as a false Sentry alert.
+            pass

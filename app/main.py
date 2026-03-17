@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
     if scheduler is not None:
+        # Start first so the job store loads existing jobs from DB,
+        # then add_job with replace_existing=True does an UPDATE not INSERT.
+        scheduler.start()
         hour = settings.NIGHTLY_LOOKAHEAD_HOUR
         minute = settings.NIGHTLY_LOOKAHEAD_MINUTE
         scheduler.add_job(
@@ -91,7 +94,6 @@ async def lifespan(app: FastAPI):
             id="nightly_lookahead_job",
             replace_existing=True,
         )
-        scheduler.start()
     yield
     # Shutdown
     if scheduler is not None and scheduler.running:

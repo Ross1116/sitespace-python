@@ -10,6 +10,7 @@ GET  /api/programmes/{upload_id}/diff         — diff vs previous version
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 import logging
 from typing import Any
@@ -18,7 +19,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
@@ -128,7 +129,8 @@ async def upload_programme(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    parse_error = preflight_validate(file_bytes, filename)
+    loop = asyncio.get_event_loop()
+    parse_error = await loop.run_in_executor(None, preflight_validate, file_bytes, filename)
     if parse_error:
         raise HTTPException(status_code=422, detail=f"File cannot be parsed: {parse_error}")
 
@@ -186,6 +188,23 @@ async def upload_programme(
         raise HTTPException(
             status_code=409,
             detail="Concurrent upload detected. Please retry.",
+        ) from exc
+    except OperationalError as exc:
+        # Transient DB disconnect (e.g. stale connection after slow preflight).
+        # pool_pre_ping can't protect an already-checked-out connection.
+        db.rollback()
+        try:
+            storage.delete(stored_file.storage_path)
+        except Exception as delete_exc:
+            logger.error(
+                "Failed to delete orphaned programme blob after OperationalError path=%s err=%s",
+                stored_file.storage_path,
+                delete_exc,
+            )
+        logger.error("DB operational error persisting upload metadata: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable. Please retry the upload.",
         ) from exc
     except Exception as exc:
         db.rollback()
