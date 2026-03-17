@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+# P6 and common programme day-step prefix stripped before name dedup.
+# Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
+_DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-–—]\s*)+", re.IGNORECASE)
+
+
+def _normalise_for_dedup(name: str) -> str:
+    """Lowercase, strip P6 day-step prefix, collapse whitespace."""
+    norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
+    return re.sub(r"\s{2,}", " ", norm)
+
+
 # ---------------------------------------------------------------------------
 # Allowed asset_type values — Section 2.3 canonical list.
 # BE validates on DB write; AI Dev uses only these values in prompts.
@@ -259,16 +270,39 @@ def _load_prompt(filename: str) -> str:
     return (_PROMPTS_DIR / filename).read_text(encoding="utf-8")
 
 
+# Module-level singleton clients — created once, reused across all calls.
+# Creating a new AsyncOpenAI/AsyncAnthropic per call spawns a new httpx
+# connection pool each time; when many parallel batches complete they all race
+# to close their pools concurrently, producing TCPTransport closed errors and
+# unnecessary 429s from opening too many simultaneous connections.
+_async_client: anthropic.AsyncAnthropic | Any | None = None
+
+
 def _get_async_client() -> anthropic.AsyncAnthropic | Any:
-    """Create a configured async client for the configured AI provider."""
+    """Return the module-level singleton async client for the configured AI provider."""
+    global _async_client
+    if _async_client is not None:
+        return _async_client
+
     if not settings.AI_API_KEY:
         raise ValueError("AI_API_KEY is not configured")
+
     provider = settings.AI_PROVIDER.lower()
     if provider == "openai":
         if _openai_module is None:
             raise ImportError("openai package is not installed — add 'openai' to requirements.txt")
-        return _openai_module.AsyncOpenAI(api_key=settings.AI_API_KEY)
-    return anthropic.AsyncAnthropic(api_key=settings.AI_API_KEY)
+        _async_client = _openai_module.AsyncOpenAI(
+            api_key=settings.AI_API_KEY,
+            max_retries=3,  # built-in exponential back-off for 429/5xx
+        )
+    else:
+        _async_client = anthropic.AsyncAnthropic(
+            api_key=settings.AI_API_KEY,
+            max_retries=3,
+        )
+
+    logger.info("AI async client created (provider=%s)", provider)
+    return _async_client
 
 
 def _is_openai_client(client: Any) -> bool:
@@ -493,7 +527,7 @@ async def _classify_batch(
     client: Any,
 ) -> dict[str, Any]:
     """
-    Send a single batch of up to 100 activities to the configured AI provider for classification.
+    Send a single batch of up to 200 activities to the configured AI provider for classification.
     Returns dict with 'classifications', 'skipped', and 'tokens_used'.
     Hard timeout: settings.AI_TIMEOUT_CLASSIFY seconds.
     """
@@ -640,27 +674,46 @@ async def _classify_assets_real(
         else:
             ai_candidates.append(act)
 
+    # Dedup AI candidates by normalised name: send one representative per unique
+    # name to the AI, then fan the result back to all activities sharing that name.
+    # Eliminates redundant calls for P6 day-step repetitions like
+    # "Day 7 - Commence Bubbledeck install" / "Day 8 - Continue Bubbledeck install".
+    norm_to_rep: dict[str, str] = {}       # normalised_name → representative act_id
+    rep_to_ids: dict[str, list[str]] = {}  # rep_id → all act_ids with same norm name
+    deduped_candidates: list[dict[str, Any]] = []
+
+    for act in ai_candidates:
+        act_id = str(act.get("id", ""))
+        norm = _normalise_for_dedup(str(act.get("name", "")))
+        if norm in norm_to_rep:
+            rep_to_ids[norm_to_rep[norm]].append(act_id)
+        else:
+            norm_to_rep[norm] = act_id
+            rep_to_ids[act_id] = [act_id]
+            deduped_candidates.append(act)
+
     logger.info(
-        "Classification pre-screen: %d keyword-matched, %d for AI (%d total)",
+        "Classification pre-screen: %d keyword-matched, %d AI candidates → %d unique (%d total)",
         len(keyword_matched),
         len(ai_candidates),
+        len(deduped_candidates),
         len(activities),
     )
 
-    # Step 2: Batch remaining through Claude
-    BATCH_SIZE = 100
+    # Step 2: Batch remaining through AI
+    BATCH_SIZE = 200
     all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
     total_tokens = 0
 
-    if ai_candidates:
+    if deduped_candidates:
         batches = [
-            ai_candidates[i:i + BATCH_SIZE]
-            for i in range(0, len(ai_candidates), BATCH_SIZE)
+            deduped_candidates[i:i + BATCH_SIZE]
+            for i in range(0, len(deduped_candidates), BATCH_SIZE)
         ]
         batch_tasks = [_classify_batch(batch, system_prompt, client) for batch in batches]
 
         # Parallel for large volumes, sequential otherwise
-        if len(ai_candidates) >= 500:
+        if len(deduped_candidates) >= 400:
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         else:
             batch_results = []
@@ -679,7 +732,7 @@ async def _classify_assets_real(
                 act_id = str(item.get("activity_id", ""))
                 if act_id:
                     all_ai_results[act_id] = item
-            # Low-confidence items returned by Claude in skipped[]
+            # Low-confidence items returned in skipped[]
             for skipped_id in result.get("skipped", []):
                 sid = str(skipped_id)
                 if sid and sid not in all_ai_results:
@@ -689,6 +742,15 @@ async def _classify_assets_real(
                         "confidence": "low",
                     }
             total_tokens += result.get("tokens_used", 0)
+
+        # Fan-out: copy representative result to all duplicate activities
+        expanded: dict[str, dict[str, Any]] = {}
+        for rep_id, dup_ids in rep_to_ids.items():
+            rep_result = all_ai_results.get(rep_id)
+            if rep_result is not None:
+                for aid in dup_ids:
+                    expanded[aid] = rep_result
+        all_ai_results = expanded
 
     # Step 3: Merge keyword + AI results
     classifications: list[ClassificationItem] = []
