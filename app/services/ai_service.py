@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+try:
+    import openai as _openai_module
+except ImportError:
+    _openai_module = None  # type: ignore[assignment]
 
 from ..core.config import settings
 
@@ -247,11 +251,64 @@ def _load_prompt(filename: str) -> str:
     return (_PROMPTS_DIR / filename).read_text(encoding="utf-8")
 
 
-def _get_async_client() -> anthropic.AsyncAnthropic:
-    """Create a configured Anthropic async client. Raises if API key missing."""
+def _get_async_client() -> anthropic.AsyncAnthropic | Any:
+    """Create a configured async client for the configured AI provider."""
     if not settings.AI_API_KEY:
-        raise ValueError("AI_API_KEY is not configured — cannot make Claude API calls")
+        raise ValueError("AI_API_KEY is not configured")
+    provider = settings.AI_PROVIDER.lower()
+    if provider == "openai":
+        if _openai_module is None:
+            raise ImportError("openai package is not installed — add 'openai' to requirements.txt")
+        return _openai_module.AsyncOpenAI(api_key=settings.AI_API_KEY)
     return anthropic.AsyncAnthropic(api_key=settings.AI_API_KEY)
+
+
+def _is_openai_client(client: Any) -> bool:
+    return _openai_module is not None and isinstance(client, _openai_module.AsyncOpenAI)
+
+
+async def _call_api(
+    client: Any,
+    system_prompt: str,
+    user_message: str,
+    max_tokens: int,
+    timeout: float,
+) -> tuple[str, int]:
+    """
+    Unified async call — returns (text_content, tokens_used) regardless of provider.
+    """
+    if _is_openai_client(client):
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=settings.AI_MODEL,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+            ),
+            timeout=timeout,
+        )
+        content = response.choices[0].message.content if response.choices else None
+        usage = getattr(response, "usage", None)
+        tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
+    else:
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=settings.AI_MODEL,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            ),
+            timeout=timeout,
+        )
+        content = response.content[0].text if response.content else None
+        usage = getattr(response, "usage", None)
+        tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+
+    if not content:
+        raise ValueError("Empty or malformed API response")
+    return content, tokens
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
@@ -381,19 +438,8 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
         f"ROWS:\n{json.dumps(sample, default=str)}"
     )
 
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=settings.AI_MODEL,
-            max_tokens=2048,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-        timeout=float(settings.AI_TIMEOUT_STRUCTURE),
-    )
-
-    if not response.content or not response.content[0].text:
-        raise ValueError("Empty or malformed API response from structure detection")
-    data = _parse_json_response(response.content[0].text)
+    text, _tokens = await _call_api(client, system_prompt, user_message, max_tokens=2048, timeout=float(settings.AI_TIMEOUT_STRUCTURE))
+    data = _parse_json_response(text)
 
     # Extract mapping, dropping null values
     raw_mapping = data.get("column_mapping") or {}
@@ -436,10 +482,10 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
 async def _classify_batch(
     batch: list[dict[str, Any]],
     system_prompt: str,
-    client: anthropic.AsyncAnthropic,
+    client: Any,
 ) -> dict[str, Any]:
     """
-    Send a single batch of up to 100 activities to Claude for classification.
+    Send a single batch of up to 100 activities to the configured AI provider for classification.
     Returns dict with 'classifications', 'skipped', and 'tokens_used'.
     Hard timeout: settings.AI_TIMEOUT_CLASSIFY seconds.
     """
@@ -449,24 +495,8 @@ async def _classify_batch(
         f"ACTIVITIES:\n{json.dumps(batch, ensure_ascii=False)}"
     )
 
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=settings.AI_MODEL,
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-        timeout=float(settings.AI_TIMEOUT_CLASSIFY),
-    )
-
-    if not response.content or not response.content[0].text:
-        raise ValueError("Empty or malformed API response from classification batch")
-    data = _parse_json_response(response.content[0].text)
-    usage = response.usage
-    tokens_used = (
-        (getattr(usage, "input_tokens", None) or 0)
-        + (getattr(usage, "output_tokens", None) or 0)
-    )
+    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=4096, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
+    data = _parse_json_response(text)
 
     return {
         "classifications": list(data.get("classifications") or []),
