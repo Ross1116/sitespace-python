@@ -205,8 +205,8 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     for booking, asset in booking_rows:
         asset_type = (asset.type or "").strip().lower()
         if asset_type not in ALLOWED_ASSET_TYPES:
-            logger.warning("Asset type '%s' is not in allowed set; skipping booking %s", asset.type, booking.id)
-            continue
+            logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", asset.type, booking.id)
+            asset_type = "other"
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue
 
