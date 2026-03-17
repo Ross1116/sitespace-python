@@ -163,10 +163,12 @@ class ClassificationResult:
 
     classifications: high + medium confidence items (auto-committed by BE)
     skipped:         activity_id strings for low-confidence items (not committed)
+    fallback_used:   True when AI was unavailable and keyword-only fallback ran
     """
     classifications: list[ClassificationItem]
     skipped: list[str]
     batch_tokens_used: int = 0
+    fallback_used: bool = False
 
 
 @dataclass
@@ -318,35 +320,56 @@ async def _call_api(
 ) -> tuple[str, int]:
     """
     Unified async call — returns (text_content, tokens_used) regardless of provider.
+
+    Quota/billing errors (OpenAI insufficient_quota, Anthropic credit exhausted) are
+    re-raised immediately as RuntimeError so the SDK's built-in retry loop doesn't
+    waste minutes retrying a permanent billing error.
     """
-    if _is_openai_client(client):
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=settings.AI_MODEL,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-            ),
-            timeout=timeout,
+    try:
+        if _is_openai_client(client):
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=settings.AI_MODEL,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                ),
+                timeout=timeout,
+            )
+            content = response.choices[0].message.content if response.choices else None
+            usage = getattr(response, "usage", None)
+            tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
+        else:
+            response = await asyncio.wait_for(
+                client.messages.create(
+                    model=settings.AI_MODEL,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                ),
+                timeout=timeout,
+            )
+            content = response.content[0].text if response.content else None
+            usage = getattr(response, "usage", None)
+            tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+    except Exception as exc:
+        # Permanent billing/quota errors — skip retries and fail fast.
+        # OpenAI:    RateLimitError with code="insufficient_quota"
+        # Anthropic: APIStatusError with status 400 + "credit balance is too low"
+        err_code = getattr(exc, "code", None) or ""
+        err_body = str(getattr(exc, "message", "") or exc)
+        is_quota = (
+            err_code == "insufficient_quota"
+            or "insufficient_quota" in err_body
+            or "credit balance is too low" in err_body
+            or "exceeded your current quota" in err_body
         )
-        content = response.choices[0].message.content if response.choices else None
-        usage = getattr(response, "usage", None)
-        tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
-    else:
-        response = await asyncio.wait_for(
-            client.messages.create(
-                model=settings.AI_MODEL,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
-            ),
-            timeout=timeout,
-        )
-        content = response.content[0].text if response.content else None
-        usage = getattr(response, "usage", None)
-        tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+        if is_quota:
+            logger.error("AI provider quota/billing limit reached — disabling AI for this request: %s", exc)
+            raise RuntimeError(f"AI quota exhausted: {exc}") from exc
+        raise
 
     if not content:
         raise ValueError("Empty or malformed API response")
@@ -1063,4 +1086,5 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         classifications=classifications,
         skipped=skipped,
         batch_tokens_used=0,
+        fallback_used=True,
     )

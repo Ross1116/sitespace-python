@@ -238,6 +238,15 @@ async def _run(upload_id: str, db: Session) -> None:
 
     try:
         classification = await classify_assets(activity_dicts, project_assets=project_assets or None)
+        if classification.fallback_used and activity_dicts:
+            # AI was unavailable — stamp a visible warning into completeness_notes
+            # so the status poll response surfaces it on the frontend.
+            notes_dict = dict(upload.completeness_notes or {})
+            existing = str(notes_dict.get("notes") or "")
+            warning = "AI classification unavailable — asset demand forecast may be incomplete. Re-upload once the AI service is restored."
+            notes_dict["notes"] = f"{existing} | {warning}" if existing else warning
+            notes_dict["ai_classification_fallback"] = True
+            upload.completeness_notes = notes_dict
         try:
             with db.begin_nested():
                 _write_classifications(classification, db)
