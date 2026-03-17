@@ -34,11 +34,11 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
+from ..models.asset import Asset
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..utils.storage import storage
 from .ai_service import (
-    ALLOWED_ASSET_TYPES,
     ActivityItem,
     ClassificationResult,
     StructureResult,
@@ -210,8 +210,34 @@ async def _run(upload_id: str, db: Session) -> None:
         )
         if real_id is not None
     ]
+
+    # Fetch the project's registered assets so the AI classifies against what
+    # is actually on site rather than a hardcoded generic list.
+    project_assets: list[dict] = []
     try:
-        classification = await classify_assets(activity_dicts)
+        db_assets = (
+            db.query(Asset)
+            .filter(Asset.project_id == upload.project_id)
+            .all()
+        )
+        project_assets = [
+            {"name": a.name, "type": a.type or "", "code": a.asset_code}
+            for a in db_assets
+        ]
+        logger.info(
+            "Loaded %d project assets for classification (project %s)",
+            len(project_assets),
+            upload.project_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load project assets for classification (project %s): %s — using generic prompt",
+            upload.project_id,
+            exc,
+        )
+
+    try:
+        classification = await classify_assets(activity_dicts, project_assets=project_assets or None)
         try:
             with db.begin_nested():
                 _write_classifications(classification, db)
@@ -621,10 +647,9 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
     suggestion_rows: list[AISuggestionLog] = []
 
     for item in classification.classifications:
-        if item.asset_type not in ALLOWED_ASSET_TYPES:
+        if not item.asset_type or item.asset_type == "none":
             logger.warning(
-                "Skipping invalid classification asset_type='%s' for activity=%s",
-                item.asset_type,
+                "Skipping none/empty asset_type for activity=%s",
                 item.activity_id,
             )
             continue

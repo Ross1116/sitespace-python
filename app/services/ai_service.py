@@ -194,10 +194,18 @@ async def detect_structure(rows: list[dict[str, Any]]) -> StructureResult:
         return _detect_structure_fallback(rows)
 
 
-async def classify_assets(activities: list[dict[str, Any]]) -> ClassificationResult:
+async def classify_assets(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Classify a batch of activities by asset type.
     Returns high + medium in classifications[], low-confidence in skipped[].
+
+    project_assets: list of {"name": str, "type": str, "code": str} dicts for
+    assets actually registered on this project.  When provided the AI prompt
+    and keyword pre-screen are scoped to those assets rather than the generic
+    hardcoded list.
 
     Falls back to keyword-only classification if AI is disabled or fails.
     Never raises.
@@ -207,7 +215,7 @@ async def classify_assets(activities: list[dict[str, Any]]) -> ClassificationRes
         return _classify_assets_fallback(activities)
 
     try:
-        return await _classify_assets_real(activities)
+        return await _classify_assets_real(activities, project_assets=project_assets)
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
         return _classify_assets_fallback(activities)
@@ -505,7 +513,89 @@ async def _classify_batch(
     }
 
 
-async def _classify_assets_real(activities: list[dict[str, Any]]) -> ClassificationResult:
+def _build_classification_prompt(
+    project_assets: list[dict[str, Any]] | None,
+) -> tuple[str, frozenset[str]]:
+    """
+    Build the system prompt and valid-type set for asset classification.
+
+    When project_assets are provided the base prompt's "ALLOWED ASSET TYPES"
+    block is replaced with the project's actual registered assets so the AI
+    classifies against what is on site.
+
+    Returns (system_prompt, valid_types_frozenset).
+    """
+    base_prompt = _load_prompt("asset_classification.txt")
+
+    if not project_assets:
+        return base_prompt, ALLOWED_ASSET_TYPES
+
+    # Normalise: deduplicate by (name, type) and build canonical type strings.
+    # Type is the raw DB string (e.g. "Tower Crane", "EWP", "EQUIPMENT"); we
+    # normalise to lowercase for matching but show the originals in the prompt.
+    seen: set[tuple[str, str]] = set()
+    asset_lines: list[str] = []
+    valid_types: set[str] = set()
+
+    for a in project_assets:
+        raw_name = str(a.get("name") or "").strip()
+        raw_type = str(a.get("type") or "").strip()
+        code = str(a.get("code") or "").strip()
+        if not raw_name:
+            continue
+        key = (raw_name.lower(), raw_type.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        type_norm = raw_type.lower().replace(" ", "_") if raw_type else "other"
+        valid_types.add(type_norm)
+
+        label = f"- {raw_name}"
+        if raw_type:
+            label += f" (type: {raw_type})"
+        if code:
+            label += f" [code: {code}]"
+        asset_lines.append(label)
+
+    # Always keep "none" as a valid type for milestone/summary rows.
+    valid_types.add("none")
+    valid_types_frozen = frozenset(valid_types)
+
+    # Replace the hardcoded ALLOWED ASSET TYPES section in the base prompt.
+    asset_block = (
+        "REGISTERED ASSETS ON THIS PROJECT (classify activities against THESE assets only):\n"
+        + "\n".join(asset_lines)
+        + "\n\n"
+        "For each activity return the asset name exactly as listed above in the "
+        "\"asset_type\" field (normalised: lowercase, spaces → underscores).\n"
+        "Use \"none\" for milestones/summaries or activities that need no bookable asset.\n"
+        "Use \"other\" only if the activity clearly needs a physical asset not in the list above."
+    )
+
+    # Locate and replace the ALLOWED ASSET TYPES block (between the first
+    # "ALLOWED ASSET TYPES" line and the next blank line after the list).
+    import re as _re_local
+    replacement_prompt = _re_local.sub(
+        r"ALLOWED ASSET TYPES \(use ONLY these exact strings\):.*?(?=\nCONFIDENCE TIERS:)",
+        asset_block + "\n\n",
+        base_prompt,
+        flags=_re_local.DOTALL,
+    )
+
+    logger.debug(
+        "Built dynamic classification prompt with %d project assets, %d valid types",
+        len(asset_lines),
+        len(valid_types_frozen),
+    )
+
+    return replacement_prompt, valid_types_frozen
+
+
+async def _classify_assets_real(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Classify activities via keyword pre-screening + Claude batched calls.
 
@@ -524,9 +614,11 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         return ClassificationResult(classifications=[], skipped=[], batch_tokens_used=0)
 
     client = _get_async_client()
-    system_prompt = _load_prompt("asset_classification.txt")
+    system_prompt, valid_types = _build_classification_prompt(project_assets)
 
     # Step 1: Keyword pre-screening
+    # When project assets are provided, restrict keyword hits to types that
+    # actually exist in this project (normalised).
     keyword_matched: dict[str, str] = {}   # activity_id → asset_type
     ai_candidates: list[dict[str, Any]] = []
 
@@ -537,6 +629,9 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         matched_type: str | None = None
         for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name_lower:
+                # Only accept keyword hit if that type exists on this project
+                if project_assets and asset_type not in valid_types:
+                    continue
                 matched_type = asset_type
                 break
 
@@ -613,7 +708,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
             ai_type = ai_result.get("asset_type")
             ai_confidence = str(ai_result.get("confidence") or "medium").lower()
 
-            if ai_type == keyword_type and ai_type in ALLOWED_ASSET_TYPES:
+            if ai_type == keyword_type and ai_type in valid_types:
                 # Both agree — highest confidence
                 classifications.append(ClassificationItem(
                     activity_id=act_id,
@@ -622,7 +717,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
                     source="keyword_boost",
                     reasoning=ai_result.get("reasoning"),
                 ))
-            elif ai_type and ai_type in ALLOWED_ASSET_TYPES and ai_type != "none":
+            elif ai_type and ai_type in valid_types and ai_type != "none":
                 if ai_confidence == "low":
                     # Low-confidence AI disagreement: trust the keyword
                     classifications.append(ClassificationItem(
@@ -662,7 +757,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
             ai_type = ai_result.get("asset_type")
             ai_confidence = str(ai_result.get("confidence") or "medium").lower()
 
-            if not ai_type or ai_type == "none" or ai_type not in ALLOWED_ASSET_TYPES:
+            if not ai_type or ai_type == "none" or ai_type not in valid_types:
                 skipped.append(act_id)
             elif ai_confidence == "low":
                 skipped.append(act_id)
