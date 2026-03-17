@@ -71,11 +71,15 @@ class Settings(BaseSettings):
     AI_MODEL: str = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_ENABLED: bool = os.getenv("AI_ENABLED", "True").strip().lower() in ("true", "1", "yes", "on")
     AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "15"))
-    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "30"))
+    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "3"))
 
     # Scheduler
+    # NIGHTLY_LOOKAHEAD_HOUR / MINUTE: 24-h local time for the nightly job.
+    # NIGHTLY_LOOKAHEAD_TIMEZONE: IANA timezone for the cron trigger (handles DST
+    #   and allows per-environment overrides, e.g. UTC for staging).
     NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "17"))
     NIGHTLY_LOOKAHEAD_MINUTE: int = int(os.getenv("NIGHTLY_LOOKAHEAD_MINUTE", "0"))
+    NIGHTLY_LOOKAHEAD_TIMEZONE: str = os.getenv("NIGHTLY_LOOKAHEAD_TIMEZONE", "Australia/Adelaide")
 
     class Config:
         env_file = ".env"

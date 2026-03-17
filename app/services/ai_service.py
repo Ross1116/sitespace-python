@@ -40,7 +40,8 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 # P6 and common programme day-step prefix stripped before name dedup.
 # Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
-_DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-–—]\s*)+", re.IGNORECASE)
+# Character class explicitly covers hyphen, en-dash (U+2013), and em-dash (U+2014).
+_DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORECASE)
 
 
 def _normalise_for_dedup(name: str) -> str:
@@ -570,22 +571,45 @@ async def _classify_batch(
     }
 
 
+_DEFAULT_ASSET_TYPES_BLOCK = (
+    "ALLOWED ASSET TYPES (use ONLY these exact strings):\n"
+    "  - crane          → Tower crane, mobile crane, luffing crane, pick-and-carry\n"
+    "  - hoist          → Builder's hoist, personnel/materials hoist, construction lift\n"
+    "  - loading_bay    → Dedicated loading bay / unloading zone at building perimeter\n"
+    "  - ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom\n"
+    "  - concrete_pump  → Boom pump, line pump, concrete kibble\n"
+    "  - excavator      → Excavator, backhoe, mini excavator\n"
+    "  - forklift       → Forklift, rough terrain forklift (dedicated forklift only)\n"
+    "  - telehandler    → Telehandler, reach forklift, telescopic handler\n"
+    "  - compactor      → Plate compactor, roller, vibrating compactor\n"
+    "  - other          → Any asset need that doesn't fit above\n"
+    "  - none           → Activity genuinely requires no bookable site asset"
+)
+
+
 def _build_classification_prompt(
     project_assets: list[dict[str, Any]] | None,
 ) -> tuple[str, frozenset[str]]:
     """
     Build the system prompt and valid-type set for asset classification.
 
-    When project_assets are provided the base prompt's "ALLOWED ASSET TYPES"
-    block is replaced with the project's actual registered assets so the AI
-    classifies against what is on site.
+    When project_assets are provided the {{ASSET_TYPES_BLOCK}} placeholder in
+    the base prompt is replaced with the project's registered assets so the AI
+    classifies against what is actually on site.
 
     Returns (system_prompt, valid_types_frozenset).
     """
     base_prompt = _load_prompt("asset_classification.txt")
 
+    if "{{ASSET_TYPES_BLOCK}}" not in base_prompt:
+        logger.warning(
+            "asset_classification.txt is missing {{ASSET_TYPES_BLOCK}} placeholder — "
+            "falling back to default asset types block"
+        )
+        base_prompt = base_prompt + "\n\n" + _DEFAULT_ASSET_TYPES_BLOCK
+
     if not project_assets:
-        return base_prompt, ALLOWED_ASSET_TYPES
+        return base_prompt.replace("{{ASSET_TYPES_BLOCK}}", _DEFAULT_ASSET_TYPES_BLOCK), ALLOWED_ASSET_TYPES
 
     # Normalise: deduplicate by (name, type) and build canonical type strings.
     # Type is the raw DB string (e.g. "Tower Crane", "EWP", "EQUIPMENT"); we
@@ -619,7 +643,6 @@ def _build_classification_prompt(
     valid_types.add("none")
     valid_types_frozen = frozenset(valid_types)
 
-    # Replace the hardcoded ALLOWED ASSET TYPES section in the base prompt.
     asset_block = (
         "REGISTERED ASSETS ON THIS PROJECT (classify activities against THESE assets only):\n"
         + "\n".join(asset_lines)
@@ -630,15 +653,7 @@ def _build_classification_prompt(
         "Use \"other\" only if the activity clearly needs a physical asset not in the list above."
     )
 
-    # Locate and replace the ALLOWED ASSET TYPES block (between the first
-    # "ALLOWED ASSET TYPES" line and the next blank line after the list).
-    import re as _re_local
-    replacement_prompt = _re_local.sub(
-        r"ALLOWED ASSET TYPES \(use ONLY these exact strings\):.*?(?=\nCONFIDENCE TIERS:)",
-        asset_block + "\n\n",
-        base_prompt,
-        flags=_re_local.DOTALL,
-    )
+    prompt = base_prompt.replace("{{ASSET_TYPES_BLOCK}}", asset_block)
 
     logger.debug(
         "Built dynamic classification prompt with %d project assets, %d valid types",
@@ -646,7 +661,7 @@ def _build_classification_prompt(
         len(valid_types_frozen),
     )
 
-    return replacement_prompt, valid_types_frozen
+    return prompt, valid_types_frozen
 
 
 async def _classify_assets_real(
@@ -735,9 +750,20 @@ async def _classify_assets_real(
         ]
         batch_tasks = [_classify_batch(batch, system_prompt, client) for batch in batches]
 
-        # Parallel for large volumes, sequential otherwise
+        # Parallel for large volumes (bounded concurrency), sequential otherwise.
+        # The semaphore prevents multiplying long per-batch timeouts into
+        # unbounded in-flight requests when many batches are fanned out at once.
         if len(deduped_candidates) >= 400:
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            _sem = asyncio.Semaphore(4)
+
+            async def _bounded(task: asyncio.Task) -> Any:
+                async with _sem:
+                    return await task
+
+            batch_results = await asyncio.gather(
+                *[_bounded(t) for t in batch_tasks],
+                return_exceptions=True,
+            )
         else:
             batch_results = []
             for task in batch_tasks:
@@ -869,6 +895,7 @@ async def _classify_assets_real(
         classifications=classifications,
         skipped=skipped,
         batch_tokens_used=total_tokens,
+        fallback_used=False,
     )
 
 
@@ -890,10 +917,17 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
     if specialty in TRADE_TO_ASSET_TYPES:
         return list(TRADE_TO_ASSET_TYPES[specialty])
 
-    # Substring: specialty contains a key or a key contains specialty
-    for key, types in TRADE_TO_ASSET_TYPES.items():
-        if key in specialty or specialty in key:
-            return list(types)
+    # Substring: specialty contains a key or a key contains specialty.
+    # Pick the longest (most specific) matching key to avoid wrong matches
+    # when similar keys exist (e.g. "crane" vs "tower crane").
+    substring_matches = [
+        (key, types)
+        for key, types in TRADE_TO_ASSET_TYPES.items()
+        if key in specialty or specialty in key
+    ]
+    if substring_matches:
+        best_key, best_types = max(substring_matches, key=lambda kv: len(kv[0]))
+        return list(best_types)
 
     # Word-level: any shared word
     specialty_words = set(specialty.split())

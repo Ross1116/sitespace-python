@@ -163,14 +163,7 @@ async def _run(upload_id: str, db: Session) -> None:
         else:
             structure = await detect_structure(sample)
             with _header_cache_lock:
-                _header_cache[header_hash] = {
-                    "column_mapping": dict(structure.column_mapping),
-                    "hierarchy_mapping": {
-                        key: structure.column_mapping[key]
-                        for key in ("parent_id", "is_summary", "level_name", "zone_name")
-                        if key in structure.column_mapping
-                    },
-                }
+                _header_cache[header_hash] = {"column_mapping": dict(structure.column_mapping)}
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
@@ -549,10 +542,8 @@ def _build_structure_from_cached_mapping(
     recalculated for each upload to avoid cross-file contamination.
     """
     column_mapping = dict(cached_structure.get("column_mapping", {}))
-    hierarchy_mapping = dict(cached_structure.get("hierarchy_mapping", {}))
-    merged_mapping = {**column_mapping, **hierarchy_mapping}
 
-    activities = _apply_mapping(rows, merged_mapping, start_index=0)
+    activities = _apply_mapping(rows, column_mapping, start_index=0)
     total_rows = len(rows)
     dated_rows = 0
     for item in activities:
@@ -563,11 +554,11 @@ def _build_structure_from_cached_mapping(
     missing_fields = [
         field_name
         for field_name in ("name", "start_date", "end_date")
-        if field_name not in merged_mapping
+        if field_name not in column_mapping
     ]
 
     return StructureResult(
-        column_mapping=dict(column_mapping),
+        column_mapping=column_mapping,
         activities=activities,
         completeness_score=completeness,
         missing_fields=missing_fields,

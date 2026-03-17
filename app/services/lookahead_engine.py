@@ -202,10 +202,20 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     )
 
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
+    _warned_unknown_types: set[str] = set()
     for booking, asset in booking_rows:
         asset_type = (asset.type or "").strip().lower()
         if asset_type not in ALLOWED_ASSET_TYPES:
-            logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", asset.type, booking.id)
+            if len(_warned_unknown_types) < 5 and asset_type not in _warned_unknown_types:
+                logger.warning(
+                    "Asset type '%s' not in allowed set; bucketing as 'other' (booking %s). "
+                    "Check asset configuration.",
+                    asset.type,
+                    booking.id,
+                )
+                _warned_unknown_types.add(asset_type)
+            else:
+                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", asset.type, booking.id)
             asset_type = "other"
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue

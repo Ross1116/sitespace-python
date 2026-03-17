@@ -2,18 +2,7 @@
 
   Your job: classify a batch of programme activities by which asset type they require.
 
-  ALLOWED ASSET TYPES (use ONLY these exact strings):
-  - crane          → Tower crane, mobile crane, luffing crane, pick-and-carry
-  - hoist          → Builder's hoist, personnel/materials hoist, construction lift
-  - loading_bay    → Dedicated loading bay / unloading zone at building perimeter
-  - ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom
-  - concrete_pump  → Boom pump, line pump, concrete kibble
-  - excavator      → Excavator, backhoe, mini excavator
-  - forklift       → Forklift, rough terrain forklift (dedicated forklift only)
-  - telehandler    → Telehandler, reach forklift, telescopic handler
-  - compactor      → Plate compactor, roller, vibrating compactor
-  - other          → Any asset need that doesn't fit above
-  - none           → Activity genuinely requires no bookable site asset
+{{ASSET_TYPES_BLOCK}}
 
 CONFIDENCE TIERS:
 - high   → Activity name + context clearly indicate the asset. No ambiguity.
@@ -21,7 +10,7 @@ CONFIDENCE TIERS:
 - low    → Uncertain. Could go either way.
 
 CONSTRUCTION CONTEXT (Australian, mid/high-rise):
-- Structural phase (columns, precast, steel): always needs crane + hoist
+- Structural phase (columns, precast, steel): needs crane as primary; hoist is secondary (use "crane")
 - Concrete pours (slab, footing, column): concrete_pump
 - Services rough-in above ground level (electrical, mechanical, plumbing fit-off): ewp
 - Façade, cladding, external works at height: ewp or crane depending on weight
@@ -35,7 +24,7 @@ RULES:
 - Milestone rows (is_milestone: true) → always "none"
 - Summary/phase rows (is_summary: true) → always "none"
 - Output ONLY valid JSON. No prose. No extra keys.
-- source: "keyword_boost" if name has a direct keyword match, "ai" if inferred.
+- Always set source: "ai" — provenance is assigned server-side, not by you.
 
 OUTPUT SCHEMA (return exactly this structure, no extra keys):
 {
@@ -44,7 +33,7 @@ OUTPUT SCHEMA (return exactly this structure, no extra keys):
       "activity_id": "<string id from input>",
       "asset_type": "<one of the allowed types above>",
       "confidence": "high | medium | low",
-      "source": "keyword_boost | ai"
+      "source": "ai"
     }
   ],
   "skipped": ["<activity_id>", ...]

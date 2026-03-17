@@ -113,9 +113,9 @@ async def upload_programme(
     Processing (AI structure detection → activity import) runs in background.
     Poll GET /api/programmes/{upload_id}/status for completion.
     """
-    _check_project_access(project_id, current_user, db)
-
-    # Validate file extension
+    # Validate file extension and run preflight before acquiring a DB connection.
+    # This way a bad/unsupported file fails fast without holding a pool connection
+    # during the (potentially slow) parse step.
     filename = file.filename or ""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -124,7 +124,6 @@ async def upload_programme(
             detail=f"Unsupported file type '{ext}'. Upload a CSV, XLSX, XLSM, or PDF file.",
         )
 
-    # Read and store via storage backend (same pattern as site_plans)
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
@@ -133,6 +132,9 @@ async def upload_programme(
     parse_error = await loop.run_in_executor(None, preflight_validate, file_bytes, filename)
     if parse_error:
         raise HTTPException(status_code=422, detail=f"File cannot be parsed: {parse_error}")
+
+    # File is valid — now check project access (acquires DB connection).
+    _check_project_access(project_id, current_user, db)
 
     try:
         storage_path = await storage.save(file_bytes, filename)
@@ -482,12 +484,9 @@ def delete_programme_upload(
 
     stored_file = upload.file
     storage_path = stored_file.storage_path if stored_file else None
-    db.delete(upload)
-    db.flush()
-    if stored_file:
-        db.delete(stored_file)
-    db.commit()
 
+    # Attempt blob deletion before committing the DB removal so an orphaned
+    # blob is never silently left behind after a successful DB commit.
     if storage_path:
         try:
             deleted = storage.delete(storage_path)
@@ -499,10 +498,16 @@ def delete_programme_upload(
                 )
         except Exception:
             logger.warning(
-                "Could not delete blob for upload %s at path %s",
+                "Could not delete blob for upload %s at path %s — proceeding with DB removal",
                 upload_id,
                 storage_path,
             )
+
+    db.delete(upload)
+    db.flush()
+    if stored_file:
+        db.delete(stored_file)
+    db.commit()
 
 
 # ---------------------------------------------------------------------------

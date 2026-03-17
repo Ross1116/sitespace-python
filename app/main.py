@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
             trigger="cron",
             hour=hour,
             minute=minute,
-            timezone="Australia/Adelaide",
+            timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
             id="nightly_lookahead_job",
             replace_existing=True,
         )
