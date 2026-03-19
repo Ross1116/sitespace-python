@@ -161,13 +161,29 @@ async def _run(upload_id: str, db: Session) -> None:
         return
 
     # 3. Detect column structure.
-    #    PDFs bypass AI entirely — the regex parser always outputs fixed columns
-    #    (ID, Name, Start, Finish), so there is nothing to detect.
-    if _file_name.lower().endswith(".pdf"):
-        structure = _pdf_structure(rows)
+    is_pdf = _file_name.lower().endswith(".pdf")
+    if is_pdf:
+        # PDFs have fixed columns (ID, Name, Start, Finish) — pre-build the
+        # activities from the known mapping, then let Claude score data quality.
+        pdf_result = _pdf_structure(rows)
+        try:
+            ai_score = await detect_structure(rows[:100])
+            score = min(ai_score.completeness_score, 90)
+        except Exception:
+            logger.warning("PDF upload %s — AI scoring failed, falling back to row-based score", upload_id)
+            total = len(pdf_result.activities)
+            dated = sum(1 for a in pdf_result.activities if a.start and a.finish)
+            score = int((dated / total) * 90) if total > 0 else 0
+        structure = StructureResult(
+            column_mapping=pdf_result.column_mapping,
+            activities=pdf_result.activities,
+            completeness_score=score,
+            missing_fields=pdf_result.missing_fields,
+            notes=pdf_result.notes,
+        )
         logger.info(
-            "PDF upload %s — skipping detect_structure, using pre-determined column mapping (%d activities)",
-            upload_id, len(structure.activities),
+            "PDF upload %s — pre-determined column mapping, AI-scored completeness %d%% (%d activities)",
+            upload_id, score, len(structure.activities),
         )
     else:
         sample = rows[:100]
@@ -425,10 +441,13 @@ def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
     """
     _PDF_MAPPING = {"id": "ID", "name": "Name", "start_date": "Start", "end_date": "Finish"}
     activities = _apply_mapping(rows, _PDF_MAPPING, start_index=0)
+    total = len(activities)
+    dated = sum(1 for a in activities if a.start and a.finish)
+    score = int((dated / total) * 90) if total > 0 else 0
     return StructureResult(
         column_mapping=_PDF_MAPPING,
         activities=activities,
-        completeness_score=90,
+        completeness_score=score,
         missing_fields=[],
         notes="P6 Gantt PDF — column structure pre-determined by parser.",
     )
