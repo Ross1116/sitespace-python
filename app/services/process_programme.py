@@ -46,6 +46,7 @@ from .ai_service import (
     detect_structure,
     suggest_subcontractor_asset_types,
 )
+from .lookahead_engine import calculate_lookahead_for_project
 
 logger = logging.getLogger(__name__)
 SAFE_FAILURE_REASON = "processing_failed"
@@ -345,6 +346,14 @@ async def _run(upload_id: str, db: Session) -> None:
         inserted_rows,
         completeness_float * 100,
     )
+
+    # Refresh the lookahead snapshot immediately so the dashboard reflects this
+    # upload without waiting for the nightly job.
+    try:
+        calculate_lookahead_for_project(uuid.UUID(_project_id), db)
+        logger.info("Lookahead snapshot refreshed for project %s", _project_id)
+    except Exception:
+        logger.warning("Lookahead snapshot refresh failed for project %s — nightly job will catch up", _project_id)
 
 
 def _insert_activities(
