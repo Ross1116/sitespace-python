@@ -249,6 +249,22 @@ async def _run(upload_id: str, db: Session) -> None:
                 upload_id,
                 exc,
             )
+            # A connection-level error (e.g. SSL EOF) inside begin_nested() leaves
+            # the session in PendingRollback state.  db.is_active is False in that
+            # case.  We must rollback fully before any further DB work; and because
+            # the outer transaction (activities) was on the same dead connection it
+            # is also gone, so we cannot commit as "committed".
+            if not db.is_active:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                _mark_failed_as_committed(
+                    upload_id,
+                    db,
+                    "DB connection lost during classification persistence — re-upload to retry.",
+                )
+                return
     except Exception as exc:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
@@ -264,6 +280,17 @@ async def _run(upload_id: str, db: Session) -> None:
             upload_id,
             exc,
         )
+        if not db.is_active:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            _mark_failed_as_committed(
+                upload_id,
+                db,
+                "DB connection lost during subcontractor assignment — re-upload to retry.",
+            )
+            return
 
     # 10. Mark committed
     upload.status = "committed"

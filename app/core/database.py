@@ -46,13 +46,27 @@ def create_database_engine():
         engine = create_engine(
             settings.database_url,
             pool_pre_ping=True,
-            pool_recycle=1800,
+            # Recycle connections every 5 minutes so Railway's LB (which drops
+            # idle TCP connections around that mark) never silently kills them
+            # before we can detect the stale state via pool_pre_ping.
+            pool_recycle=300,
             pool_timeout=30,
-            pool_size=20,
-            max_overflow=40,
+            # Smaller pool: Railway hobby/starter plans cap at ~25 connections;
+            # 10 base + 20 overflow leaves headroom for the nightly job and
+            # concurrent uploads without exhausting the server limit.
+            pool_size=10,
+            max_overflow=20,
             connect_args={
                 "connect_timeout": connect_timeout,
-                "application_name": "sitespace-api"
+                "application_name": "sitespace-api",
+                # TCP keepalives: OS will probe the connection after 60s idle,
+                # retry every 10s, and declare it dead after 5 failures (110s).
+                # This surfaces broken connections before pool_pre_ping ever
+                # gets a chance to recycle them.
+                "keepalives": 1,
+                "keepalives_idle": 60,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
             },
             echo=False  # Set to True for SQL debugging
         )
