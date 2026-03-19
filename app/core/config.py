@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     AI_MODEL: str = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_ENABLED: bool = os.getenv("AI_ENABLED", "True").strip().lower() in ("true", "1", "yes", "on")
     AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "15"))
-    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "3"))
+    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "20"))
 
     # Scheduler
     # NIGHTLY_LOOKAHEAD_HOUR / MINUTE: 24-h local time for the nightly job.

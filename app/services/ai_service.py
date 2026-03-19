@@ -545,13 +545,31 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
     )
 
 
+def _extract_partial_classifications(text: str) -> list[dict[str, Any]]:
+    """
+    Last-resort extraction: pull out any syntactically complete classification
+    objects from a truncated response.  Matches objects that have all four
+    required fields (activity_id, asset_type, confidence, source) in any order.
+    """
+    pattern = re.compile(
+        r'\{\s*'
+        r'"activity_id"\s*:\s*"(?P<activity_id>[^"]+)"\s*,\s*'
+        r'"asset_type"\s*:\s*"(?P<asset_type>[^"]+)"\s*,\s*'
+        r'"confidence"\s*:\s*"(?P<confidence>[^"]+)"\s*,\s*'
+        r'"source"\s*:\s*"(?P<source>[^"]+)"\s*'
+        r'\}',
+        re.DOTALL,
+    )
+    return [m.groupdict() for m in pattern.finditer(text)]
+
+
 async def _classify_batch(
     batch: list[dict[str, Any]],
     system_prompt: str,
     client: Any,
 ) -> dict[str, Any]:
     """
-    Send a single batch of up to 200 activities to the configured AI provider for classification.
+    Send a single batch of up to 50 activities to the configured AI provider for classification.
     Returns dict with 'classifications', 'skipped', and 'tokens_used'.
     Hard timeout: settings.AI_TIMEOUT_CLASSIFY seconds.
     """
@@ -561,14 +579,27 @@ async def _classify_batch(
         f"ACTIVITIES:\n{json.dumps(batch, ensure_ascii=False)}"
     )
 
-    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=4096, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
-    data = _parse_json_response(text)
-
-    return {
-        "classifications": list(data.get("classifications") or []),
-        "skipped": list(data.get("skipped") or []),
-        "tokens_used": tokens_used,
-    }
+    # Each activity produces ~30 output tokens (UUID + asset_type + confidence + source).
+    # 50-activity batches → ~1,500 tokens + JSON overhead; 8192 gives a safe 5× headroom.
+    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=8192, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
+    try:
+        data = _parse_json_response(text)
+        return {
+            "classifications": list(data.get("classifications") or []),
+            "skipped": list(data.get("skipped") or []),
+            "tokens_used": tokens_used,
+        }
+    except ValueError:
+        # Response was truncated or malformed — attempt field-by-field rescue
+        partial = _extract_partial_classifications(text)
+        if partial:
+            logger.warning(
+                "Batch response truncated — rescued %d/%d classifications via partial extraction",
+                len(partial),
+                len(batch),
+            )
+            return {"classifications": partial, "skipped": [], "tokens_used": tokens_used}
+        raise
 
 
 _DEFAULT_ASSET_TYPES_BLOCK = (
@@ -739,7 +770,9 @@ async def _classify_assets_real(
     )
 
     # Step 2: Batch remaining through AI
-    BATCH_SIZE = 200
+    # 50 activities × ~30 output tokens each = ~1,500 tokens per batch, well
+    # within the 8192 max_tokens ceiling even when all activities need a skipped[].
+    BATCH_SIZE = 50
     all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
     total_tokens = 0
 
@@ -753,7 +786,8 @@ async def _classify_assets_real(
         # Parallel for large volumes (bounded concurrency), sequential otherwise.
         # The semaphore prevents multiplying long per-batch timeouts into
         # unbounded in-flight requests when many batches are fanned out at once.
-        if len(deduped_candidates) >= 400:
+        # Threshold: >2 batches (>100 unique candidates) goes parallel.
+        if len(deduped_candidates) > 100:
             _sem = asyncio.Semaphore(4)
 
             async def _bounded(task: asyncio.Task) -> Any:
