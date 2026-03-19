@@ -251,6 +251,12 @@ async def _run(upload_id: str, db: Session) -> None:
             exc,
         )
 
+    # Commit all writes so far (upload metadata + activities) before releasing the
+    # connection. db.close() without a prior commit would roll back the transaction,
+    # leaving the activity rows absent from the DB — causing FK violations when
+    # activity_asset_mappings are inserted after classification.
+    db.commit()
+
     # Release connection again before AI classification — large programmes run
     # many batches in parallel and the idle window can reach 60+ seconds.
     # upload is re-fetched below before any further writes.
