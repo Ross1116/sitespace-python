@@ -858,6 +858,7 @@ def _assign_subcontractor_suggestions(
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             ActivityAssetMapping.auto_committed.is_(True),
+            ActivityAssetMapping.manually_corrected.is_(False),
             ActivityAssetMapping.asset_type.isnot(None),
             ActivityAssetMapping.subcontractor_id.is_(None),
         )

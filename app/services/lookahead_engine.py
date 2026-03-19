@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.asset import Asset
@@ -429,7 +429,12 @@ def get_sub_asset_suggestions_for_project(
       }
     ]
     """
-    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
     if not project or not project.subcontractors:
         return []
 

@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import threading
+
 import anthropic
 try:
     import openai as _openai_module
@@ -353,6 +355,7 @@ def _load_prompt(filename: str) -> str:
 # to close their pools concurrently, producing TCPTransport closed errors and
 # unnecessary 429s from opening too many simultaneous connections.
 _async_client: anthropic.AsyncAnthropic | Any | None = None
+_async_client_lock = threading.Lock()
 
 
 def _get_async_client() -> anthropic.AsyncAnthropic | Any:
@@ -361,25 +364,30 @@ def _get_async_client() -> anthropic.AsyncAnthropic | Any:
     if _async_client is not None:
         return _async_client
 
-    if not settings.AI_API_KEY:
-        raise ValueError("AI_API_KEY is not configured")
+    with _async_client_lock:
+        # Double-check after acquiring lock
+        if _async_client is not None:
+            return _async_client
 
-    provider = settings.AI_PROVIDER.lower()
-    if provider == "openai":
-        if _openai_module is None:
-            raise ImportError("openai package is not installed — add 'openai' to requirements.txt")
-        _async_client = _openai_module.AsyncOpenAI(
-            api_key=settings.AI_API_KEY,
-            max_retries=3,  # built-in exponential back-off for 429/5xx
-        )
-    else:
-        _async_client = anthropic.AsyncAnthropic(
-            api_key=settings.AI_API_KEY,
-            max_retries=3,
-        )
+        if not settings.AI_API_KEY:
+            raise ValueError("AI_API_KEY is not configured")
 
-    logger.info("AI async client created (provider=%s)", provider)
-    return _async_client
+        provider = settings.AI_PROVIDER.lower()
+        if provider == "openai":
+            if _openai_module is None:
+                raise ImportError("openai package is not installed — add 'openai' to requirements.txt")
+            _async_client = _openai_module.AsyncOpenAI(
+                api_key=settings.AI_API_KEY,
+                max_retries=3,  # built-in exponential back-off for 429/5xx
+            )
+        else:
+            _async_client = anthropic.AsyncAnthropic(
+                api_key=settings.AI_API_KEY,
+                max_retries=3,
+            )
+
+        logger.info("AI async client created (provider=%s)", provider)
+        return _async_client
 
 
 def _is_openai_client(client: Any) -> bool:

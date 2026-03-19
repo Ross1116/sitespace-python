@@ -93,8 +93,16 @@ def get_lookahead_alerts(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
+    from ...models.programme import ProgrammeUpload
+
     snapshot = get_latest_snapshot(project_id, db)
-    if not snapshot:
+    latest_upload = (
+        db.query(ProgrammeUpload)
+        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
+        .order_by(ProgrammeUpload.version_number.desc())
+        .first()
+    )
+    if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
         snapshot = calculate_lookahead_for_project(project_id, db)
     if not snapshot:
         return {"project_id": str(project_id), "alerts": {}}
