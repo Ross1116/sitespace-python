@@ -126,26 +126,43 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.error("process_programme: upload %s not found", upload_id)
         return
 
-    # 1. Read file bytes from storage
+    # Capture primitive values before releasing the connection — ORM objects
+    # become detached/expired after Session.close().
     stored_file = upload.file
+    _storage_path = stored_file.storage_path
+    _file_name = upload.file_name
+    _project_id = str(upload.project_id)
+
+    # Release the connection back to the pool BEFORE long-running CPU/AI work.
+    # PDF parsing takes 30-60s and AI structure detection adds 10-15s — holding
+    # the connection idle that long risks SSL EOF from Railway's load balancer
+    # even though pool_pre_ping validated it at checkout.  The session remains
+    # usable; the next query will check out a fresh, pre-pinged connection.
+    db.close()
+
+    # 1. Read file bytes from storage
     try:
-        file_bytes = storage.read(stored_file.storage_path)
+        file_bytes = storage.read(_storage_path)
     except Exception:
         logger.exception("Could not read file for upload %s", upload_id)
-        _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
+        upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+        if upload:
+            _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
     # 2. Parse rows from file (CSV, XLSX/XLSM, or PDF)
-    rows, parse_error = _parse_file(file_bytes, upload.file_name)
+    rows, parse_error = _parse_file(file_bytes, _file_name)
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
-        _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
+        upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+        if upload:
+            _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
         return
 
     # 3. Detect column structure.
     #    PDFs bypass AI entirely — the regex parser always outputs fixed columns
     #    (ID, Name, Start, Finish), so there is nothing to detect.
-    if upload.file_name.lower().endswith(".pdf"):
+    if _file_name.lower().endswith(".pdf"):
         structure = _pdf_structure(rows)
         logger.info(
             "PDF upload %s — skipping detect_structure, using pre-determined column mapping (%d activities)",
@@ -168,6 +185,20 @@ async def _run(upload_id: str, db: Session) -> None:
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
 
+    # 6. Build activity list (no DB needed).
+    #    PDFs: all rows already parsed into ActivityItems by _pdf_structure.
+    #    CSV/XLSX: AI analysed first 100 rows; apply mapping deterministically to the rest.
+    ai_activities = structure.activities
+    extra_rows = [] if _file_name.lower().endswith(".pdf") else (rows[100:] if len(rows) > 100 else [])
+    extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
+    all_activity_items = ai_activities + extra_activities
+
+    # Re-acquire a fresh DB connection (pool_pre_ping verifies it) for all writes.
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+    if not upload:
+        logger.error("process_programme: upload %s disappeared after parse", upload_id)
+        return
+
     # 5. Persist column_mapping + score on programme_uploads
     upload.column_mapping = structure.column_mapping
     upload.completeness_score = completeness_float
@@ -176,15 +207,6 @@ async def _run(upload_id: str, db: Session) -> None:
         "notes": structure.notes,
     }
     db.flush()
-
-    # 6. Build activity list.
-    #    PDFs: all rows already parsed into ActivityItems by _pdf_structure.
-    #    CSV/XLSX: AI analysed first 100 rows; apply mapping deterministically to the rest.
-    ai_activities = structure.activities
-    extra_rows = [] if upload.file_name.lower().endswith(".pdf") else (rows[100:] if len(rows) > 100 else [])
-    extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
-
-    all_activity_items = ai_activities + extra_activities
 
     # 7. Bulk-insert programme_activities
     #    Insert parents before children to satisfy the deferred FK constraint.
@@ -225,12 +247,28 @@ async def _run(upload_id: str, db: Session) -> None:
     except Exception as exc:
         logger.warning(
             "Could not load project assets for classification (project %s): %s — using generic prompt",
-            upload.project_id,
+            _project_id,
             exc,
         )
 
+    # Release connection again before AI classification — large programmes run
+    # many batches in parallel and the idle window can reach 60+ seconds.
+    # upload is re-fetched below before any further writes.
+    db.close()
+
+    classification: ClassificationResult | None = None
     try:
         classification = await classify_assets(activity_dicts, project_assets=project_assets or None)
+    except Exception as exc:
+        logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
+
+    # Re-acquire a fresh connection for post-classification writes.
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+    if not upload:
+        logger.error("process_programme: upload %s disappeared after classification", upload_id)
+        return
+
+    if classification is not None:
         if classification.fallback_used and activity_dicts:
             # AI was unavailable — stamp a visible warning into completeness_notes
             # so the status poll response surfaces it on the frontend.
@@ -265,8 +303,6 @@ async def _run(upload_id: str, db: Session) -> None:
                     "DB connection lost during classification persistence — re-upload to retry.",
                 )
                 return
-    except Exception as exc:
-        logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
     # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
     #     Best-effort — failure does not block commit. Wrapped in a savepoint so any

@@ -102,7 +102,9 @@ def get_db():
         yield db
     except OperationalError as db_error:
         db.rollback()
-        logger.exception("Database operational error during request: %s", db_error)
+        # Log at WARNING, not ERROR — the 503 HTTPException is already captured
+        # by Sentry's starlette middleware, so logger.exception would double-report.
+        logger.warning("Database operational error during request: %s", db_error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database temporarily unavailable. Please retry shortly."
