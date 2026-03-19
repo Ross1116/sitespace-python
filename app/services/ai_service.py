@@ -97,7 +97,9 @@ _CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("scissor lift",      "ewp"),
     ("boom lift",         "ewp"),
     ("knuckle boom",      "ewp"),
+    ("knuckle lift",      "ewp"),
     ("cherry picker",     "ewp"),
+    ("man lift",          "ewp"),
     ("ewp",               "ewp"),
     ("loading bay",       "loading_bay"),
     ("unloading bay",     "loading_bay"),
@@ -298,13 +300,13 @@ async def classify_assets(
     """
     if not settings.AI_ENABLED:
         logger.info("AI_ENABLED=false — using keyword fallback for classification")
-        return _classify_assets_fallback(activities)
+        return _classify_assets_fallback(activities, project_assets=project_assets)
 
     try:
         return await _classify_assets_real(activities, project_assets=project_assets)
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
-        return _classify_assets_fallback(activities)
+        return _classify_assets_fallback(activities, project_assets=project_assets)
 
 
 def suggest_subcontractor_asset_types(
@@ -1232,12 +1234,31 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
     )
 
 
-def _classify_assets_fallback(activities: list[dict[str, Any]]) -> ClassificationResult:
+def _classify_assets_fallback(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Keyword-only classification fallback.
     Matches activity names against _KEYWORD_MAP. No AI call.
+    When project_assets are provided, only accepts keyword hits for types
+    that exist on the project (same scoping as the AI path).
     Unmatched activities go to skipped[].
     """
+    # Build valid_types from project assets (mirrors _build_classification_prompt logic)
+    valid_types: frozenset[str] | None = None
+    if project_assets:
+        vt: set[str] = set()
+        for a in project_assets:
+            canonical = normalise_asset_type(str(a.get("type") or ""))
+            if canonical is None:
+                canonical = normalise_asset_type(str(a.get("name") or ""))
+            if canonical and canonical != "none":
+                vt.add(canonical)
+        if vt:
+            vt.update({"none", "other"})
+            valid_types = frozenset(vt)
+
     classifications: list[ClassificationItem] = []
     skipped: list[str] = []
 
@@ -1248,6 +1269,8 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         matched_type: str | None = None
         for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name:
+                if valid_types and asset_type not in valid_types:
+                    continue
                 matched_type = asset_type
                 break
 

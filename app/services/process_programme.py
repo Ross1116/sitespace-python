@@ -318,8 +318,8 @@ async def _run(upload_id: str, db: Session) -> None:
             if not db.is_active:
                 try:
                     db.rollback()
-                except Exception:
-                    pass
+                except Exception as rb_exc:
+                    logger.warning("Rollback failed during degraded classification cleanup for upload %s: %s", upload_id, rb_exc)
                 _mark_failed_as_committed(
                     upload_id,
                     db,
@@ -342,8 +342,8 @@ async def _run(upload_id: str, db: Session) -> None:
         if not db.is_active:
             try:
                 db.rollback()
-            except Exception:
-                pass
+            except Exception as rb_exc:
+                logger.warning("Rollback failed during degraded subcontractor assignment for upload %s: %s", upload_id, rb_exc)
             _mark_failed_as_committed(
                 upload_id,
                 db,
@@ -744,12 +744,14 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
     suggestion_rows: list[AISuggestionLog] = []
 
     for item in classification.classifications:
-        if not item.asset_type or item.asset_type == "none":
+        normalised_type = (item.asset_type or "").strip().lower()
+        if not normalised_type or normalised_type == "none":
             logger.warning(
                 "Skipping none/empty asset_type for activity=%s",
                 item.activity_id,
             )
             continue
+        item.asset_type = normalised_type
 
         confidence = (item.confidence or "").strip().lower()
         if confidence not in {"high", "medium", "low"}:

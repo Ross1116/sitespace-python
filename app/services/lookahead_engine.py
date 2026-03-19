@@ -206,20 +206,24 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     for booking, asset in booking_rows:
         # Normalise asset.type to a canonical type — handles UI-entered values
         # like "Tower Crane" → "crane", "EWP" → "ewp", etc.
+        # Falls back to asset.name when type is generic (e.g. "EQUIPMENT").
         raw_asset_type = asset.type or ""
         asset_type = normalise_asset_type(raw_asset_type)
+        if asset_type is None:
+            asset_type = normalise_asset_type(asset.name or "")
         if asset_type is None or asset_type not in ALLOWED_ASSET_TYPES:
             # Not a bookable canonical type (e.g. "Storage Area") — bucket as other
-            if raw_asset_type and len(_warned_unknown_types) < 5 and raw_asset_type not in _warned_unknown_types:
+            raw_attempted = raw_asset_type or (asset.name or "")
+            if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
                 logger.warning(
                     "Asset type '%s' not in allowed set; bucketing as 'other' (booking %s). "
                     "Check asset configuration.",
-                    raw_asset_type,
+                    raw_attempted,
                     booking.id,
                 )
-                _warned_unknown_types.add(raw_asset_type)
-            elif raw_asset_type:
-                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", raw_asset_type, booking.id)
+                _warned_unknown_types.add(raw_attempted)
+            elif raw_attempted:
+                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", raw_attempted, booking.id)
             asset_type = "other"
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue
