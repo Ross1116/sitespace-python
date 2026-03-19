@@ -18,7 +18,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from .ai_service import ALLOWED_ASSET_TYPES, suggest_subcontractor_asset_types
+from .ai_service import ALLOWED_ASSET_TYPES, normalise_asset_type, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
 
@@ -204,18 +204,22 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     _warned_unknown_types: set[str] = set()
     for booking, asset in booking_rows:
-        asset_type = (asset.type or "").strip().lower()
-        if asset_type not in ALLOWED_ASSET_TYPES:
-            if len(_warned_unknown_types) < 5 and asset_type not in _warned_unknown_types:
+        # Normalise asset.type to a canonical type — handles UI-entered values
+        # like "Tower Crane" → "crane", "EWP" → "ewp", etc.
+        raw_asset_type = asset.type or ""
+        asset_type = normalise_asset_type(raw_asset_type)
+        if asset_type is None or asset_type not in ALLOWED_ASSET_TYPES:
+            # Not a bookable canonical type (e.g. "Storage Area") — bucket as other
+            if raw_asset_type and len(_warned_unknown_types) < 5 and raw_asset_type not in _warned_unknown_types:
                 logger.warning(
                     "Asset type '%s' not in allowed set; bucketing as 'other' (booking %s). "
                     "Check asset configuration.",
-                    asset.type,
+                    raw_asset_type,
                     booking.id,
                 )
-                _warned_unknown_types.add(asset_type)
-            else:
-                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", asset.type, booking.id)
+                _warned_unknown_types.add(raw_asset_type)
+            elif raw_asset_type:
+                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", raw_asset_type, booking.id)
             asset_type = "other"
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue

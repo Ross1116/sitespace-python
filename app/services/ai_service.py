@@ -69,6 +69,78 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Canonical asset type normaliser.
+# Maps raw asset.type strings entered in the UI (mixed-case, varied phrasing)
+# to the canonical ALLOWED_ASSET_TYPES values.  Used in two places:
+#   1. _build_classification_prompt — so project-aware valid_types stays
+#      compatible with the classifier and lookahead pipeline.
+#   2. lookahead_engine — so booked-hours bucketing matches demand bucketing.
+# ---------------------------------------------------------------------------
+_CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    # (substring to match in lowercased raw type, canonical type)
+    # Order: more specific first to avoid early short-circuit on "crane" in "tower crane"
+    ("tower crane",       "crane"),
+    ("mobile crane",      "crane"),
+    ("luffing crane",     "crane"),
+    ("crawler crane",     "crane"),
+    ("pick-and-carry",    "crane"),
+    ("pick and carry",    "crane"),
+    ("crane",             "crane"),
+    ("builder's hoist",   "hoist"),
+    ("builders hoist",    "hoist"),
+    ("personnel hoist",   "hoist"),
+    ("materials hoist",   "hoist"),
+    ("material hoist",    "hoist"),
+    ("construction lift", "hoist"),
+    ("hoist",             "hoist"),
+    ("elevated work platform", "ewp"),
+    ("scissor lift",      "ewp"),
+    ("boom lift",         "ewp"),
+    ("knuckle boom",      "ewp"),
+    ("cherry picker",     "ewp"),
+    ("ewp",               "ewp"),
+    ("loading bay",       "loading_bay"),
+    ("unloading bay",     "loading_bay"),
+    ("loading zone",      "loading_bay"),
+    ("boom pump",         "concrete_pump"),
+    ("line pump",         "concrete_pump"),
+    ("concrete pump",     "concrete_pump"),
+    ("kibble",            "concrete_pump"),
+    ("mini excavator",    "excavator"),
+    ("backhoe",           "excavator"),
+    ("excavator",         "excavator"),
+    ("digger",            "excavator"),
+    ("rough terrain forklift", "forklift"),
+    ("forklift",          "forklift"),
+    ("telehandler",       "telehandler"),
+    ("telescopic handler", "telehandler"),
+    ("reach forklift",    "telehandler"),
+    ("telescopic forklift", "telehandler"),
+    ("plate compactor",   "compactor"),
+    ("vibrating",         "compactor"),
+    ("compactor",         "compactor"),
+    ("roller",            "compactor"),
+]
+
+
+def normalise_asset_type(raw_type: str) -> str | None:
+    """
+    Map a raw asset.type string to a canonical ALLOWED_ASSET_TYPES value.
+
+    Returns the canonical string (e.g. "crane") or None if no mapping is found
+    (meaning the asset type is not a bookable construction plant — e.g. "Storage Area").
+    None signals that this asset should not contribute to valid_types.
+    """
+    key = (raw_type or "").strip().lower()
+    if not key:
+        return None
+    for substring, canonical in _CANONICAL_TYPE_KEYWORDS:
+        if substring in key:
+            return canonical
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Trade specialty → asset type heuristic map.
 # Used to suggest which assets a subcontractor is likely to need based on
 # their registered trade_specialty field.
@@ -642,9 +714,11 @@ def _build_classification_prompt(
     if not project_assets:
         return base_prompt.replace("{{ASSET_TYPES_BLOCK}}", _DEFAULT_ASSET_TYPES_BLOCK), ALLOWED_ASSET_TYPES
 
-    # Normalise: deduplicate by (name, type) and build canonical type strings.
-    # Type is the raw DB string (e.g. "Tower Crane", "EWP", "EQUIPMENT"); we
-    # normalise to lowercase for matching but show the originals in the prompt.
+    # Normalise: deduplicate by (name, type) and map each asset's type to a
+    # canonical ALLOWED_ASSET_TYPES value.  Assets whose type doesn't map to a
+    # canonical type (e.g. "Storage Area") are listed for context but excluded
+    # from valid_types so the classifier cannot emit them — they are not
+    # bookable plant and would be silently filtered by the lookahead anyway.
     seen: set[tuple[str, str]] = set()
     asset_lines: list[str] = []
     valid_types: set[str] = set()
@@ -660,8 +734,9 @@ def _build_classification_prompt(
             continue
         seen.add(key)
 
-        type_norm = raw_type.lower().replace(" ", "_") if raw_type else "other"
-        valid_types.add(type_norm)
+        canonical = normalise_asset_type(raw_type)
+        if canonical and canonical != "none":
+            valid_types.add(canonical)
 
         label = f"- {raw_name}"
         if raw_type:
@@ -670,18 +745,50 @@ def _build_classification_prompt(
             label += f" [code: {code}]"
         asset_lines.append(label)
 
-    # Always keep "none" as a valid type for milestone/summary rows.
-    valid_types.add("none")
+    # If no project assets mapped to canonical types, fall back to the full
+    # default set so classification still produces useful output.
+    if not valid_types:
+        logger.warning(
+            "No project assets mapped to canonical types — falling back to default asset types"
+        )
+        return base_prompt.replace("{{ASSET_TYPES_BLOCK}}", _DEFAULT_ASSET_TYPES_BLOCK), ALLOWED_ASSET_TYPES
+
+    # Always keep "none" and "other" available.
+    valid_types.update({"none", "other"})
     valid_types_frozen = frozenset(valid_types)
 
+    # Build the canonical type lines for types actually present on this project.
+    _TYPE_DESCRIPTIONS: dict[str, str] = {
+        "crane":         "crane          → Tower crane, mobile crane, luffing crane, pick-and-carry",
+        "hoist":         "hoist          → Builder's hoist, personnel/materials hoist, construction lift",
+        "loading_bay":   "loading_bay    → Dedicated loading bay / unloading zone at building perimeter",
+        "ewp":           "ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom",
+        "concrete_pump": "concrete_pump  → Boom pump, line pump, concrete kibble",
+        "excavator":     "excavator      → Excavator, backhoe, mini excavator",
+        "forklift":      "forklift       → Forklift, rough terrain forklift",
+        "telehandler":   "telehandler    → Telehandler, reach forklift, telescopic handler",
+        "compactor":     "compactor      → Plate compactor, roller, vibrating compactor",
+        "other":         "other          → Any asset need that doesn't fit the types above",
+        "none":          "none           → Activity genuinely requires no bookable site asset",
+    }
+    type_lines = "\n".join(
+        f"  - {_TYPE_DESCRIPTIONS[t]}"
+        for t in sorted(valid_types)
+        if t in _TYPE_DESCRIPTIONS
+    )
+
     asset_block = (
-        "REGISTERED ASSETS ON THIS PROJECT (classify activities against THESE assets only):\n"
+        "THIS PROJECT'S REGISTERED ASSETS (for context — use to guide classification):\n"
         + "\n".join(asset_lines)
         + "\n\n"
-        "For each activity return the asset name exactly as listed above in the "
-        "\"asset_type\" field (normalised: lowercase, spaces → underscores).\n"
+        "ALLOWED ASSET TYPES for this project (use ONLY these exact strings in \"asset_type\"):\n"
+        + type_lines
+        + "\n\n"
+        "Classify each activity into one of the canonical types above based on what "
+        "the work actually requires. Use the registered asset list to understand what "
+        "is physically on site — only classify to a type if the project has that asset.\n"
         "Use \"none\" for milestones/summaries or activities that need no bookable asset.\n"
-        "Use \"other\" only if the activity clearly needs a physical asset not in the list above."
+        "Use \"other\" only if the activity clearly needs physical plant not covered above."
     )
 
     prompt = base_prompt.replace("{{ASSET_TYPES_BLOCK}}", asset_block)
