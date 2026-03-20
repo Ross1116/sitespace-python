@@ -54,6 +54,157 @@ _ACTIVE_STATUSES = [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingS
 
 
 # ---------------------------------------------------------------------------
+# Response builder helpers
+# ---------------------------------------------------------------------------
+
+def _build_booking_detail_response(
+    booking: SlotBooking,
+    competing_pending_count: int = 0,
+) -> BookingDetailResponse:
+    """Build a BookingDetailResponse from a fully-loaded SlotBooking ORM object.
+
+    The booking must have project, manager, subcontractor, and asset
+    relationships already loaded (e.g. via joinedload) before calling this.
+    ``competing_pending_count`` is only relevant for the single-booking detail
+    view and defaults to 0 for list/calendar contexts.
+    """
+    return BookingDetailResponse(
+        id=booking.id,
+        project_id=booking.project_id,
+        manager_id=booking.manager_id,
+        subcontractor_id=booking.subcontractor_id,
+        asset_id=booking.asset_id,
+        booking_date=booking.booking_date,
+        start_time=booking.start_time,
+        end_time=booking.end_time,
+        status=booking.status,
+        purpose=booking.purpose,
+        notes=booking.notes,
+        created_at=booking.created_at,
+        updated_at=booking.updated_at,
+        competing_pending_count=competing_pending_count,
+        project={
+            "id": booking.project.id,
+            "name": booking.project.name,
+            "location": booking.project.location,
+            "status": booking.project.status,
+        } if booking.project else None,
+        manager={
+            "id": booking.manager.id,
+            "email": booking.manager.email,
+            "first_name": booking.manager.first_name,
+            "last_name": booking.manager.last_name,
+            "role": booking.manager.role,
+            "full_name": f"{booking.manager.first_name} {booking.manager.last_name}",
+        } if booking.manager else None,
+        subcontractor={
+            "id": booking.subcontractor.id,
+            "email": booking.subcontractor.email,
+            "first_name": booking.subcontractor.first_name,
+            "last_name": booking.subcontractor.last_name,
+            "company_name": booking.subcontractor.company_name,
+            "trade_specialty": booking.subcontractor.trade_specialty,
+        } if booking.subcontractor else None,
+        asset={
+            "id": booking.asset.id,
+            "asset_code": booking.asset.asset_code,
+            "name": booking.asset.name,
+            "type": booking.asset.type,
+            "status": booking.asset.status.value if booking.asset.status else None,
+            "pending_booking_capacity": booking.asset.pending_booking_capacity,
+        } if booking.asset else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Actor resolution helper
+# ---------------------------------------------------------------------------
+
+def _resolve_booking_actor(
+    db: Session,
+    actor_id: UUID,
+    actor_role: UserRole,
+    provided_manager_id: Optional[UUID],
+    provided_subcontractor_id: Optional[UUID],
+    project_id: UUID,
+) -> Tuple[UUID, Optional[UUID], BookingStatus]:
+    """Resolve manager_id, subcontractor_id, and initial booking status from the actor's role.
+
+    Returns ``(manager_id, subcontractor_id, booking_status)``.
+
+    Raises ``ValueError`` for any invalid/missing entity reference.
+    """
+    if actor_role in [UserRole.ADMIN, UserRole.MANAGER]:
+        manager_id = provided_manager_id or actor_id
+        subcontractor_id = provided_subcontractor_id
+        booking_status = BookingStatus.CONFIRMED
+
+        manager = db.query(User).filter(User.id == manager_id).first()
+        if not manager:
+            raise ValueError(f"Manager with id {manager_id} not found")
+
+        if subcontractor_id:
+            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+            if not subcontractor:
+                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+
+    elif actor_role == UserRole.SUBCONTRACTOR:
+        subcontractor_id = actor_id
+
+        if provided_subcontractor_id and provided_subcontractor_id != actor_id:
+            raise ValueError("Subcontractors can only create bookings for themselves")
+
+        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+        if not subcontractor:
+            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+
+        if provided_manager_id:
+            manager_id = provided_manager_id
+            manager = db.query(User).filter(User.id == manager_id).first()
+            if not manager:
+                raise ValueError(f"Manager with id {manager_id} not found")
+        else:
+            project_with_managers = (
+                db.query(SiteProject)
+                .options(joinedload(SiteProject.managers))
+                .filter(SiteProject.id == project_id)
+                .first()
+            )
+            if not project_with_managers or not project_with_managers.managers:
+                raise ValueError("No managers found for this project")
+            manager_id = project_with_managers.managers[0].id
+
+        booking_status = BookingStatus.PENDING
+    else:
+        raise ValueError(f"Invalid user role: {actor_role}")
+
+    return manager_id, subcontractor_id, booking_status
+
+
+# ---------------------------------------------------------------------------
+# Statistics filter helper
+# ---------------------------------------------------------------------------
+
+def _apply_booking_stats_filters(
+    query,
+    project_id: Optional[UUID],
+    user_id: Optional[UUID],
+    date_from,
+    date_to,
+):
+    """Apply the standard 4-field statistics filters to any SlotBooking query."""
+    if project_id:
+        query = query.filter(SlotBooking.project_id == project_id)
+    if user_id:
+        query = query.filter(SlotBooking.manager_id == user_id)
+    if date_from:
+        query = query.filter(SlotBooking.booking_date >= date_from)
+    if date_to:
+        query = query.filter(SlotBooking.booking_date <= date_to)
+    return query
+
+
+# ---------------------------------------------------------------------------
 
 def _auto_deny_competing_pending_bookings(
     db: Session,
@@ -134,60 +285,15 @@ def create_booking(
             )
 
     # Determine manager_id, subcontractor_id, and status based on role
-    if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
-        # Manager/Admin creating booking
-        manager_id = booking_data.manager_id or created_by_id
-        subcontractor_id = booking_data.subcontractor_id  # Can be None
-        booking_status = BookingStatus.CONFIRMED
-        
-        # Validate manager exists
-        manager = db.query(User).filter(User.id == manager_id).first()
-        if not manager:
-            raise ValueError(f"Manager with id {manager_id} not found")
-        
-        # Validate subcontractor exists (if provided)
-        if subcontractor_id:
-            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-            if not subcontractor:
-                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
-        
-    elif created_by_role == UserRole.SUBCONTRACTOR:
-        # Subcontractor creating booking - must be for themselves
-        subcontractor_id = created_by_id
-        
-        # Subcontractor must provide their ID or it defaults to current user
-        if booking_data.subcontractor_id and booking_data.subcontractor_id != created_by_id:
-            raise ValueError("Subcontractors can only create bookings for themselves")
-        
-        # Validate subcontractor exists
-        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-        if not subcontractor:
-            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
-        
-        # Auto-assign a manager from the project
-        if booking_data.manager_id:
-            manager_id = booking_data.manager_id
-            # Validate manager exists
-            manager = db.query(User).filter(User.id == manager_id).first()
-            if not manager:
-                raise ValueError(f"Manager with id {manager_id} not found")
-        else:
-            # Find a manager from the project
-            project_with_managers = db.query(SiteProject)\
-                .options(joinedload(SiteProject.managers))\
-                .filter(SiteProject.id == booking_data.project_id)\
-                .first()
-            
-            if not project_with_managers or not project_with_managers.managers:
-                raise ValueError("No managers found for this project")
-            
-            # Assign to the first manager
-            manager_id = project_with_managers.managers[0].id
-        
-        booking_status = BookingStatus.PENDING
-    else:
-        raise ValueError(f"Invalid user role: {created_by_role}")
-    
+    manager_id, subcontractor_id, booking_status = _resolve_booking_actor(
+        db=db,
+        actor_id=created_by_id,
+        actor_role=created_by_role,
+        provided_manager_id=booking_data.manager_id,
+        provided_subcontractor_id=booking_data.subcontractor_id,
+        project_id=booking_data.project_id,
+    )
+
     # Create the booking
     db_booking = SlotBooking(
         project_id=booking_data.project_id,
@@ -249,46 +355,14 @@ def create_bulk_bookings(
         raise ValueError(f"Project with id {bulk_data.project_id} not found")
     
     # Determine manager_id, subcontractor_id, and status based on role
-    if created_by_role in [UserRole.ADMIN, UserRole.MANAGER]:
-        manager_id = bulk_data.manager_id or created_by_id
-        subcontractor_id = bulk_data.subcontractor_id
-        booking_status = BookingStatus.CONFIRMED
-        
-        manager = db.query(User).filter(User.id == manager_id).first()
-        if not manager:
-            raise ValueError(f"Manager with id {manager_id} not found")
-        
-        if subcontractor_id:
-            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-            if not subcontractor:
-                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
-        
-    elif created_by_role == UserRole.SUBCONTRACTOR:
-        subcontractor_id = created_by_id
-        
-        if bulk_data.subcontractor_id and bulk_data.subcontractor_id != created_by_id:
-            raise ValueError("Subcontractors can only create bookings for themselves")
-        
-        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-        if not subcontractor:
-            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
-        
-        if bulk_data.manager_id:
-            manager_id = bulk_data.manager_id
-        else:
-            project_with_managers = db.query(SiteProject)\
-                .options(joinedload(SiteProject.managers))\
-                .filter(SiteProject.id == bulk_data.project_id)\
-                .first()
-            
-            if not project_with_managers or not project_with_managers.managers:
-                raise ValueError("No managers found for this project")
-            
-            manager_id = project_with_managers.managers[0].id
-        
-        booking_status = BookingStatus.PENDING
-    else:
-        raise ValueError(f"Invalid user role: {created_by_role}")
+    manager_id, subcontractor_id, booking_status = _resolve_booking_actor(
+        db=db,
+        actor_id=created_by_id,
+        actor_role=created_by_role,
+        provided_manager_id=bulk_data.manager_id,
+        provided_subcontractor_id=bulk_data.subcontractor_id,
+        project_id=bulk_data.project_id,
+    )
     
     try:
         # Resolve maintenance status for all assets upfront (before any bookings are flushed)
@@ -425,52 +499,7 @@ def get_booking_detail(db: Session, booking_id: UUID) -> Optional[BookingDetailR
 
     competing = _get_competing_pending_count(db, booking)
 
-    return BookingDetailResponse(
-        id=booking.id,
-        project_id=booking.project_id,
-        manager_id=booking.manager_id,
-        subcontractor_id=booking.subcontractor_id,
-        asset_id=booking.asset_id,
-        booking_date=booking.booking_date,
-        start_time=booking.start_time,
-        end_time=booking.end_time,
-        status=booking.status,
-        purpose=booking.purpose,
-        notes=booking.notes,
-        created_at=booking.created_at,
-        updated_at=booking.updated_at,
-        competing_pending_count=competing,
-        project={
-            "id": booking.project.id,
-            "name": booking.project.name,
-            "location": booking.project.location,
-            "status": booking.project.status
-        } if booking.project else None,
-        manager={
-            "id": booking.manager.id,
-            "email": booking.manager.email,
-            "first_name": booking.manager.first_name,
-            "last_name": booking.manager.last_name,
-            "role": booking.manager.role,
-            "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
-        } if booking.manager else None,
-        subcontractor={
-            "id": booking.subcontractor.id,
-            "email": booking.subcontractor.email,
-            "first_name": booking.subcontractor.first_name,
-            "last_name": booking.subcontractor.last_name,
-            "company_name": booking.subcontractor.company_name,
-            "trade_specialty": booking.subcontractor.trade_specialty
-        } if booking.subcontractor else None,
-        asset={
-            "id": booking.asset.id,
-            "asset_code": booking.asset.asset_code,
-            "name": booking.asset.name,
-            "type": booking.asset.type,
-            "status": booking.asset.status.value if booking.asset.status else None,
-            "pending_booking_capacity": booking.asset.pending_booking_capacity
-        } if booking.asset else None
-    )
+    return _build_booking_detail_response(booking, competing_pending_count=competing)
 
 def get_bookings(
     db: Session,
@@ -525,54 +554,8 @@ def get_bookings(
     ).offset(skip).limit(limit).all()
     
     # Convert to detailed responses
-    booking_responses = []
-    for booking in bookings:
-        booking_responses.append(BookingDetailResponse(
-            id=booking.id,
-            project_id=booking.project_id,
-            manager_id=booking.manager_id,
-            subcontractor_id=booking.subcontractor_id,
-            asset_id=booking.asset_id,
-            booking_date=booking.booking_date,
-            start_time=booking.start_time,
-            end_time=booking.end_time,
-            status=booking.status,
-            purpose=booking.purpose,
-            notes=booking.notes,
-            created_at=booking.created_at,
-            updated_at=booking.updated_at,
-            project={
-                "id": booking.project.id,
-                "name": booking.project.name,
-                "location": booking.project.location,
-                "status": booking.project.status
-            } if booking.project else None,
-            manager={
-                "id": booking.manager.id,
-                "email": booking.manager.email,
-                "first_name": booking.manager.first_name,
-                "last_name": booking.manager.last_name,
-                "role": booking.manager.role,
-                "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
-            } if booking.manager else None,
-            subcontractor={
-                "id": booking.subcontractor.id,
-                "email": booking.subcontractor.email,
-                "first_name": booking.subcontractor.first_name,
-                "last_name": booking.subcontractor.last_name,
-                "company_name": booking.subcontractor.company_name,
-                "trade_specialty": booking.subcontractor.trade_specialty
-            } if booking.subcontractor else None,
-            asset={
-                "id": booking.asset.id,
-                "asset_code": booking.asset.asset_code,
-                "name": booking.asset.name,
-                "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None,
-                "pending_booking_capacity": booking.asset.pending_booking_capacity
-            } if booking.asset else None
-        ))
-    
+    booking_responses = [_build_booking_detail_response(b) for b in bookings]
+
     return booking_responses, total
 
 def update_booking(
@@ -881,73 +864,37 @@ def get_booking_statistics(
     project_id: Optional[UUID] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    user_id: Optional[UUID] = None 
+    user_id: Optional[UUID] = None
 ) -> BookingStatistics:
-    query = db.query(SlotBooking)
-    
-    if project_id:
-        query = query.filter(SlotBooking.project_id == project_id)
-    if user_id:
-        query = query.filter(SlotBooking.manager_id == user_id)
-    if date_from:
-        query = query.filter(SlotBooking.booking_date >= date_from)
-    if date_to:
-        query = query.filter(SlotBooking.booking_date <= date_to)
-    
-    status_counts_query = db.query(
-        SlotBooking.status,
-        func.count(SlotBooking.id).label('count')
+    _filters = dict(project_id=project_id, user_id=user_id, date_from=date_from, date_to=date_to)
+
+    status_counts_query = _apply_booking_stats_filters(
+        db.query(SlotBooking.status, func.count(SlotBooking.id).label("count")),
+        **_filters,
     )
-    
-    if project_id:
-        status_counts_query = status_counts_query.filter(SlotBooking.project_id == project_id)
-    if user_id:
-        status_counts_query = status_counts_query.filter(SlotBooking.manager_id == user_id)
-    if date_from:
-        status_counts_query = status_counts_query.filter(SlotBooking.booking_date >= date_from)
-    if date_to:
-        status_counts_query = status_counts_query.filter(SlotBooking.booking_date <= date_to)
-    
     status_counts = status_counts_query.group_by(SlotBooking.status).all()
-    
+
     status_dict = {status.value: count for status, count in status_counts}
     total_bookings = sum(status_dict.values())
-    
+
     # Busiest Day
-    busiest_day_query = db.query(
-        SlotBooking.booking_date,
-        func.count(SlotBooking.id).label('count')
+    busiest_day_query = _apply_booking_stats_filters(
+        db.query(SlotBooking.booking_date, func.count(SlotBooking.id).label("count")),
+        **_filters,
     )
-    if project_id:
-        busiest_day_query = busiest_day_query.filter(SlotBooking.project_id == project_id)
-    if user_id:
-        busiest_day_query = busiest_day_query.filter(SlotBooking.manager_id == user_id)
-    if date_from:
-        busiest_day_query = busiest_day_query.filter(SlotBooking.booking_date >= date_from)
-    if date_to:
-        busiest_day_query = busiest_day_query.filter(SlotBooking.booking_date <= date_to)
-    
     busiest_day_result = busiest_day_query.group_by(
         SlotBooking.booking_date
     ).order_by(
         func.count(SlotBooking.id).desc()
     ).first()
-    
+
     # Most Booked Asset
-    most_booked_asset_query = db.query(
-        Asset,
-        func.count(SlotBooking.id).label('count')
-    ).join(
-        SlotBooking, SlotBooking.asset_id == Asset.id
+    most_booked_asset_query = _apply_booking_stats_filters(
+        db.query(Asset, func.count(SlotBooking.id).label("count")).join(
+            SlotBooking, SlotBooking.asset_id == Asset.id
+        ),
+        **_filters,
     )
-    if project_id:
-        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.project_id == project_id)
-    if user_id:
-        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.manager_id == user_id)
-    if date_from:
-        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.booking_date >= date_from)
-    if date_to:
-        most_booked_asset_query = most_booked_asset_query.filter(SlotBooking.booking_date <= date_to)
     
     most_booked_asset_result = most_booked_asset_query.group_by(
         Asset.id
@@ -1026,54 +973,8 @@ def get_user_upcoming_bookings(
         SlotBooking.start_time
     ).limit(limit).all()
     
-    booking_responses = []
-    for booking in bookings:
-        booking_responses.append(BookingDetailResponse(
-            id=booking.id,
-            project_id=booking.project_id,
-            manager_id=booking.manager_id,
-            subcontractor_id=booking.subcontractor_id,
-            asset_id=booking.asset_id,
-            booking_date=booking.booking_date,
-            start_time=booking.start_time,
-            end_time=booking.end_time,
-            status=booking.status,
-            purpose=booking.purpose,
-            notes=booking.notes,
-            created_at=booking.created_at,
-            updated_at=booking.updated_at,
-            project={
-                "id": booking.project.id,
-                "name": booking.project.name,
-                "location": booking.project.location,
-                "status": booking.project.status
-            } if booking.project else None,
-            manager={
-                "id": booking.manager.id,
-                "email": booking.manager.email,
-                "first_name": booking.manager.first_name,
-                "last_name": booking.manager.last_name,
-                "role": booking.manager.role,
-                "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
-            } if booking.manager else None,
-            subcontractor={
-                "id": booking.subcontractor.id,
-                "email": booking.subcontractor.email,
-                "first_name": booking.subcontractor.first_name,
-                "last_name": booking.subcontractor.last_name,
-                "company_name": booking.subcontractor.company_name,
-                "trade_specialty": booking.subcontractor.trade_specialty
-            } if booking.subcontractor else None,
-            asset={
-                "id": booking.asset.id,
-                "asset_code": booking.asset.asset_code,
-                "name": booking.asset.name,
-                "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None,
-                "pending_booking_capacity": booking.asset.pending_booking_capacity
-            } if booking.asset else None
-        ))
-    
+    booking_responses = [_build_booking_detail_response(b) for b in bookings]
+
     return booking_responses
 
 def get_calendar_view(
@@ -1116,52 +1017,7 @@ def get_calendar_view(
     
     bookings_by_date = defaultdict(list)
     for booking in bookings:
-        booking_detail = BookingDetailResponse(
-            id=booking.id,
-            project_id=booking.project_id,
-            manager_id=booking.manager_id,
-            subcontractor_id=booking.subcontractor_id,
-            asset_id=booking.asset_id,
-            booking_date=booking.booking_date,
-            start_time=booking.start_time,
-            end_time=booking.end_time,
-            status=booking.status,
-            purpose=booking.purpose,
-            notes=booking.notes,
-            created_at=booking.created_at,
-            updated_at=booking.updated_at,
-            project={
-                "id": booking.project.id,
-                "name": booking.project.name,
-                "location": booking.project.location,
-                "status": booking.project.status
-            } if booking.project else None,
-            manager={
-                "id": booking.manager.id,
-                "email": booking.manager.email,
-                "first_name": booking.manager.first_name,
-                "last_name": booking.manager.last_name,
-                "role": booking.manager.role,
-                "full_name": f"{booking.manager.first_name} {booking.manager.last_name}"
-            } if booking.manager else None,
-            subcontractor={
-                "id": booking.subcontractor.id,
-                "email": booking.subcontractor.email,
-                "first_name": booking.subcontractor.first_name,
-                "last_name": booking.subcontractor.last_name,
-                "company_name": booking.subcontractor.company_name,
-                "trade_specialty": booking.subcontractor.trade_specialty
-            } if booking.subcontractor else None,
-            asset={
-                "id": booking.asset.id,
-                "asset_code": booking.asset.asset_code,
-                "name": booking.asset.name,
-                "type": booking.asset.type,
-                "status": booking.asset.status.value if booking.asset.status else None,
-                "pending_booking_capacity": booking.asset.pending_booking_capacity
-            } if booking.asset else None
-        )
-        bookings_by_date[booking.booking_date].append(booking_detail)
+        bookings_by_date[booking.booking_date].append(_build_booking_detail_response(booking))
     
     calendar_view = []
     current_date = date_from

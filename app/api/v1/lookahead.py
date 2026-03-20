@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
+from ...crud.site_project import check_sub_project_access
 from ...models.site_project import SiteProject
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
@@ -37,12 +38,6 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
     is_assigned_manager = any(str(manager.id) == str(current_user.id) for manager in project.managers)
     if not is_assigned_manager:
         raise HTTPException(status_code=403, detail="You don't have access to this project")
-
-
-def _check_sub_project_access(project: SiteProject, current_sub: Subcontractor) -> None:
-    is_assigned_sub = any(str(sub.id) == str(current_sub.id) for sub in project.subcontractors)
-    if not is_assigned_sub:
-        raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
 
 @router.get("/{project_id}")
@@ -117,7 +112,7 @@ def get_subcontractor_lookahead(
     current_sub: Subcontractor = Depends(require_role([UserRole.SUBCONTRACTOR])),
 ) -> dict:
     project = _check_project_exists(project_id, db)
-    _check_sub_project_access(project, current_sub)
+    check_sub_project_access(db, current_sub, project)
 
     if str(current_sub.id) != str(sub_id):
         raise HTTPException(status_code=403, detail="You can only view your own lookahead data")

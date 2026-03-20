@@ -4,6 +4,8 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import date
 
+from fastapi import HTTPException
+
 from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
@@ -247,24 +249,27 @@ def count_lead_managers(db: Session, project_id: UUID) -> int:
     return 0
 
 def add_manager_to_project(
-    db: Session, 
-    project_id: UUID, 
-    manager_id: UUID, 
-    is_lead: bool = False
-):
-    """Add manager to project"""
+    db: Session,
+    project_id: UUID,
+    manager_id: UUID,
+    is_lead: bool = False,
+) -> bool:
+    """Add manager to project. Returns True if the manager was added, False otherwise."""
     project = get_project(db, project_id)
     manager = db.query(User).filter(User.id == manager_id).first()
-    
-    if project and manager:
-        if manager not in project.managers:
-            if is_lead:
-                # If setting as lead, add at beginning
-                project.managers.insert(0, manager)
-            else:
-                project.managers.append(manager)
-            db.commit()
-            return True
+
+    if not project or not manager:
+        return False
+
+    if manager not in project.managers:
+        if is_lead:
+            # If setting as lead, add at beginning
+            project.managers.insert(0, manager)
+        else:
+            project.managers.append(manager)
+        db.commit()
+        return True
+
     return False
 
 def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID):
@@ -485,10 +490,10 @@ def is_subcontractor_assigned(
 def get_project_statistics(db: Session, project_id: UUID) -> Optional[Dict[str, Any]]:
     """Get project statistics"""
     project = get_project_with_details(db, project_id)
-    
+
     if not project:
         return None
-    
+
     return {
         "project_id": str(project.id),
         "project_name": project.name,
@@ -498,3 +503,18 @@ def get_project_statistics(db: Session, project_id: UUID) -> Optional[Dict[str, 
         "total_bookings": len(project.slot_bookings) if hasattr(project, 'slot_bookings') else 0,
         "status": project.status
     }
+
+
+def check_sub_project_access(
+    db: Session,
+    subcontractor: "Subcontractor",
+    project: "SiteProject",
+) -> None:
+    """Raise HTTP 403 if ``subcontractor`` is not assigned to ``project``.
+
+    The project object must have its ``subcontractors`` relationship loaded
+    before calling this (e.g. via a prior ``db.query`` or joinedload).
+    """
+    is_assigned = any(str(sub.id) == str(subcontractor.id) for sub in project.subcontractors)
+    if not is_assigned:
+        raise HTTPException(status_code=403, detail="You are not assigned to this project")

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
+from ...crud.site_project import check_sub_project_access
 from ...models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ...models.site_project import SiteProject
 from ...models.stored_file import StoredFile
@@ -62,12 +63,6 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
     return project
-
-
-def _check_subcontractor_project_access(project: SiteProject, current_sub: Subcontractor) -> None:
-    is_assigned_sub = any(str(sub.id) == str(current_sub.id) for sub in project.subcontractors)
-    if not is_assigned_sub:
-        raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
 
 def _serialize_mapping(
@@ -332,7 +327,7 @@ def get_activities(
         project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        _check_subcontractor_project_access(project, current_entity)
+        check_sub_project_access(db, current_entity, project)
 
         activities = (
             db.query(ProgrammeActivity)
