@@ -49,15 +49,8 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
 
-@router.get("/{project_id}", response_model=LookaheadResponse)
-def get_lookahead(
-    project_id: UUID,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> LookaheadResponse:
-    project = _check_project_exists(project_id, db)
-    _check_manager_project_access(project, _)
-
+def _get_fresh_snapshot(project_id: UUID, db: Session):
+    """Return the current snapshot, recalculating if it is stale relative to the latest committed upload."""
     from ...models.programme import ProgrammeUpload
 
     snapshot = get_latest_snapshot(project_id, db)
@@ -67,9 +60,21 @@ def get_lookahead(
         .order_by(ProgrammeUpload.version_number.desc())
         .first()
     )
-    # Recalculate if no snapshot exists, or if the snapshot is from an older upload.
     if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
         snapshot = calculate_lookahead_for_project(project_id, db)
+    return snapshot
+
+
+@router.get("/{project_id}", response_model=LookaheadResponse)
+def get_lookahead(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> LookaheadResponse:
+    project = _check_project_exists(project_id, db)
+    _check_manager_project_access(project, _)
+
+    snapshot = _get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadResponse(project_id=project_id, rows=[], message="No committed programme available yet.")
 
@@ -91,17 +96,7 @@ def get_lookahead_alerts(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
-    from ...models.programme import ProgrammeUpload
-
-    snapshot = get_latest_snapshot(project_id, db)
-    latest_upload = (
-        db.query(ProgrammeUpload)
-        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
-    if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
-        snapshot = calculate_lookahead_for_project(project_id, db)
+    snapshot = _get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadAlertsResponse(project_id=project_id, alerts={})
 
@@ -192,18 +187,7 @@ def get_subcontractor_asset_suggestions(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
-    from ...models.programme import ProgrammeUpload
-
-    snapshot = get_latest_snapshot(project_id, db)
-    latest_upload = (
-        db.query(ProgrammeUpload)
-        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
-    if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
-        snapshot = calculate_lookahead_for_project(project_id, db)
-
+    snapshot = _get_fresh_snapshot(project_id, db)
     suggestions = get_sub_asset_suggestions_for_project(project_id, db)
 
     return SubAssetSuggestionsResponse(
