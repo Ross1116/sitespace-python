@@ -6,6 +6,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 from ..models.slot_booking import SlotBooking
 from ..models.subcontractor import Subcontractor
+from ..models.site_project import SiteProject
 
 from ..models.user import User
 from ..schemas.enums import BookingStatus, ProjectStatus, UserRole
@@ -281,14 +282,14 @@ def delete_user(db: Session, user: User) -> bool:
         return False
 
 
-def get_user_projects(db: Session, user: User) -> List:
+def get_user_projects(db: Session, user: User) -> List[SiteProject]:
     """Get all projects associated with a user"""
     if user.role == UserRole.MANAGER.value or user.role == UserRole.ADMIN.value:
         return user.managed_projects
     return []
 
 
-def get_user_bookings(db: Session, user: User) -> List:
+def get_user_bookings(db: Session, user: User) -> List[SlotBooking]:
     """Get all bookings for a user"""
     return user.bookings
 
@@ -378,8 +379,8 @@ def bulk_update_users(
     Returns:
         Number of users updated
     """
-    # Ensure we don't update passwords in bulk
-    update_data.pop('password', None)
+    # Ensure we don't update passwords in bulk (work on a copy to avoid mutating caller's dict)
+    update_data = {k: v for k, v in update_data.items() if k != 'password'}
 
     count = db.query(User).filter(
         User.id.in_(user_ids)
