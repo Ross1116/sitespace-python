@@ -17,7 +17,6 @@ from .config import settings
 from .database import get_db
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
-from ..crud.user import get_user, get_user_by_email
 from .password import verify_password, get_password_hash
 from ..schemas.enums import UserRole
 
@@ -198,8 +197,8 @@ def get_current_user(
             entity = get_subcontractor_by_email(db, email=email)
     else:
         # Get user
+        from ..crud.user import get_user, get_user_by_email
         if user_id:
-            from ..crud.user import get_user
             entity = get_user(db, user_id=user_id)
         elif email:
             entity = get_user_by_email(db, email=email)
