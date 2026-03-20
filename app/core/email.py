@@ -133,8 +133,8 @@ class EmailSender:
         except requests.exceptions.ConnectionError:
             logger.error("❌ Connection error while contacting Mailtrap.")
             return False
-        except Exception as e:
-            logger.error(f"❌ Unexpected exception in email sending: {str(e)}")
+        except Exception:
+            logger.exception("❌ Unexpected exception in email sending")
             return False
 
 # Create email sender instance
