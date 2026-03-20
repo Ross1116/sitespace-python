@@ -1,12 +1,56 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from pydantic import Field, field_validator
 
 from .base import BaseSchema
 from ..services.ai_service import ALLOWED_ASSET_TYPES
+
+
+class ProgrammeUploadAccepted(BaseSchema):
+    """Immediate 202 response after a programme file is accepted for processing."""
+
+    upload_id: UUID
+    status: str
+    message: str
+
+
+class ProgrammeUploadStatus(BaseSchema):
+    """Processing status for a programme upload."""
+
+    upload_id: UUID
+    status: str
+    completeness_score: int
+    completeness_notes: Optional[str] = None
+    version_number: Optional[int] = None
+    file_name: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ProgrammeVersionSummary(BaseSchema):
+    """Summary of a single programme version in a list."""
+
+    upload_id: UUID
+    version_number: Optional[int] = None
+    file_name: Optional[str] = None
+    status: str
+    completeness_score: int
+    created_at: Optional[str] = None
+
+
+class ProgrammeDiff(BaseSchema):
+    """Diff between two programme versions."""
+
+    upload_id: UUID
+    version_number: Optional[int] = None
+    previous_version: Optional[int] = None
+    activity_count: int
+    previous_activity_count: Optional[int] = None
+    activity_delta: Optional[int] = None
+    summary: str
 
 
 class MappingCorrectionRequest(BaseSchema):
