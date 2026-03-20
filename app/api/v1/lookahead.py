@@ -12,6 +12,15 @@ from ...models.site_project import SiteProject
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
 from ...schemas.enums import UserRole
+from ...schemas.lookahead import (
+    LookaheadAlertsResponse,
+    LookaheadHistoryResponse,
+    LookaheadResponse,
+    SnapshotHistoryItem,
+    SubAssetSuggestionsResponse,
+    SubNotification,
+    SubcontractorLookaheadResponse,
+)
 from ...services.lookahead_engine import (
     calculate_lookahead_for_project,
     get_latest_snapshot,
@@ -40,12 +49,12 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", response_model=LookaheadResponse)
 def get_lookahead(
     project_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict:
+) -> LookaheadResponse:
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
@@ -62,23 +71,23 @@ def get_lookahead(
     if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
         snapshot = calculate_lookahead_for_project(project_id, db)
     if not snapshot:
-        return {"project_id": str(project_id), "rows": [], "message": "No committed programme available yet."}
+        return LookaheadResponse(project_id=project_id, rows=[], message="No committed programme available yet.")
 
-    return {
-        "project_id": str(project_id),
-        "snapshot_id": str(snapshot.id),
-        "snapshot_date": snapshot.snapshot_date.isoformat(),
-        "timezone": snapshot.data.get("timezone") if snapshot.data else None,
-        "rows": snapshot.data.get("rows", []) if snapshot.data else [],
-    }
+    return LookaheadResponse(
+        project_id=project_id,
+        snapshot_id=snapshot.id,
+        snapshot_date=snapshot.snapshot_date.isoformat(),
+        timezone=snapshot.data.get("timezone") if snapshot.data else None,
+        rows=snapshot.data.get("rows", []) if snapshot.data else [],
+    )
 
 
-@router.get("/{project_id}/alerts")
+@router.get("/{project_id}/alerts", response_model=LookaheadAlertsResponse)
 def get_lookahead_alerts(
     project_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict:
+) -> LookaheadAlertsResponse:
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
@@ -94,23 +103,23 @@ def get_lookahead_alerts(
     if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
         snapshot = calculate_lookahead_for_project(project_id, db)
     if not snapshot:
-        return {"project_id": str(project_id), "alerts": {}}
+        return LookaheadAlertsResponse(project_id=project_id, alerts={})
 
-    return {
-        "project_id": str(project_id),
-        "snapshot_id": str(snapshot.id),
-        "snapshot_date": snapshot.snapshot_date.isoformat(),
-        "alerts": snapshot.anomaly_flags or {},
-    }
+    return LookaheadAlertsResponse(
+        project_id=project_id,
+        snapshot_id=snapshot.id,
+        snapshot_date=snapshot.snapshot_date.isoformat(),
+        alerts=snapshot.anomaly_flags or {},
+    )
 
 
-@router.get("/{project_id}/sub/{sub_id}")
+@router.get("/{project_id}/sub/{sub_id}", response_model=SubcontractorLookaheadResponse)
 def get_subcontractor_lookahead(
     project_id: UUID,
     sub_id: UUID,
     db: Session = Depends(get_db),
     current_sub: Subcontractor = Depends(require_role([UserRole.SUBCONTRACTOR])),
-) -> dict:
+) -> SubcontractorLookaheadResponse:
     project = _check_project_exists(project_id, db)
     check_sub_project_access(db, current_sub, project)
 
@@ -120,35 +129,35 @@ def get_subcontractor_lookahead(
     snapshot = get_latest_snapshot(project_id, db)
     notifications = get_sub_notifications(project_id, sub_id, db)
 
-    return {
-        "project_id": str(project_id),
-        "sub_id": str(sub_id),
-        "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot else None,
-        "timezone": (snapshot.data or {}).get("timezone") if snapshot else None,
-        "rows": (snapshot.data or {}).get("rows", []) if snapshot else [],
-        "notifications": [
-            {
-                "id": str(n.id),
-                "activity_id": str(n.activity_id),
-                "asset_type": n.asset_type,
-                "trigger_type": n.trigger_type,
-                "status": n.status,
-                "sent_at": n.sent_at.isoformat() if n.sent_at else None,
-                "acted_at": n.acted_at.isoformat() if n.acted_at else None,
-                "booking_id": str(n.booking_id) if n.booking_id else None,
-                "created_at": n.created_at.isoformat() if n.created_at else None,
-            }
+    return SubcontractorLookaheadResponse(
+        project_id=project_id,
+        sub_id=sub_id,
+        snapshot_date=snapshot.snapshot_date.isoformat() if snapshot else None,
+        timezone=(snapshot.data or {}).get("timezone") if snapshot else None,
+        rows=(snapshot.data or {}).get("rows", []) if snapshot else [],
+        notifications=[
+            SubNotification(
+                id=n.id,
+                activity_id=n.activity_id,
+                asset_type=n.asset_type,
+                trigger_type=n.trigger_type,
+                status=n.status,
+                sent_at=n.sent_at.isoformat() if n.sent_at else None,
+                acted_at=n.acted_at.isoformat() if n.acted_at else None,
+                booking_id=n.booking_id,
+                created_at=n.created_at.isoformat() if n.created_at else None,
+            )
             for n in notifications
         ],
-    }
+    )
 
 
-@router.get("/{project_id}/sub-asset-suggestions")
+@router.get("/{project_id}/sub-asset-suggestions", response_model=SubAssetSuggestionsResponse)
 def get_subcontractor_asset_suggestions(
     project_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict:
+) -> SubAssetSuggestionsResponse:
     """
     Return per-subcontractor asset demand suggestions for lookahead planning.
 
@@ -197,32 +206,32 @@ def get_subcontractor_asset_suggestions(
 
     suggestions = get_sub_asset_suggestions_for_project(project_id, db)
 
-    return {
-        "project_id": str(project_id),
-        "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot else None,
-        "suggestions": suggestions,
-    }
+    return SubAssetSuggestionsResponse(
+        project_id=project_id,
+        snapshot_date=snapshot.snapshot_date.isoformat() if snapshot else None,
+        suggestions=suggestions,
+    )
 
 
-@router.get("/{project_id}/history")
+@router.get("/{project_id}/history", response_model=LookaheadHistoryResponse)
 def get_lookahead_history(
     project_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict:
+) -> LookaheadHistoryResponse:
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
     snapshots = get_snapshot_history(project_id, db)
-    return {
-        "project_id": str(project_id),
-        "history": [
-            {
-                "snapshot_id": str(s.id),
-                "snapshot_date": s.snapshot_date.isoformat(),
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "anomaly_flags": s.anomaly_flags or {},
-            }
+    return LookaheadHistoryResponse(
+        project_id=project_id,
+        history=[
+            SnapshotHistoryItem(
+                snapshot_id=s.id,
+                snapshot_date=s.snapshot_date.isoformat(),
+                created_at=s.created_at.isoformat() if s.created_at else None,
+                anomaly_flags=s.anomaly_flags or {},
+            )
             for s in snapshots
         ],
-    }
+    )
