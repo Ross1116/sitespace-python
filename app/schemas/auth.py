@@ -1,8 +1,10 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
-from typing import Optional, Any, Dict, Literal
+from pydantic import EmailStr, Field, field_validator, model_validator
+from typing import Optional, Literal
 from datetime import datetime
 from uuid import UUID
 import re
+
+from .base import BaseSchema
 
 
 def validate_password_strength(value: str) -> str:
@@ -18,10 +20,10 @@ def validate_password_strength(value: str) -> str:
     return value
 
 
-class PasswordMixin(BaseModel):
+class PasswordMixin(BaseSchema):
     """Mixin for password validation"""
     password: str = Field(..., min_length=8, max_length=100)
-    
+
     @field_validator('password')
     @classmethod
     def validate_password(cls, v: str) -> str:
@@ -40,7 +42,7 @@ class PasswordConfirmationMixin(PasswordMixin):
         return self
 
 
-class NewPasswordConfirmationMixin(BaseModel):
+class NewPasswordConfirmationMixin(BaseSchema):
     """Shared confirm-password workflow for password update requests."""
 
     new_password: str = Field(..., min_length=8, max_length=100)
@@ -57,12 +59,12 @@ class NewPasswordConfirmationMixin(BaseModel):
             raise ValueError('Passwords do not match')
         return self
 
-class LoginRequest(BaseModel):
+class LoginRequest(BaseSchema):
     """Login request schema"""
     email: EmailStr
     password: str
 
-class TokenResponse(BaseModel):
+class TokenResponse(BaseSchema):
     """JWT token response"""
     access_token: str
     refresh_token: Optional[str] = None
@@ -71,114 +73,63 @@ class TokenResponse(BaseModel):
     user_id: UUID
     role: str
 
-class RefreshTokenRequest(BaseModel):
+class RefreshTokenRequest(BaseSchema):
     """Refresh token request"""
     refresh_token: str
 
-class ForgotPasswordRequest(BaseModel):
+class ForgotPasswordRequest(BaseSchema):
     """Forgot password request"""
     email: EmailStr
 
-class ForgotPasswordResponse(BaseModel):
+class ForgotPasswordResponse(BaseSchema):
     """Forgot password response"""
     message: str = "Password reset instructions have been sent to your email"
     email: EmailStr
     success: bool = True
     reset_token_sent: bool = True
-    expires_in_minutes: int = 30  # Token expiration time
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "message": "Password reset instructions have been sent to your email",
-                "email": "user@example.com",
-                "success": True,
-                "reset_token_sent": True,
-                "expires_in_minutes": 30
-            }
-        }
-    }
+    expires_in_minutes: int = 30
 
 class ResetPasswordRequest(PasswordConfirmationMixin):
     """Reset password request"""
     token: str
 
-class ResetPasswordResponse(BaseModel):
+class ResetPasswordResponse(BaseSchema):
     """Reset password response"""
     message: str = "Password has been reset successfully"
     success: bool = True
     email: Optional[EmailStr] = None
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "message": "Password has been reset successfully",
-                "success": True,
-                "email": "user@example.com"
-            }
-        }
-    }
 
 class ChangePasswordRequest(NewPasswordConfirmationMixin):
     """Change password request"""
     current_password: str
 
-class ChangePasswordResponse(BaseModel):
+class ChangePasswordResponse(BaseSchema):
     """Change password response"""
     message: str = "Password has been changed successfully"
     success: bool = True
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "message": "Password has been changed successfully",
-                "success": True
-            }
-        }
-    }
 
-class VerifyEmailRequest(BaseModel):
+class VerifyEmailRequest(BaseSchema):
     """Email verification request"""
     token: str
 
-class VerifyEmailResponse(BaseModel):
+class VerifyEmailResponse(BaseSchema):
     """Email verification response"""
     message: str = "Email has been verified successfully"
     success: bool = True
     email: Optional[EmailStr] = None
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "message": "Email has been verified successfully",
-                "success": True,
-                "email": "user@example.com"
-            }
-        }
-    }
 
-class ResendVerificationRequest(BaseModel):
+class ResendVerificationRequest(BaseSchema):
     """Resend verification email request"""
     email: EmailStr
 
-class ResendVerificationResponse(BaseModel):
+class ResendVerificationResponse(BaseSchema):
     """Resend verification response"""
     message: str = "Verification email has been resent"
     success: bool = True
     email: EmailStr
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "message": "Verification email has been resent",
-                "success": True,
-                "email": "user@example.com"
-            }
-        }
-    }
 
 
-class CurrentUserResponse(BaseModel):
+class CurrentUserResponse(BaseSchema):
     """Response for /auth/me endpoint — User variant"""
     id: UUID
     email: str
@@ -190,7 +141,7 @@ class CurrentUserResponse(BaseModel):
     email_verified: bool = False
     user_type: Literal["user"] = "user"
 
-class CurrentSubcontractorResponse(BaseModel):
+class CurrentSubcontractorResponse(BaseSchema):
     """Response for /auth/me endpoint — Subcontractor variant"""
     id: UUID
     email: str
