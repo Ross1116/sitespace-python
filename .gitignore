@@ -139,6 +139,7 @@ dmypy.json
 *.swo
 .claude/
 .desloppify/
+.agents/
 
 # OS
 .DS_Store
