@@ -255,10 +255,11 @@ def refresh_token(
         return build_token_response(entity)
         
     except Exception as e:
+        logger.exception("Refresh token failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
-        )
+        ) from e
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Union
 from uuid import UUID
 from datetime import date
+import logging
 
 from app.models.subcontractor import Subcontractor
 from ...core.database import get_db
@@ -18,6 +19,8 @@ from ...schemas.asset import (
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import AssetStatus, UserRole
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Asset Management"])
 
@@ -65,11 +68,12 @@ def create_asset(
         return AssetResponse.model_validate(db_asset)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to create asset")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create asset"
-        )
+        ) from exc
 
 @router.get("/", response_model=AssetListResponse)
 def list_assets(
@@ -111,11 +115,12 @@ def list_assets(
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to list assets")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving assets"
-        )
+        ) from exc
 
 @router.get("/brief", response_model=List[AssetBriefResponse])
 def list_assets_brief(
@@ -133,11 +138,12 @@ def list_assets_brief(
         return [AssetBriefResponse.model_validate(asset) for asset in assets]
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to list assets brief")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving assets"
-        )
+        ) from exc
 
 @router.get("/{asset_id}", response_model=AssetDetailResponse)
 def get_asset_detail(
@@ -163,11 +169,12 @@ def get_asset_detail(
         return asset_detail
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve asset details")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving asset details"
-        )
+        ) from exc
 
 @router.get("/code/{asset_code}", response_model=AssetResponse)
 def get_asset_by_code(
@@ -192,11 +199,12 @@ def get_asset_by_code(
         return AssetResponse.model_validate(db_asset)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve asset by code")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving asset"
-        )
+        ) from exc
 
 @router.put("/{asset_id}", response_model=AssetResponse)
 def update_asset(
@@ -248,11 +256,12 @@ def update_asset(
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to update asset")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error updating asset"
-        )
+        ) from exc
 
 
 @router.post("/{asset_id}/status-impact", response_model=AssetStatusChangeImpactResponse)
@@ -282,11 +291,12 @@ def preview_asset_status_change_impact(
         return impact
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to preview asset status change impact")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error previewing status impact"
-        )
+        ) from exc
 
 @router.post("/{asset_id}/transfer", response_model=AssetResponse)
 def transfer_asset(
@@ -308,11 +318,12 @@ def transfer_asset(
         return AssetResponse.model_validate(transferred_asset)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to transfer asset")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error transferring asset"
-        )
+        ) from exc
 
 @router.post("/check-availability", response_model=AssetAvailabilityResponse)
 def check_asset_availability(
@@ -324,11 +335,12 @@ def check_asset_availability(
     try:
         availability = asset_crud.check_asset_availability(db, availability_check)
         return availability
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to check asset availability")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error checking availability"
-        )
+        ) from exc
 
 @router.delete("/{asset_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 def delete_asset(
@@ -347,8 +359,9 @@ def delete_asset(
         return MessageResponse(message="Asset deleted successfully")
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to delete asset")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error deleting asset"
-        )
+        ) from exc

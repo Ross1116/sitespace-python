@@ -1,10 +1,13 @@
 """PDF utility functions: title extraction and page rendering."""
 
 import io
+import logging
 from pathlib import Path
 
 import pypdf
 import pypdfium2
+
+logger = logging.getLogger(__name__)
 
 
 _MAX_TITLE_LENGTH = 255
@@ -36,7 +39,7 @@ def extract_suggested_title(content: bytes, original_filename: str) -> str:
                 if raw and len(raw) >= 3 and "/" not in raw and "\x00" not in raw:
                     return _clean_title(raw)
         except Exception:
-            pass
+            logger.exception("Failed to extract PDF title")
 
     stem = Path(original_filename).stem
     fallback = stem.replace("_", " ").replace("-", " ").strip()
