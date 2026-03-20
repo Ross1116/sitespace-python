@@ -763,33 +763,7 @@ def get_manager_statistics(
         "by_trade": trade_counts,
         "subcontractor_list": subcontractors
     }
-    
-def is_subcontractor_assigned(
-    db: Session,
-    project_id: UUID,
-    subcontractor_id: UUID
-) -> bool:
-    """
-    Check if a subcontractor is already assigned to a project.
-    """
-    # Query to check if the relationship exists
-    project = db.query(SiteProject).filter(
-        SiteProject.id == project_id
-    ).first()
-    
-    if not project:
-        return False
-    
-    # Check if subcontractor is in the project's subcontractors list
-    subcontractor_assigned = db.query(Subcontractor).filter(
-        Subcontractor.id == subcontractor_id
-    ).join(
-        Subcontractor.assigned_projects
-    ).filter(
-        SiteProject.id == project_id
-    ).first()
-    
-    return subcontractor_assigned is not None
+
 
 def assign_subcontractor_to_project(db: Session, subcontractor_id: UUID, project_id: UUID) -> bool:
     """
