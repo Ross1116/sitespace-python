@@ -498,7 +498,6 @@ def add_subcontractor(
             db,
             project_id=project_id,
             subcontractor_id=subcontractor_data.subcontractor_id,
-            hourly_rate=subcontractor_data.hourly_rate
         )
         
         return MessageResponse(message="Subcontractor added successfully")

@@ -277,10 +277,9 @@ def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID)
     return False
 
 def add_subcontractor_to_project(
-    db: Session, 
-    project_id: UUID, 
+    db: Session,
+    project_id: UUID,
     subcontractor_id: UUID,
-    hourly_rate: Optional[float] = None,
     is_active: bool = True
 ):
     """Add subcontractor to project"""

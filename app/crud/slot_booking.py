@@ -778,41 +778,34 @@ def update_booking_status(
 
     return booking, auto_denied_ids
 
-def delete_booking( 
+def delete_booking(
     db: Session,
     booking_id: UUID,
     deleted_by_id: UUID,
     deleted_by_role: UserRole,
-    hard_delete: bool = False,
     comment: Optional[str] = None
     ) -> bool:
 
     booking = get_booking(db, booking_id)
     if not booking:
         return False
-    
+
     old_status = booking.status
-    
-    if hard_delete:
-        raise ValueError(
-            "Hard delete is disabled to preserve booking audit history. "
-            "Use soft delete instead."
-        )
-    else:
-        # Soft delete (cancel)
-        booking.status = BookingStatus.CANCELLED
-        booking.updated_at = datetime.now(timezone.utc)
-        
-        log_booking_audit(
-            db,
-            actor_id=deleted_by_id,
-            actor_role=deleted_by_role,
-            action=BookingAuditAction.CANCELLED,
-            booking_id=booking_id,
-            from_status=old_status,
-            to_status=BookingStatus.CANCELLED,
-            comment=comment
-        )
+
+    # Soft delete (cancel) — hard delete is disabled to preserve audit history
+    booking.status = BookingStatus.CANCELLED
+    booking.updated_at = datetime.now(timezone.utc)
+
+    log_booking_audit(
+        db,
+        actor_id=deleted_by_id,
+        actor_role=deleted_by_role,
+        action=BookingAuditAction.CANCELLED,
+        booking_id=booking_id,
+        from_status=old_status,
+        to_status=BookingStatus.CANCELLED,
+        comment=comment
+    )
     
     db.commit()
     return True

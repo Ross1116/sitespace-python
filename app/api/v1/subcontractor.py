@@ -37,51 +37,6 @@ def require_manager_or_admin(current_user: Any) -> None:
             detail="Only managers and admins can access this endpoint"
         )
 
-# --- Helper Class for the Fix ---
-class EnumValueWrapper:
-    """
-    Fix for 'str object has no attribute value':
-    Wraps a string so that code expecting an Enum (calling .value) 
-    gets the string back instead of crashing.
-    """
-    def __init__(self, value):
-        self.value = value
-    
-    def __str__(self):
-        return self.value
-
-# ========================================================
-# HELPER FUNCTIONS
-# ========================================================
-
-async def verify_manager_access(
-    subcontractor_id: UUID,
-    db: Session,
-    current_user: User
-) -> bool:
-    """Verify that the current user can access this subcontractor"""
-    
-    if current_user.role == UserRole.ADMIN:
-        return True
-    
-    if current_user.role == UserRole.MANAGER:
-        has_access = subcontractor_crud.check_manager_can_access_subcontractor(
-            db,
-            manager_id=current_user.id,
-            subcontractor_id=subcontractor_id
-        )
-        if not has_access:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to this subcontractor"
-            )
-        return True
-    
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Insufficient permissions"
-    )
-
 # ========================================================
 # LIST & SEARCH ROUTES
 # ========================================================

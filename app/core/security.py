@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from .config import settings
 from .database import get_db
 from ..models.user import User
-from ..models.subcontractor import Subcontractor  # Add this import
+from ..models.subcontractor import Subcontractor
 from ..crud.user import get_user, get_user_by_email
 from .password import verify_password, get_password_hash
 from ..schemas.enums import UserRole
@@ -238,33 +238,6 @@ def get_current_verified_user(
         )
     return current_entity
 
-def get_current_user_or_subcontractor(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """Get current entity info as a dictionary"""
-    if isinstance(current_entity, User):
-        return {
-            "id": str(current_entity.id),
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "role": current_entity.role,
-            "entity_type": "user",
-            "is_active": current_entity.is_active
-        }
-    else:
-        return {
-            "id": str(current_entity.id),
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "role": "subcontractor",
-            "entity_type": "subcontractor",
-            "is_active": current_entity.is_active,
-            "company_name": current_entity.company_name,
-            "trade_specialty": current_entity.trade_specialty
-        }
-
 def require_role(allowed_roles: list):
     """Dependency to check if user has required role (case-insensitive, robust to enums/strings)."""
     # Normalize allowed_roles to a set of lowercase strings
@@ -371,10 +344,3 @@ def get_entity_id(entity: Union[User, Subcontractor]) -> UUID:
     """
     return entity.id
 
-def is_subcontractor(entity: Union[User, Subcontractor]) -> bool:
-    """Check if entity is a Subcontractor"""
-    return isinstance(entity, Subcontractor)
-
-def is_user(entity: Union[User, Subcontractor]) -> bool:
-    """Check if entity is a User"""
-    return isinstance(entity, User)
