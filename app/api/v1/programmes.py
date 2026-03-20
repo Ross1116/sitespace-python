@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
-from ...core.security import require_role
+from ...core.security import normalize_role, require_role
 from ...models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ...models.site_project import SiteProject
 from ...models.stored_file import StoredFile
@@ -49,18 +49,12 @@ ALLOWED_CONTENT_TYPES = {
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".pdf"}
 
 
-def _normalize_role(role: Any) -> str:
-    if hasattr(role, "value"):
-        return str(role.value).strip().lower()
-    return str(role).strip().lower()
-
-
 def _check_project_access(project_id: UUID, current_user: User, db: Session) -> SiteProject:
     project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    role = _normalize_role(getattr(current_user, "role", ""))
+    role = normalize_role(getattr(current_user, "role", ""))
     is_admin = role == "admin"
     is_project_manager = any(str(m.id) == str(current_user.id) for m in project.managers)
 
@@ -325,7 +319,7 @@ def get_activities(
             raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
         raise HTTPException(status_code=409, detail="Programme is still processing.")
 
-    role = _normalize_role(getattr(current_entity, "role", "subcontractor"))
+    role = normalize_role(getattr(current_entity, "role", "subcontractor"))
     is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
 
     if is_subcontractor:

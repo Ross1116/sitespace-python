@@ -5,7 +5,7 @@ from uuid import UUID
 from datetime import date
 
 from ...core.database import get_db
-from ...core.security import get_current_user, get_current_active_user
+from ...core.security import get_current_user, get_current_active_user, require_manager_or_admin
 from ...models.user import User
 from ...models.site_project import SiteProject
 from ...models.subcontractor import Subcontractor
@@ -31,20 +31,6 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
 # ==================== Helper Functions ====================
-
-def require_manager_or_admin(current_user) -> None:
-    """Restrict endpoint access to manager/admin roles only."""
-    raw_role = getattr(current_user, "role", None)
-    try:
-        role = raw_role if isinstance(raw_role, UserRole) else UserRole(raw_role)
-    except ValueError:
-        role = None
-
-    if role not in (UserRole.MANAGER, UserRole.ADMIN):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers and admins can access this endpoint"
-        )
 
 def validate_managers_exist(db: Session, manager_ids: List[UUID]) -> None:
     """Validate that all manager IDs exist and are active"""

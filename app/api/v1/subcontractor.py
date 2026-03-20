@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import date, datetime, timedelta, timezone
 
 from ...core.database import get_db
-from ...core.security import get_current_active_user, create_password_reset_token, verify_password
+from ...core.security import get_current_active_user, create_password_reset_token, require_manager_or_admin, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
@@ -27,15 +27,6 @@ from ...schemas.enums import BookingStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
-
-def require_manager_or_admin(current_user: Any) -> None:
-    """Restrict endpoint access to manager/admin roles only."""
-    role = getattr(current_user, "role", None)
-    if role not in [UserRole.MANAGER, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers and admins can access this endpoint"
-        )
 
 # ========================================================
 # LIST & SEARCH ROUTES
