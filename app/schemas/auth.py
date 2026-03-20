@@ -4,6 +4,20 @@ from datetime import datetime
 from uuid import UUID
 import re
 
+
+def validate_password_strength(value: str) -> str:
+    """Enforce the shared password policy across request schemas."""
+    if not re.search(r"[A-Z]", value):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", value):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r"\d", value):
+        raise ValueError("Password must contain at least one digit")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", value):
+        raise ValueError("Password must contain at least one special character")
+    return value
+
+
 class PasswordMixin(BaseModel):
     """Mixin for password validation"""
     password: str = Field(..., min_length=8, max_length=100)
@@ -11,15 +25,37 @@ class PasswordMixin(BaseModel):
     @field_validator('password')
     @classmethod
     def validate_password(cls, v: str) -> str:
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+        return validate_password_strength(v)
+
+
+class PasswordConfirmationMixin(PasswordMixin):
+    """Shared confirm-password workflow for primary password fields."""
+
+    confirm_password: str
+
+    @model_validator(mode='after')
+    def passwords_match(self):
+        if self.password != self.confirm_password:
+            raise ValueError('Passwords do not match')
+        return self
+
+
+class NewPasswordConfirmationMixin(BaseModel):
+    """Shared confirm-password workflow for password update requests."""
+
+    new_password: str = Field(..., min_length=8, max_length=100)
+    confirm_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        return validate_password_strength(v)
+
+    @model_validator(mode='after')
+    def passwords_match(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError('Passwords do not match')
+        return self
 
 class LoginRequest(BaseModel):
     """Login request schema"""
@@ -63,16 +99,9 @@ class ForgotPasswordResponse(BaseModel):
         }
     }
 
-class ResetPasswordRequest(PasswordMixin):
+class ResetPasswordRequest(PasswordConfirmationMixin):
     """Reset password request"""
     token: str
-    confirm_password: str
-    
-    @model_validator(mode='after')
-    def passwords_match(self) -> 'ResetPasswordRequest':
-        if self.password != self.confirm_password:
-            raise ValueError('Passwords do not match')
-        return self
 
 class ResetPasswordResponse(BaseModel):
     """Reset password response"""
@@ -90,30 +119,9 @@ class ResetPasswordResponse(BaseModel):
         }
     }
 
-class ChangePasswordRequest(BaseModel):
+class ChangePasswordRequest(NewPasswordConfirmationMixin):
     """Change password request"""
     current_password: str
-    new_password: str = Field(..., min_length=8, max_length=100)
-    confirm_password: str
-
-    @field_validator('new_password')
-    @classmethod
-    def validate_new_password(cls, v: str) -> str:
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
-
-    @model_validator(mode='after')
-    def passwords_match(self) -> 'ChangePasswordRequest':
-        if self.new_password != self.confirm_password:
-            raise ValueError('Passwords do not match')
-        return self
 
 class ChangePasswordResponse(BaseModel):
     """Change password response"""

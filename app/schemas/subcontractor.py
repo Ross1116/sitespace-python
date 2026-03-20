@@ -1,5 +1,4 @@
 # schemas/subcontractor.py
-import re
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import datetime, date
@@ -8,7 +7,7 @@ from decimal import Decimal
 
 from .base import BaseSchema, TimestampSchema
 from .enums import TradeSpecialty
-from .auth import PasswordMixin
+from .auth import NewPasswordConfirmationMixin, PasswordConfirmationMixin
 
 class SubcontractorBase(BaseSchema):
     """Base subcontractor schema"""
@@ -19,16 +18,9 @@ class SubcontractorBase(BaseSchema):
     trade_specialty: Optional[TradeSpecialty] = None
     phone: Optional[str] = Field(None, max_length=20)
 
-class SubcontractorCreate(SubcontractorBase, PasswordMixin):
+class SubcontractorCreate(SubcontractorBase, PasswordConfirmationMixin):
     """Subcontractor creation schema"""
-    confirm_password: str
     project_id: Optional[UUID] = None 
-    
-    @field_validator('confirm_password')
-    def passwords_match(cls, v, info):
-        if 'password' in info.data and v != info.data['password']:
-            raise ValueError('Passwords do not match')
-        return v
 
 class SubcontractorUpdate(BaseSchema):
     """Subcontractor update schema"""
@@ -40,31 +32,9 @@ class SubcontractorUpdate(BaseSchema):
     phone: Optional[str] = Field(None, max_length=20)
     is_active: Optional[bool] = None
 
-class SubcontractorPasswordUpdate(BaseModel):
+class SubcontractorPasswordUpdate(NewPasswordConfirmationMixin):
     """Schema for updating subcontractor password"""
     current_password: str
-    new_password: str = Field(..., min_length=8, max_length=100)
-    confirm_password: str
-
-    @field_validator('new_password')
-    @classmethod
-    def validate_new_password(cls, v: str) -> str:
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
-
-    @field_validator('confirm_password')
-    @classmethod
-    def passwords_match(cls, v, info):
-        if 'new_password' in info.data and v != info.data['new_password']:
-            raise ValueError('Passwords do not match')
-        return v
 
 class SubcontractorResponse(SubcontractorBase, TimestampSchema):
     """Subcontractor response schema"""

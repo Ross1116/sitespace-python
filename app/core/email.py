@@ -25,13 +25,19 @@ class EmailSender:
         self.from_email = settings.FROM_EMAIL
         self.from_name = settings.FROM_NAME
 
-        # Log config status at init for debugging
         mode = "SANDBOX" if self.use_sandbox else "LIVE"
-        logger.info(f"EmailSender initialized in {mode} mode | token_set={bool(self.api_token)} | from={self.from_email}")
+        logger.debug(
+            "Email sender configured",
+            extra={
+                "mail_mode": mode,
+                "mailtrap_token_configured": bool(self.api_token),
+                "from_email": self.from_email,
+            },
+        )
         if not self.api_token:
-            logger.warning("MAILTRAP_TOKEN is not set - emails will not be sent!")
+            logger.warning("Email delivery disabled because MAILTRAP_TOKEN is not configured")
         if self.use_sandbox and not self.inbox_id:
-            logger.warning("MAILTRAP_INBOX_ID is not set - sandbox emails will fail!")
+            logger.warning("Sandbox email delivery disabled because MAILTRAP_INBOX_ID is not configured")
 
     def send_email(
         self,

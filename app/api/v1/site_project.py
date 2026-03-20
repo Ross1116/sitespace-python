@@ -12,6 +12,7 @@ from ...models.subcontractor import Subcontractor
 from ...schemas.site_project import (
     SiteProjectCreate,
     SiteProjectUpdate,
+    SiteProjectFilters,
     SiteProjectResponse,
     SiteProjectDetailResponse,
     SiteProjectListResponse,
@@ -198,30 +199,15 @@ def list_projects(
         else:
             require_manager_or_admin(current_user)
 
-        # Build filters dictionary
-        filters = {}
-        
-        if name:
-            filters['name'] = name
-        
-        if location:
-            filters['location'] = location
-        
-        if project_status:
-            filters['status'] = project_status
-        
-        if start_date_from:
-            filters['start_date_from'] = start_date_from
-        
-        if start_date_to:
-            filters['start_date_to'] = start_date_to
-        
-        if my_projects:
-            filters['user_id'] = current_user.id
-        elif role_norm == UserRole.TV.value:
-            # Defensive: force scoping even if query param logic changes
-            filters['user_id'] = current_user.id
-        
+        filters = SiteProjectFilters(
+            name=name,
+            location=location,
+            status=project_status,
+            start_date_from=start_date_from,
+            start_date_to=start_date_to,
+            user_id=current_user.id if (my_projects or role_norm == UserRole.TV.value) else None,
+        )
+
         # Get paginated projects
         projects = project_crud.get_projects(
             db,

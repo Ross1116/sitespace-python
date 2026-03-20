@@ -8,7 +8,39 @@ from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import ProjectStatus, UserRole
-from ..schemas.site_project import SiteProjectCreate, SiteProjectUpdate
+from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
+
+
+def _apply_project_filters(query, filters: Optional[SiteProjectFilters]):
+    """Apply shared project filters to a query."""
+    if not filters:
+        return query
+
+    if filters.name:
+        query = query.filter(SiteProject.name.ilike(f"%{filters.name}%"))
+
+    if filters.location:
+        query = query.filter(SiteProject.location.ilike(f"%{filters.location}%"))
+
+    if filters.status:
+        query = query.filter(SiteProject.status == filters.status)
+
+    if filters.start_date_from:
+        query = query.filter(SiteProject.start_date >= filters.start_date_from)
+
+    if filters.start_date_to:
+        query = query.filter(SiteProject.start_date <= filters.start_date_to)
+
+    if filters.end_date_from:
+        query = query.filter(SiteProject.end_date >= filters.end_date_from)
+
+    if filters.end_date_to:
+        query = query.filter(SiteProject.end_date <= filters.end_date_to)
+
+    if filters.user_id:
+        query = query.filter(SiteProject.managers.any(User.id == filters.user_id))
+
+    return query
 
 def create_project(
     db: Session,
@@ -66,91 +98,17 @@ def get_project_with_details(db: Session, project_id: UUID) -> Optional[SiteProj
 
 def get_projects(
     db: Session,
-    filters: Optional[Dict[str, Any]] = None,
+    filters: Optional[SiteProjectFilters] = None,
     skip: int = 0,
     limit: int = 100
 ) -> List[SiteProject]:
     """Get projects with filters"""
-    if filters is None:
-        filters = {}
-
-    query = db.query(SiteProject)
-    
-    # Text search filters
-    if 'name' in filters and filters['name']:
-        query = query.filter(
-            SiteProject.name.ilike(f"%{filters['name']}%")
-        )
-    
-    if 'location' in filters and filters['location']:
-        query = query.filter(
-            SiteProject.location.ilike(f"%{filters['location']}%")
-        )
-    
-    if 'status' in filters and filters['status']:
-        query = query.filter(SiteProject.status == filters['status'])
-    
-    # Date range filters
-    if 'start_date_from' in filters and filters['start_date_from']:
-        query = query.filter(SiteProject.start_date >= filters['start_date_from'])
-    
-    if 'start_date_to' in filters and filters['start_date_to']:
-        query = query.filter(SiteProject.start_date <= filters['start_date_to'])
-    
-    if 'end_date_from' in filters and filters['end_date_from']:
-        query = query.filter(SiteProject.end_date >= filters['end_date_from'])
-    
-    if 'end_date_to' in filters and filters['end_date_to']:
-        query = query.filter(SiteProject.end_date <= filters['end_date_to'])
-    
-    # User access filter - get projects where user is a manager
-    # Note: Subcontractors don't have user_id, they're separate entities
-    if 'user_id' in filters and filters['user_id']:
-        query = query.filter(
-            SiteProject.managers.any(User.id == filters['user_id'])
-        )
-    
+    query = _apply_project_filters(db.query(SiteProject), filters)
     return query.order_by(SiteProject.created_at.desc()).offset(skip).limit(limit).all()
 
-def count_projects(db: Session, filters: Optional[Dict[str, Any]] = None) -> int:
+def count_projects(db: Session, filters: Optional[SiteProjectFilters] = None) -> int:
     """Count projects with filters"""
-    if filters is None:
-        filters = {}
-
-    query = db.query(SiteProject)
-    
-    # Apply same filters as get_projects
-    if 'name' in filters and filters['name']:
-        query = query.filter(
-            SiteProject.name.ilike(f"%{filters['name']}%")
-        )
-    
-    if 'location' in filters and filters['location']:
-        query = query.filter(
-            SiteProject.location.ilike(f"%{filters['location']}%")
-        )
-    
-    if 'status' in filters and filters['status']:
-        query = query.filter(SiteProject.status == filters['status'])
-    
-    if 'start_date_from' in filters and filters['start_date_from']:
-        query = query.filter(SiteProject.start_date >= filters['start_date_from'])
-    
-    if 'start_date_to' in filters and filters['start_date_to']:
-        query = query.filter(SiteProject.start_date <= filters['start_date_to'])
-    
-    if 'end_date_from' in filters and filters['end_date_from']:
-        query = query.filter(SiteProject.end_date >= filters['end_date_from'])
-    
-    if 'end_date_to' in filters and filters['end_date_to']:
-        query = query.filter(SiteProject.end_date <= filters['end_date_to'])
-    
-    # User access filter - get projects where user is a manager
-    if 'user_id' in filters and filters['user_id']:
-        query = query.filter(
-            SiteProject.managers.any(User.id == filters['user_id'])
-        )
-    
+    query = _apply_project_filters(db.query(SiteProject), filters)
     return query.count()
 
 def update_project(
