@@ -80,8 +80,8 @@ def create_database_engine():
     try:
         with engine.connect() as connection:
             logger.info("✅ Database connection test successful.")
-    except Exception as conn_error:
-        logger.warning("❌ Database connectivity check failed at startup: %s", conn_error)
+    except Exception:
+        logger.warning("❌ Database connectivity check failed at startup", exc_info=True)
         logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
 
     return engine

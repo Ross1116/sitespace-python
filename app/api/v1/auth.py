@@ -304,8 +304,8 @@ def forgot_password(
                 logger.info("Password reset email sent successfully to %s", entity_id)
             else:
                 logger.error("Failed to send password reset email to %s", entity_id)
-        except Exception as e:
-            logger.error("Exception sending password reset email to %s: %s", entity_id, str(e))
+        except Exception:
+            logger.exception("Exception sending password reset email to %s", entity_id)
     else:
         logger.warning("No entity found for password reset email hash: %s", request_id)
 
