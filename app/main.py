@@ -167,7 +167,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Include routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
-app.include_router(file_upload.router, prefix="/api")
+app.include_router(file_upload.router, prefix="/api")  # DEPRECATED: use files.router instead
 app.include_router(slot_booking.router, prefix="/api")
 app.include_router(site_project.router, prefix="/api")
 app.include_router(subcontractor.router, prefix="/api")
