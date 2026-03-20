@@ -1,17 +1,9 @@
 """
 AI service — structure detection and asset classification.
 
-BE Dev: this file defines the interface contract. The stub implementations
-        return hardcoded fixture data so the orchestrator can be built and
-        tested independently.
-
-AI Dev: replace _detect_structure_real() and _classify_assets_real() with
-        real LLM calls. Do not change the function signatures or return shapes —
-        those are the agreed interface contract (team-split doc Sections 2.1 + 2.2).
-
-Contract:
-  detect_structure(rows)  -> StructureResult   (Section 2.1)
-  classify_assets(activities) -> ClassificationResult  (Section 2.2)
+Public interface:
+  detect_structure(rows)  -> StructureResult
+  classify_assets(activities) -> ClassificationResult
   suggest_subcontractor_asset_types(subcontractors) -> list[SubcontractorAssetSuggestion]
 """
 
@@ -53,8 +45,7 @@ def _normalize_for_dedup(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Allowed asset_type values — Section 2.3 canonical list.
-# BE validates on DB write; AI Dev uses only these values in prompts.
+# Canonical asset type list — used for DB validation and AI prompt constraints.
 # ---------------------------------------------------------------------------
 ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
     "crane",
@@ -210,11 +201,11 @@ class ActivityItem:
 @dataclass
 class StructureResult:
     """
-    Return shape for detect_structure() — Section 2.1.
+    Output of detect_structure().
 
     column_mapping keys: name, start_date, end_date, duration, wbs_code,
                          resource, level_indicator, or "unknown"
-    completeness_score: int 0–100 (BE converts to float 0.0–1.0 on DB write)
+    completeness_score: int 0–100 (converted to float 0.0–1.0 on DB write)
     """
     column_mapping: dict[str, str]
     activities: list[ActivityItem]
@@ -236,9 +227,9 @@ class ClassificationItem:
 @dataclass
 class ClassificationResult:
     """
-    Return shape for classify_assets() — Section 2.2.
+    Output of classify_assets().
 
-    classifications: high + medium confidence items (auto-committed by BE)
+    classifications: high + medium confidence items (auto-committed)
     skipped:         activity_id strings for low-confidence items (not committed)
     fallback_used:   True when AI was unavailable and keyword-only fallback ran
     """
