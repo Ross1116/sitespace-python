@@ -18,7 +18,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from .ai_service import ALLOWED_ASSET_TYPES, normalise_asset_type, suggest_subcontractor_asset_types
+from .ai_service import ALLOWED_ASSET_TYPES, normalize_asset_type, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +208,9 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         # like "Tower Crane" → "crane", "EWP" → "ewp", etc.
         # Falls back to asset.name when type is generic (e.g. "EQUIPMENT").
         raw_asset_type = asset.type or ""
-        asset_type = normalise_asset_type(raw_asset_type)
+        asset_type = normalize_asset_type(raw_asset_type)
         if asset_type is None:
-            asset_type = normalise_asset_type(asset.name or "")
+            asset_type = normalize_asset_type(asset.name or "")
         if asset_type is None or asset_type not in ALLOWED_ASSET_TYPES:
             # Not a bookable canonical type (e.g. "Storage Area") — bucket as other
             raw_attempted = raw_asset_type or (asset.name or "")

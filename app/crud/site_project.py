@@ -405,7 +405,7 @@ def get_active_projects(
     """Get active projects"""
     query = db.query(SiteProject).filter(
         or_(
-            SiteProject.status == 'active',
+            SiteProject.status == ProjectStatus.ACTIVE.value,
             SiteProject.status == None
         )
     )

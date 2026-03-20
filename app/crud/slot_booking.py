@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session, joinedload
 from collections import defaultdict
 
 from ..models.slot_booking import SlotBooking
-from ..schemas.enums import BookingAuditAction, BookingStatus, UserRole
+from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
-from ..models.asset import Asset, AssetStatus
+from ..models.asset import Asset
 from ..models.site_project import SiteProject
 from ..schemas.slot_booking import (
     BookingCreate,

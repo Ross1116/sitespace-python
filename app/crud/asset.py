@@ -6,10 +6,10 @@ from datetime import datetime, date, time, timedelta, timezone
 from decimal import Decimal
 import re
 
-from ..models.asset import Asset, AssetStatus
+from ..models.asset import Asset
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
-from ..schemas.enums import BookingAuditAction, BookingStatus, UserRole
+from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
 from ..schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetDetailResponse, AssetAvailabilityCheck,

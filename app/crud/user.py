@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from ..models.slot_booking import SlotBooking
 
 from ..models.user import User
-from ..schemas.enums import BookingStatus, UserRole
+from ..schemas.enums import BookingStatus, ProjectStatus, UserRole
 from ..schemas.user import (
     UserCreate, 
     UserUpdate,
@@ -17,11 +17,9 @@ from ..schemas.user import (
     UserBriefResponse
 )
 from ..schemas.site_project import SiteProjectBriefResponse
-from ..core.password import get_password_hash, verify_password 
+from ..core.password import get_password_hash, verify_password
+from ..core.security import normalize_email as _normalize_email
 
-
-def _normalize_email(email: str) -> str:
-    return email.strip().lower()
 
 class UserCRUD:
     """CRUD operations for User model"""
@@ -106,7 +104,7 @@ class UserCRUD:
             active_projects = [
                 SiteProjectBriefResponse.model_validate(project)
                 for project in user.managed_projects
-                if project.status == 'active'
+                if project.status == ProjectStatus.ACTIVE.value
             ][:5]  # Limit to 5 most recent active projects
             subcontractors_count = 0
         else:
@@ -114,7 +112,7 @@ class UserCRUD:
             active_projects = [
                 SiteProjectBriefResponse.model_validate(project)
                 for project in user.assigned_projects
-                if project.status == 'active'
+                if project.status == ProjectStatus.ACTIVE.value
             ][:5]
             # Count unique subcontractors if admin
             if user.role == UserRole.ADMIN.value:

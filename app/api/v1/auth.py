@@ -28,7 +28,8 @@ from ...core.security import (
     verify_email_token,
     create_password_reset_token,
     verify_password_reset_token,
-    revoke_token_payload
+    revoke_token_payload,
+    normalize_email,
 )
 from ...core.config import settings
 from ...core.email import send_verification_email, send_password_reset_email
@@ -71,9 +72,6 @@ def hash_identifier(value: str) -> str:
     normalized = value.strip().lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-
-def normalize_email(email: str) -> str:
-    return email.strip().lower()
 
 def get_entity_by_email(db: Session, email: str) -> Union[User, Subcontractor, None]:
     """Get user or subcontractor by email"""

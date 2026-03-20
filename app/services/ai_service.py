@@ -46,7 +46,7 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORECASE)
 
 
-def _normalise_for_dedup(name: str) -> str:
+def _normalize_for_dedup(name: str) -> str:
     """Lowercase, strip P6 day-step prefix, collapse whitespace."""
     norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
@@ -71,7 +71,7 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
-# Canonical asset type normaliser.
+# Canonical asset type normalizer.
 # Maps raw asset.type strings entered in the UI (mixed-case, varied phrasing)
 # to the canonical ALLOWED_ASSET_TYPES values.  Used in two places:
 #   1. _build_classification_prompt — so project-aware valid_types stays
@@ -127,7 +127,7 @@ _CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
 ]
 
 
-def normalise_asset_type(raw_type: str) -> str | None:
+def normalize_asset_type(raw_type: str) -> str | None:
     """
     Map a raw asset.type string to a canonical ALLOWED_ASSET_TYPES value.
 
@@ -744,11 +744,11 @@ def _build_classification_prompt(
             continue
         seen.add(key)
 
-        canonical = normalise_asset_type(raw_type)
+        canonical = normalize_asset_type(raw_type)
         if canonical is None:
             # Type is generic (e.g. "EQUIPMENT") — fall back to the asset name.
             # Covers cases like Forklift/EQUIPMENT or Excavator/EQUIPMENT.
-            canonical = normalise_asset_type(raw_name)
+            canonical = normalize_asset_type(raw_name)
         if canonical and canonical != "none":
             valid_types.add(canonical)
 
@@ -874,7 +874,7 @@ async def _classify_assets_real(
 
     for act in ai_candidates:
         act_id = str(act.get("id", ""))
-        norm = _normalise_for_dedup(str(act.get("name", "")))
+        norm = _normalize_for_dedup(str(act.get("name", "")))
         if norm in norm_to_rep:
             rep_to_ids[norm_to_rep[norm]].append(act_id)
         else:
@@ -1258,9 +1258,9 @@ def _classify_assets_fallback(
     if project_assets:
         vt: set[str] = set()
         for a in project_assets:
-            canonical = normalise_asset_type(str(a.get("type") or ""))
+            canonical = normalize_asset_type(str(a.get("type") or ""))
             if canonical is None:
-                canonical = normalise_asset_type(str(a.get("name") or ""))
+                canonical = normalize_asset_type(str(a.get("name") or ""))
             if canonical and canonical != "none":
                 vt.add(canonical)
         if vt:
