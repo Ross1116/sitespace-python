@@ -64,7 +64,7 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
         raise HTTPException(status_code=404, detail="Project not found")
 
     role = normalize_role(getattr(current_user, "role", ""))
-    is_admin = role == "admin"
+    is_admin = role == UserRole.ADMIN.value
     is_project_manager = any(str(m.id) == str(current_user.id) for m in project.managers)
 
     if not is_admin and not is_project_manager:
