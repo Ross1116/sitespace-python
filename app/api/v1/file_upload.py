@@ -1,3 +1,6 @@
+# DEPRECATED: This router (/api/uploadfile) is superseded by app/api/v1/files.py (/api/files).
+# The new router uses the StoredFile model, integrates with the storage backend, and supports
+# PDF rendering. Do not extend this module. Remove once all clients have migrated.
 import os
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session

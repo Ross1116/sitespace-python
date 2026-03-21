@@ -138,6 +138,8 @@ dmypy.json
 *.swp
 *.swo
 .claude/
+.desloppify/
+.agents/
 
 # OS
 .DS_Store
@@ -147,3 +149,6 @@ Thumbs.db
 uploads/
 *.db
 *.sqlite3
+
+# Extras
+scorecard.png

@@ -1,4 +1,4 @@
-"""minor changess
+"""add user password column and email_verified flag
 
 Revision ID: 9f973e2f9225
 Revises: d31e127f7859

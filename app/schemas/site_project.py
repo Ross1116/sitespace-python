@@ -1,13 +1,26 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, date
 from uuid import UUID
-from decimal import Decimal
 
 from .base import BaseSchema, TimestampSchema
 from .user import UserBriefResponse
 from .subcontractor import SubcontractorBriefResponse  # Import from subcontractor schema
 from .enums import ProjectStatus  # You might want to create/update this enum
+
+
+class SiteProjectFilters(BaseSchema):
+    """Explicit project-list filters shared by routes and CRUD helpers."""
+
+    name: Optional[str] = None
+    location: Optional[str] = None
+    status: Optional[ProjectStatus] = None
+    start_date_from: Optional[date] = None
+    start_date_to: Optional[date] = None
+    end_date_from: Optional[date] = None
+    end_date_to: Optional[date] = None
+    user_id: Optional[UUID] = None
+
 
 class SiteProjectBase(BaseSchema):
     """Base site project schema"""
@@ -83,14 +96,7 @@ class ProjectManagerResponse(ProjectManagerBase):
 # Subcontractor Assignment Schemas
 class ProjectSubcontractorBase(BaseSchema):
     """Base project subcontractor assignment"""
-    hourly_rate: Optional[Decimal] = Field(None, ge=0)
     is_active: bool = True
-    
-    @field_validator('hourly_rate', mode='before')
-    def round_hourly_rate(cls, v):
-        if v is not None:
-            return round(Decimal(str(v)), 2)
-        return v
 
 class ProjectSubcontractorCreate(ProjectSubcontractorBase):
     """Assign subcontractor to project"""
@@ -98,15 +104,8 @@ class ProjectSubcontractorCreate(ProjectSubcontractorBase):
 
 class ProjectSubcontractorUpdate(BaseSchema):
     """Update subcontractor assignment"""
-    hourly_rate: Optional[Decimal] = Field(None, ge=0)
     end_date: Optional[date] = None
     is_active: Optional[bool] = None
-    
-    @field_validator('hourly_rate', mode='before')
-    def round_hourly_rate(cls, v):
-        if v is not None:
-            return round(Decimal(str(v)), 2)
-        return v
 
 class ProjectSubcontractorResponse(ProjectSubcontractorBase, TimestampSchema):
     """Project subcontractor assignment response"""

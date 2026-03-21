@@ -1,8 +1,8 @@
-"""user and auth upgrades and changes
+"""no-op migration preserved for revision chain continuity
 
-Revision ID: 0adc3de1aada
-Revises: a1211171ba45
-Create Date: 2025-10-24 14:12:28.721019
+Revision ID: 526656b03766
+Revises: ac2d91bc1a20
+Create Date: 2025-10-25 01:00:55.424781
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0adc3de1aada'
-down_revision: Union[str, None] = 'a1211171ba45'
+revision: str = '526656b03766'
+down_revision: Union[str, None] = 'ac2d91bc1a20'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

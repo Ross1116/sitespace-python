@@ -3,13 +3,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
-import enum
 from app.core.database import Base
-
-class AssetStatus(str, enum.Enum):
-    AVAILABLE = "available"
-    MAINTENANCE = "maintenance"
-    RETIRED = "retired"
+from app.schemas.enums import AssetStatus
 
 class Asset(Base):
     __tablename__ = "assets"

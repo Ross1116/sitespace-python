@@ -47,6 +47,7 @@ class ProgrammeUpload(Base):
         "ProgrammeActivity",
         back_populates="upload",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         foreign_keys="ProgrammeActivity.programme_upload_id",
     )
 

@@ -3,15 +3,17 @@ from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import date
+import logging
 
 from ...core.database import get_db
-from ...core.security import get_current_user, get_current_active_user
+from ...core.security import get_current_user, get_current_active_user, require_manager_or_admin
 from ...models.user import User
 from ...models.site_project import SiteProject
 from ...models.subcontractor import Subcontractor
 from ...schemas.site_project import (
     SiteProjectCreate,
     SiteProjectUpdate,
+    SiteProjectFilters,
     SiteProjectResponse,
     SiteProjectDetailResponse,
     SiteProjectListResponse,
@@ -22,28 +24,17 @@ from ...schemas.site_project import (
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole, ProjectStatus
+from ...schemas.subcontractor import SubcontractorResponse
 from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
 # ==================== Helper Functions ====================
-
-def require_manager_or_admin(current_user) -> None:
-    """Restrict endpoint access to manager/admin roles only."""
-    raw_role = getattr(current_user, "role", None)
-    try:
-        role = raw_role if isinstance(raw_role, UserRole) else UserRole(raw_role)
-    except ValueError:
-        role = None
-
-    if role not in (UserRole.MANAGER, UserRole.ADMIN):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers and admins can access this endpoint"
-        )
 
 def validate_managers_exist(db: Session, manager_ids: List[UUID]) -> None:
     """Validate that all manager IDs exist and are active"""
@@ -161,12 +152,13 @@ def create_project(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to create project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create project"
-        )
+        ) from exc
 
 
 @router.get("/", response_model=SiteProjectListResponse)
@@ -198,30 +190,15 @@ def list_projects(
         else:
             require_manager_or_admin(current_user)
 
-        # Build filters dictionary
-        filters = {}
-        
-        if name:
-            filters['name'] = name
-        
-        if location:
-            filters['location'] = location
-        
-        if project_status:
-            filters['status'] = project_status
-        
-        if start_date_from:
-            filters['start_date_from'] = start_date_from
-        
-        if start_date_to:
-            filters['start_date_to'] = start_date_to
-        
-        if my_projects:
-            filters['user_id'] = current_user.id
-        elif role_norm == UserRole.TV.value:
-            # Defensive: force scoping even if query param logic changes
-            filters['user_id'] = current_user.id
-        
+        filters = SiteProjectFilters(
+            name=name,
+            location=location,
+            status=project_status,
+            start_date_from=start_date_from,
+            start_date_to=start_date_to,
+            user_id=current_user.id if (my_projects or role_norm == UserRole.TV.value) else None,
+        )
+
         # Get paginated projects
         projects = project_crud.get_projects(
             db,
@@ -242,11 +219,12 @@ def list_projects(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve projects")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve projects"
-        )
+        ) from exc
 
 
 @router.get("/{project_id}", response_model=SiteProjectDetailResponse)
@@ -273,11 +251,12 @@ def get_project(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve project"
-        )
+        ) from exc
 
 
 @router.patch("/{project_id}", response_model=SiteProjectResponse)
@@ -312,12 +291,13 @@ def update_project(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to update project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update project"
-        )
+        ) from exc
 
 
 @router.delete("/{project_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
@@ -347,12 +327,13 @@ def delete_project(
 
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to archive project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to archive project"
-        )
+        ) from exc
 
 
 # ==================== Manager Management Endpoints ====================
@@ -389,23 +370,29 @@ def add_manager(
             )
         
         # Add manager
-        project_crud.add_manager_to_project(
+        added = project_crud.add_manager_to_project(
             db,
             project_id=project_id,
             manager_id=manager_data.manager_id,
             is_lead=manager_data.is_lead_manager
         )
-        
+        if not added:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project or manager not found"
+            )
+
         return MessageResponse(message="Manager added successfully")
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to add manager to project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to add manager"
-        )
+        ) from exc
 
 
 @router.delete("/{project_id}/managers/{manager_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
@@ -453,12 +440,13 @@ def remove_manager(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to remove manager from project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to remove manager"
-        )
+        ) from exc
 
 
 # ==================== Subcontractor Management Endpoints ====================
@@ -512,19 +500,19 @@ def add_subcontractor(
             db,
             project_id=project_id,
             subcontractor_id=subcontractor_data.subcontractor_id,
-            hourly_rate=subcontractor_data.hourly_rate
         )
         
         return MessageResponse(message="Subcontractor added successfully")
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to add subcontractor to project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to add subcontractor"
-        )
+        ) from exc
 
 
 @router.patch("/{project_id}/subcontractors/{subcontractor_id}", response_model=MessageResponse)
@@ -560,12 +548,13 @@ def update_subcontractor(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to update subcontractor in project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update subcontractor"
-        )
+        ) from exc
 
 
 @router.delete("/{project_id}/subcontractors/{subcontractor_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
@@ -599,21 +588,22 @@ def remove_subcontractor(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Failed to remove subcontractor from project")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to remove subcontractor"
-        )
+        ) from exc
 
 
-@router.get("/{project_id}/available-subcontractors", response_model=List[Dict[str, Any]])
+@router.get("/{project_id}/available-subcontractors", response_model=List[SubcontractorResponse])
 def get_available_subcontractors(
     project_id: UUID,
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> List[Dict[str, Any]]:
+) -> List[SubcontractorResponse]:
     """Get list of subcontractors not yet assigned to this project"""
     
     try:
@@ -630,11 +620,12 @@ def get_available_subcontractors(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve available subcontractors")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve available subcontractors"
-        )
+        ) from exc
 
 
 @router.get("/{project_id}/statistics", response_model=ProjectStatisticsResponse)
@@ -661,8 +652,9 @@ def get_project_statistics(
         
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to retrieve project statistics")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve project statistics"
-        )
+        ) from exc
