@@ -23,7 +23,7 @@ class ProgrammeUploadStatus(BaseSchema):
 
     upload_id: UUID
     status: str
-    completeness_score: int
+    completeness_score: Optional[float] = None
     completeness_notes: Optional[str] = None
     version_number: Optional[int] = None
     file_name: Optional[str] = None
@@ -36,8 +36,8 @@ class ProgrammeVersionSummary(BaseSchema):
     upload_id: UUID
     version_number: Optional[int] = None
     file_name: Optional[str] = None
-    status: str
-    completeness_score: int
+    status: Optional[str] = None
+    completeness_score: Optional[int] = None
     created_at: Optional[str] = None
 
 

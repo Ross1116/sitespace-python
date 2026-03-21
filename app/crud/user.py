@@ -9,7 +9,7 @@ from ..models.subcontractor import Subcontractor
 from ..models.site_project import SiteProject
 
 from ..models.user import User
-from ..schemas.enums import BookingStatus, ProjectStatus, UserRole
+from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.user import (
     UserCreate,
     UserUpdate,
@@ -242,16 +242,9 @@ def delete_user(db: Session, user: User) -> bool:
         True: the user record was permanently deleted.
         False: the user had bookings and was deactivated instead.
     """
-    active_statuses = (
-        BookingStatus.PENDING,
-        BookingStatus.CONFIRMED,
-        BookingStatus.IN_PROGRESS,
-    )
-
     booking_count = (
         db.query(func.count(SlotBooking.id))
         .filter(SlotBooking.manager_id == user.id)
-        .filter(SlotBooking.status.in_(active_statuses))
         .scalar()
         or 0
     )

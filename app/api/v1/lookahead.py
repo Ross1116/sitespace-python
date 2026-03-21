@@ -53,14 +53,16 @@ def _get_fresh_snapshot(project_id: UUID, db: Session):
     """Return the current snapshot, recalculating if it is stale relative to the latest committed upload."""
     from ...models.programme import ProgrammeUpload
 
-    snapshot = get_latest_snapshot(project_id, db)
     latest_upload = (
         db.query(ProgrammeUpload)
         .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
         .order_by(ProgrammeUpload.version_number.desc())
         .first()
     )
-    if not snapshot or (latest_upload and snapshot.programme_upload_id != latest_upload.id):
+    if latest_upload is None:
+        return None
+    snapshot = get_latest_snapshot(project_id, db)
+    if not snapshot or snapshot.programme_upload_id != latest_upload.id:
         snapshot = calculate_lookahead_for_project(project_id, db)
     return snapshot
 
@@ -121,7 +123,7 @@ def get_subcontractor_lookahead(
     if str(current_sub.id) != str(sub_id):
         raise HTTPException(status_code=403, detail="You can only view your own lookahead data")
 
-    snapshot = get_latest_snapshot(project_id, db)
+    snapshot = _get_fresh_snapshot(project_id, db)
     notifications = get_sub_notifications(project_id, sub_id, db)
 
     return SubcontractorLookaheadResponse(

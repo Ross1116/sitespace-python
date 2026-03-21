@@ -143,10 +143,23 @@ def _resolve_booking_actor(
         if not manager:
             raise ValueError(f"Manager with id {manager_id} not found")
 
+        project = (
+            db.query(SiteProject)
+            .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
+            .filter(SiteProject.id == project_id)
+            .first()
+        )
+        if not project:
+            raise ValueError(f"Project with id {project_id} not found")
+        if not any(str(m.id) == str(manager_id) for m in project.managers):
+            raise ValueError(f"Manager {manager_id} is not a member of project {project_id}")
+
         if subcontractor_id:
             subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
             if not subcontractor:
                 raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+            if not any(str(s.id) == str(subcontractor_id) for s in project.subcontractors):
+                raise ValueError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
 
     elif actor_role == UserRole.SUBCONTRACTOR:
         subcontractor_id = actor_id
@@ -774,6 +787,10 @@ def delete_booking(
         return False
 
     old_status = booking.status
+
+    _terminal = {BookingStatus.DENIED, BookingStatus.COMPLETED, BookingStatus.CANCELLED}
+    if old_status in _terminal:
+        return True
 
     # Soft delete (cancel) — hard delete is disabled to preserve audit history
     booking.status = BookingStatus.CANCELLED

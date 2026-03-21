@@ -254,6 +254,8 @@ def refresh_token(
         
         return build_token_response(entity)
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Refresh token failed")
         raise HTTPException(

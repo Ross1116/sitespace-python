@@ -274,10 +274,7 @@ def require_role(allowed_roles: list):
 def require_manager_or_admin(current_user: Union[User, Subcontractor]) -> None:
     """Raise 403 if current_user is not a manager or admin."""
     raw_role = getattr(current_user, "role", None)
-    try:
-        role = raw_role if isinstance(raw_role, UserRole) else UserRole(raw_role)
-    except (ValueError, KeyError):
-        role = None
+    role = normalize_role(raw_role) if raw_role is not None else None
     if role not in (UserRole.MANAGER, UserRole.ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -124,8 +124,8 @@ def update_user_by_admin(
                 "actor_id": str(current_user.id),
                 "target_user_id": str(user_id),
                 "action": "role_change",
-                "from_role": user.role.value if user.role else None,
-                "to_role": user_update.role.value,
+                "from_role": getattr(user.role, "value", user.role),
+                "to_role": getattr(user_update.role, "value", str(user_update.role)),
             },
         )
         user = user_crud.update_user_role(db, user, user_update.role)
