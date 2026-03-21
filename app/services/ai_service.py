@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 import threading
 
@@ -606,7 +606,9 @@ def _extract_partial_classifications(text: str) -> list[dict[str, str]]:
     """
     Last-resort extraction: pull out any syntactically complete classification
     objects from a truncated response.  Matches objects that have all four
-    required fields (activity_id, asset_type, confidence, source) in any order.
+    required fields in the fixed order: activity_id, asset_type, confidence,
+    source (enforced by ``pattern`` via sequential named groups — objects with
+    fields in any other order will not match).
     """
     pattern = re.compile(
         r'\{\s*'
@@ -886,7 +888,7 @@ async def _classify_assets_real(
         if len(deduped_candidates) > 100:
             _sem = asyncio.Semaphore(4)
 
-            async def _bounded(task: asyncio.Task) -> Any:
+            async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
                 async with _sem:
                     return await task
 

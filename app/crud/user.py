@@ -61,13 +61,14 @@ def get_users(
         query = query.filter(User.email_verified == email_verified)
 
     if search:
-        search_filter = f"%{search}%"
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_filter = f"%{escaped}%"
         query = query.filter(
             or_(
-                User.email.ilike(search_filter),
-                User.first_name.ilike(search_filter),
-                User.last_name.ilike(search_filter),
-                User.phone.ilike(search_filter)
+                User.email.ilike(search_filter, escape="\\"),
+                User.first_name.ilike(search_filter, escape="\\"),
+                User.last_name.ilike(search_filter, escape="\\"),
+                User.phone.ilike(search_filter, escape="\\"),
             )
         )
 
@@ -75,7 +76,7 @@ def get_users(
     total = query.count()
 
     # Get paginated results
-    users = query.offset(skip).limit(limit).all()
+    users = query.order_by(User.created_at).offset(skip).limit(limit).all()
 
     # Check if there are more results
     has_more = (skip + limit) < total
@@ -455,14 +456,15 @@ def search_users(
     limit: int = 10
 ) -> List[UserBriefResponse]:
     """Search users by name or email"""
-    search_filter = f"%{query}%"
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    search_filter = f"%{escaped}%"
 
     users = db.query(User).filter(
         or_(
-            User.email.ilike(search_filter),
-            User.first_name.ilike(search_filter),
-            User.last_name.ilike(search_filter),
-            func.concat(User.first_name, ' ', User.last_name).ilike(search_filter)
+            User.email.ilike(search_filter, escape="\\"),
+            User.first_name.ilike(search_filter, escape="\\"),
+            User.last_name.ilike(search_filter, escape="\\"),
+            func.concat(User.first_name, ' ', User.last_name).ilike(search_filter, escape="\\"),
         ),
         User.is_active.is_(True),
         User.email_verified.is_(True),

@@ -177,7 +177,12 @@ async def upload_programme(
     except IntegrityError as exc:
         db.rollback()
         try:
-            storage.delete(stored_file.storage_path)
+            deleted = storage.delete(stored_file.storage_path)
+            if deleted is False:
+                logger.error(
+                    "Blob deletion returned False (orphaned) after IntegrityError path=%s",
+                    stored_file.storage_path,
+                )
         except Exception as delete_exc:
             logger.error(
                 "Failed to delete orphaned programme blob after IntegrityError path=%s err=%s",
@@ -193,7 +198,12 @@ async def upload_programme(
         # pool_pre_ping can't protect an already-checked-out connection.
         db.rollback()
         try:
-            storage.delete(stored_file.storage_path)
+            deleted = storage.delete(stored_file.storage_path)
+            if deleted is False:
+                logger.error(
+                    "Blob deletion returned False (orphaned) after OperationalError path=%s",
+                    stored_file.storage_path,
+                )
         except Exception as delete_exc:
             logger.error(
                 "Failed to delete orphaned programme blob after OperationalError path=%s err=%s",
@@ -208,7 +218,12 @@ async def upload_programme(
     except Exception as exc:
         db.rollback()
         try:
-            storage.delete(stored_file.storage_path)
+            deleted = storage.delete(stored_file.storage_path)
+            if deleted is False:
+                logger.error(
+                    "Blob deletion returned False (orphaned) after DB error path=%s",
+                    stored_file.storage_path,
+                )
         except Exception as delete_exc:
             logger.error(
                 "Failed to delete orphaned programme blob after DB error path=%s err=%s",
@@ -254,7 +269,7 @@ def get_upload_status(
     return ProgrammeUploadStatus(
         upload_id=upload.id,
         status=upload.status,
-        completeness_score=round((upload.completeness_score or 0.0) * 100),
+        completeness_score=None if upload.completeness_score is None else round(upload.completeness_score * 100),
         completeness_notes=upload.completeness_notes,
         version_number=upload.version_number,
         file_name=upload.file_name,
@@ -288,7 +303,7 @@ def list_programme_versions(
             version_number=u.version_number,
             file_name=u.file_name,
             status=u.status,
-            completeness_score=round((u.completeness_score or 0.0) * 100),
+            completeness_score=None if u.completeness_score is None else round(u.completeness_score * 100),
             created_at=u.created_at.isoformat() if u.created_at else None,
         )
         for u in uploads
