@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from typing import Any, cast
+from typing import Any
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -335,7 +335,9 @@ def get_activities(
         project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        subcontractor = cast(Subcontractor, current_entity)
+        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
+        if not subcontractor:
+            raise HTTPException(status_code=404, detail="Subcontractor not found")
         if not check_sub_project_access(db, subcontractor, project):
             raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
@@ -490,17 +492,17 @@ def delete_programme_upload(
         try:
             deleted = storage.delete(storage_path)
             if deleted is False:
-                logger.warning(
-                    "Blob deletion returned False for upload %s at path %s",
-                    upload_id,
-                    storage_path,
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Blob deletion failed for upload {upload_id}; DB record not removed.",
                 )
-        except Exception:
-            logger.warning(
-                "Could not delete blob for upload %s at path %s — proceeding with DB removal",
-                upload_id,
-                storage_path,
-            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Blob deletion error for upload {upload_id}; DB record not removed.",
+            ) from exc
 
     db.delete(upload)
     db.flush()

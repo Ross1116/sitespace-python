@@ -27,6 +27,7 @@ except ImportError:
     _openai_module = None  # type: ignore[assignment]
 
 from ..core.config import settings
+from ..core.constants import ALLOWED_ASSET_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +44,6 @@ def _normalize_for_dedup(name: str) -> str:
     norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
 
-
-# ---------------------------------------------------------------------------
-# Canonical asset type list — used for DB validation and AI prompt constraints.
-# ---------------------------------------------------------------------------
-ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
-    "crane",
-    "hoist",
-    "loading_bay",
-    "ewp",
-    "concrete_pump",
-    "excavator",
-    "forklift",
-    "telehandler",
-    "compactor",
-    "other",
-    "none",  # milestone/summary rows — classifier returns this; merge logic treats it as skip
-})
 
 # ---------------------------------------------------------------------------
 # Canonical asset type normalizer.
@@ -1072,7 +1056,7 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
         if key in specialty or specialty in key
     ]
     if substring_matches:
-        best_key, best_types = max(substring_matches, key=lambda kv: len(kv[0]))
+        _best_key, best_types = max(substring_matches, key=lambda kv: len(kv[0]))
         return list(best_types)
 
     # Word-level: any shared word
@@ -1188,9 +1172,6 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%d %b %y"):
             try:
                 parsed = datetime.strptime(s, fmt)
-                if "%y" in fmt and "%Y" not in fmt:
-                    yy = parsed.year % 100
-                    parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
                 return parsed.date().isoformat()
             except ValueError:
                 pass

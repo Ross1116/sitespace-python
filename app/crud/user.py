@@ -439,7 +439,8 @@ def user_exists(
     query = db.query(User)
 
     if email:
-        query = query.filter(func.lower(User.email) == func.lower(email))
+        normalized_email = _normalize_email(email)
+        query = query.filter(func.lower(User.email) == func.lower(normalized_email))
     elif user_id:
         query = query.filter(User.id == user_id)
     else:

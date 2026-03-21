@@ -202,11 +202,13 @@ def search_subcontractors(
     query = db.query(Subcontractor)
     
     if search_term:
+        escaped = search_term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         search_filter = or_(
-            Subcontractor.first_name.ilike(f"%{search_term}%"),
-            Subcontractor.last_name.ilike(f"%{search_term}%"),
-            Subcontractor.company_name.ilike(f"%{search_term}%"),
-            Subcontractor.email.ilike(f"%{search_term}%")
+            Subcontractor.first_name.ilike(pattern, escape="\\"),
+            Subcontractor.last_name.ilike(pattern, escape="\\"),
+            Subcontractor.company_name.ilike(pattern, escape="\\"),
+            Subcontractor.email.ilike(pattern, escape="\\"),
         )
         query = query.filter(search_filter)
     

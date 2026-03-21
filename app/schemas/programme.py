@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from .base import BaseSchema
-from ..services.ai_service import ALLOWED_ASSET_TYPES
+from ..core.constants import ALLOWED_ASSET_TYPES
 
 
 class ProgrammeUploadAccepted(BaseSchema):

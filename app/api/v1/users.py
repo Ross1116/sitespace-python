@@ -118,21 +118,26 @@ def update_user_by_admin(
 
     # 2. Handle Role Change
     if user_update.role is not None and user_update.role != user.role:
+        from_role = getattr(user.role, "value", user.role)
+        user = user_crud.update_user_role(db, user, user_update.role)
         logger.info(
             "admin_role_change",
             extra={
                 "actor_id": str(current_user.id),
                 "target_user_id": str(user_id),
                 "action": "role_change",
-                "from_role": getattr(user.role, "value", user.role),
-                "to_role": getattr(user_update.role, "value", str(user_update.role)),
+                "from_role": from_role,
+                "to_role": getattr(user.role, "value", user.role),
             },
         )
-        user = user_crud.update_user_role(db, user, user_update.role)
 
     # 3. Handle Activation/Deactivation
     if user_update.is_active is not None and user_update.is_active != user.is_active:
         action = "activate_user" if user_update.is_active else "deactivate_user"
+        if user_update.is_active:
+            user = user_crud.activate_user(db, user)
+        else:
+            user = user_crud.deactivate_user(db, user)
         logger.info(
             "admin_activation_change",
             extra={
@@ -141,9 +146,5 @@ def update_user_by_admin(
                 "action": action,
             },
         )
-        if user_update.is_active:
-            user = user_crud.activate_user(db, user)
-        else:
-            user = user_crud.deactivate_user(db, user)
 
     return user

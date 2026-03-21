@@ -812,7 +812,7 @@ def delete_booking(
 
     _terminal = {BookingStatus.DENIED, BookingStatus.COMPLETED, BookingStatus.CANCELLED}
     if old_status in _terminal:
-        return True
+        return False
 
     # Soft delete (cancel) — hard delete is disabled to preserve audit history
     booking.status = BookingStatus.CANCELLED

@@ -277,6 +277,9 @@ def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID)
     """Remove manager from project"""
     project = get_project(db, project_id)
     if project:
+        original = [m for m in project.managers if m.id == manager_id]
+        if not original:
+            return False
         project.managers = [m for m in project.managers if m.id != manager_id]
         db.commit()
         return True
@@ -312,6 +315,9 @@ def remove_subcontractor_from_project(
     """Remove subcontractor from project"""
     project = get_project(db, project_id)
     if project:
+        original = [s for s in project.subcontractors if s.id == subcontractor_id]
+        if not original:
+            return False
         project.subcontractors = [
             s for s in project.subcontractors if s.id != subcontractor_id
         ]
@@ -327,7 +333,7 @@ def update_project_subcontractor(
 ) -> bool:
     """Update subcontractor details in project"""
     # Placeholder for future implementation
-    return True
+    return False
 
 def get_available_subcontractors(
     db: Session,
