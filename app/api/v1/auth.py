@@ -314,7 +314,6 @@ def forgot_password(
         message="If the email exists, password reset instructions have been sent",
         email=forgot_data.email,
         success=True,
-        reset_token_sent=True,
         expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
     )
 

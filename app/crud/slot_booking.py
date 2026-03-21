@@ -25,7 +25,7 @@ from ..schemas.slot_booking import (
     BookingResponse
 )
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
-from .asset import resolve_maintenance_status
+from .asset import sync_maintenance_status
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +270,7 @@ def create_booking(
     if not asset:
         raise ValueError(f"Asset with id {booking_data.asset_id} not found")
 
-    resolve_maintenance_status(db, asset)
+    sync_maintenance_status(db, asset)
 
     # Block permanently unavailable statuses
     if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
@@ -369,7 +369,7 @@ def create_bulk_bookings(
         for aid in set(bulk_data.asset_ids):
             a = db.query(Asset).filter(Asset.id == aid).first()
             if a:
-                resolve_maintenance_status(db, a)
+                sync_maintenance_status(db, a)
 
         for asset_id in bulk_data.asset_ids:
             asset = db.query(Asset).filter(Asset.id == asset_id).first()

@@ -84,7 +84,7 @@ def _compute_anomaly_flags(
     current_activity_count: int,
     previous_mapping_set: set[tuple[str, str]],
     current_mapping_set: set[tuple[str, str]],
-) -> dict:
+) -> dict[str, bool | float]:
     flags: dict[str, bool | float] = {
         "demand_spike_over_100pct": False,
         "mapping_changes_over_40pct": False,

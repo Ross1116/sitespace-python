@@ -86,7 +86,6 @@ class ForgotPasswordResponse(BaseSchema):
     message: str = "Password reset instructions have been sent to your email"
     email: EmailStr
     success: bool = True
-    reset_token_sent: bool = True
     expires_in_minutes: int = 30
 
 class ResetPasswordRequest(PasswordConfirmationMixin):

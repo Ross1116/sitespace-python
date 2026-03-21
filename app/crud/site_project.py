@@ -168,10 +168,6 @@ def archive_project(db: Session, project: SiteProject) -> SiteProject:
     return project
 
 
-def delete_project(db: Session, project: SiteProject) -> SiteProject:
-    """Backward-compatible alias for `archive_project`."""
-    return archive_project(db, project)
-
 def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
     """Check if user has access to project (as manager only)"""
     project = db.query(SiteProject)\

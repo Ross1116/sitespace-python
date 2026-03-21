@@ -46,7 +46,7 @@ def _parse_time_string(value: str, field_name: str = "time") -> time:
     return time(int(match.group(1)), int(match.group(2)))
 
 
-def resolve_maintenance_status(db: Session, asset: Asset) -> Asset:
+def sync_maintenance_status(db: Session, asset: Asset) -> Asset:
     """Check and update asset status based on maintenance date window.
 
     - If today falls within [start, end], set status to MAINTENANCE.
@@ -410,7 +410,7 @@ def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
     """Get an asset by ID"""
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if asset:
-        resolve_maintenance_status(db, asset)
+        sync_maintenance_status(db, asset)
     return asset
 
 
@@ -424,7 +424,7 @@ def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
         .filter(Asset.id == asset_id)\
         .first()
     if asset:
-        resolve_maintenance_status(db, asset)
+        sync_maintenance_status(db, asset)
     return asset
 
 
@@ -432,7 +432,7 @@ def get_asset_by_code(db: Session, asset_code: str) -> Optional[Asset]:
     """Get an asset by asset code"""
     asset = db.query(Asset).filter(Asset.asset_code == asset_code).first()
     if asset:
-        resolve_maintenance_status(db, asset)
+        sync_maintenance_status(db, asset)
     return asset
 
 
@@ -647,7 +647,7 @@ def update_asset(
 
     # Re-resolve so the returned asset reflects the correct effective
     # status based on any maintenance window that applies right now.
-    resolve_maintenance_status(db, db_asset)
+    sync_maintenance_status(db, db_asset)
 
     return db_asset
 
@@ -691,7 +691,7 @@ def transfer_asset(
         db_asset.status = transfer.update_status
         # Mirror update_asset behaviour: clear maintenance dates when the
         # transfer explicitly sets the asset to AVAILABLE or RETIRED so
-        # that resolve_maintenance_status won't silently flip it back to
+        # that sync_maintenance_status won't silently flip it back to
         # MAINTENANCE on the next read.
         if transfer.update_status in (AssetStatus.AVAILABLE, AssetStatus.RETIRED):
             _clear_maintenance_dates(db_asset)
@@ -898,7 +898,7 @@ def update_asset_status(
 
     Mirrors update_asset behaviour: setting status to AVAILABLE or
     RETIRED clears any maintenance dates so that
-    resolve_maintenance_status won't silently override the change on
+    sync_maintenance_status won't silently override the change on
     the next read.
     """
     db_asset = get_asset(db, asset_id)
@@ -921,7 +921,7 @@ def update_asset_status(
     # Clear maintenance dates when manually setting to AVAILABLE or
     # RETIRED — consistent with update_asset's behaviour.  Without this,
     # setting AVAILABLE here would be silently reverted to MAINTENANCE on
-    # the next resolve_maintenance_status call if the asset had an active
+    # the next sync_maintenance_status call if the asset had an active
     # maintenance window.
     if new_status in (AssetStatus.AVAILABLE, AssetStatus.RETIRED):
         _clear_maintenance_dates(db_asset)
