@@ -69,6 +69,23 @@ class MappingCorrectionRequest(BaseSchema):
         return normalized
 
 
+class ProgrammeActivityItem(BaseSchema):
+    """Single activity row returned by the activities list endpoint."""
+
+    id: str
+    parent_id: str | None = None
+    name: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    duration_days: int | None = None
+    level_name: str | None = None
+    zone_name: str | None = None
+    is_summary: bool | None = None
+    wbs_code: str | None = None
+    sort_order: int | None = None
+    import_flags: list[str] = []
+
+
 class ActivityMappingResponse(BaseSchema):
     """Response schema for programme activity asset mappings."""
 

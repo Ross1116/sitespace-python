@@ -1,7 +1,7 @@
 # schemas/subcontractor.py
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, time
 from uuid import UUID
 from decimal import Decimal
 
@@ -92,6 +92,35 @@ class BookingCountsByStatusResponse(BaseSchema):
     subcontractor_id: UUID
     booking_counts: dict
     total: int
+
+
+class SubcontractorProjectSummary(BaseSchema):
+    """Minimal project summary returned from subcontractor project endpoints."""
+
+    project_id: UUID
+    project_name: str
+    project_location: Optional[str] = None
+    project_status: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    description: Optional[str] = None
+
+
+class SubcontractorBookingSummary(BaseSchema):
+    """Booking summary returned from subcontractor booking endpoints."""
+
+    id: UUID
+    project_id: UUID | None = None
+    project_name: str | None = None
+    asset_id: UUID | None = None
+    asset_name: str | None = None
+    booking_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    status: str | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class SubcontractorAvailabilityResponse(BaseSchema):

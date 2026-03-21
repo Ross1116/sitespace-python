@@ -24,6 +24,7 @@ from ...schemas.site_project import (
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole, ProjectStatus
+from ...schemas.subcontractor import SubcontractorResponse
 from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
@@ -591,13 +592,13 @@ def remove_subcontractor(
         ) from exc
 
 
-@router.get("/{project_id}/available-subcontractors", response_model=List[Dict[str, Any]])
+@router.get("/{project_id}/available-subcontractors", response_model=List[SubcontractorResponse])
 def get_available_subcontractors(
     project_id: UUID,
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
-) -> List[Dict[str, Any]]:
+) -> List[SubcontractorResponse]:
     """Get list of subcontractors not yet assigned to this project"""
     
     try:

@@ -33,6 +33,7 @@ from ...models.user import User
 from ...schemas.programme import (
     ActivityMappingResponse,
     MappingCorrectionRequest,
+    ProgrammeActivityItem,
     ProgrammeDiff,
     ProgrammeUploadAccepted,
     ProgrammeUploadStatus,
@@ -298,7 +299,7 @@ def list_programme_versions(
 # GET /api/programmes/{upload_id}/activities
 # ---------------------------------------------------------------------------
 
-@router.get("/{upload_id}/activities")
+@router.get("/{upload_id}/activities", response_model=list[ProgrammeActivityItem])
 def get_activities(
     upload_id: UUID,
     subcontractor_id: UUID | None = None,
@@ -306,7 +307,7 @@ def get_activities(
     current_entity: User | Subcontractor = Depends(
         require_role([UserRole.MANAGER, UserRole.ADMIN, UserRole.SUBCONTRACTOR])
     ),
-) -> list[dict[str, Any]]:
+) -> list[ProgrammeActivityItem]:
     """
     Return activities for a programme version.
 
@@ -568,7 +569,7 @@ def get_unclassified_activity_mappings(
 # PATCH /api/programmes/mappings/{mapping_id}
 # ---------------------------------------------------------------------------
 
-@router.patch("/mappings/{mapping_id}")
+@router.patch("/mappings/{mapping_id}", response_model=ActivityMappingResponse)
 def correct_activity_mapping(
     mapping_id: UUID,
     payload: MappingCorrectionRequest,

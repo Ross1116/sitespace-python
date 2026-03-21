@@ -20,7 +20,9 @@ from ...schemas.subcontractor import (
     ProjectAssignmentResponse,
     ManagerSubcontractorStatsResponse,
     BookingCountsByStatusResponse,
-    SubcontractorAvailabilityResponse
+    SubcontractorAvailabilityResponse,
+    SubcontractorBookingSummary,
+    SubcontractorProjectSummary,
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import BookingStatus, UserRole
@@ -646,7 +648,7 @@ def get_subcontractor_projects(
     
     return projects
 
-@router.get("/{subcontractor_id}/projects/current", response_model=List[dict])
+@router.get("/{subcontractor_id}/projects/current", response_model=List[SubcontractorProjectSummary])
 def get_current_projects(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
@@ -677,7 +679,7 @@ def get_current_projects(
         } for p in current_projects
     ]
 
-@router.get("/{subcontractor_id}/bookings", response_model=List[dict])
+@router.get("/{subcontractor_id}/bookings", response_model=List[SubcontractorBookingSummary])
 def get_subcontractor_bookings(
     subcontractor_id: UUID,
     project_id: Optional[UUID] = Query(None),
@@ -726,7 +728,7 @@ def get_subcontractor_bookings(
         } for b in bookings
     ]
 
-@router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[dict])
+@router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[SubcontractorBookingSummary])
 def get_upcoming_bookings(
     subcontractor_id: UUID,
     days_ahead: int = Query(7, ge=1, le=90, description="Number of days to look ahead"),
