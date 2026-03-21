@@ -370,13 +370,18 @@ def add_manager(
             )
         
         # Add manager
-        project_crud.add_manager_to_project(
+        added = project_crud.add_manager_to_project(
             db,
             project_id=project_id,
             manager_id=manager_data.manager_id,
             is_lead=manager_data.is_lead_manager
         )
-        
+        if not added:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project or manager not found"
+            )
+
         return MessageResponse(message="Manager added successfully")
         
     except HTTPException:

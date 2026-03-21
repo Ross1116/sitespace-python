@@ -353,7 +353,7 @@ def get_available_subcontractors(
     # Filter by trade specialty if provided
     if trade_specialty:
         query = query.filter(
-            Subcontractor.trade_specialty.ilike(f"%{trade_specialty}%")
+            Subcontractor.trade_specialty.ilike(f"%{_escape_ilike(trade_specialty)}%", escape="\\")
         )
     
     # Only active subcontractors
@@ -388,10 +388,11 @@ def search_projects(
     query = db.query(SiteProject)
     
     # Search in multiple fields
+    escaped = _escape_ilike(search_term)
     search_filter = or_(
-        SiteProject.name.ilike(f"%{search_term}%"),
-        SiteProject.location.ilike(f"%{search_term}%") if SiteProject.location else False,
-        SiteProject.description.ilike(f"%{search_term}%") if SiteProject.description else False
+        SiteProject.name.ilike(f"%{escaped}%", escape="\\"),
+        SiteProject.location.ilike(f"%{escaped}%", escape="\\") if SiteProject.location else False,
+        SiteProject.description.ilike(f"%{escaped}%", escape="\\") if SiteProject.description else False,
     )
     query = query.filter(search_filter)
     

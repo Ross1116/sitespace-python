@@ -393,8 +393,8 @@ def bulk_update_users(
 def get_user_stats(db: Session) -> Dict[str, Any]:
     """Get comprehensive user statistics"""
     total_users = db.query(User).count()
-    active_users = db.query(User).filter(User.is_active == True).count()
-    verified_users = db.query(User).filter(User.email_verified == True).count()
+    active_users = db.query(User).filter(User.is_active.is_(True)).count()
+    verified_users = db.query(User).filter(User.email_verified.is_(True)).count()
 
     # Count by role
     managers = db.query(User).filter(User.role == UserRole.MANAGER.value).count()
@@ -403,14 +403,14 @@ def get_user_stats(db: Session) -> Dict[str, Any]:
     # Active and verified by role
     active_managers = db.query(User).filter(
         User.role == UserRole.MANAGER.value,
-        User.is_active == True,
-        User.email_verified == True
+        User.is_active.is_(True),
+        User.email_verified.is_(True),
     ).count()
 
     active_admins = db.query(User).filter(
         User.role == UserRole.ADMIN.value,
-        User.is_active == True,
-        User.email_verified == True
+        User.is_active.is_(True),
+        User.email_verified.is_(True),
     ).count()
 
     return {
@@ -463,8 +463,8 @@ def search_users(
             User.last_name.ilike(search_filter),
             func.concat(User.first_name, ' ', User.last_name).ilike(search_filter)
         ),
-        User.is_active == True,
-        User.email_verified == True
+        User.is_active.is_(True),
+        User.email_verified.is_(True),
     ).limit(limit).all()
 
     return [
@@ -473,7 +473,7 @@ def search_users(
             email=user.email,
             first_name=user.first_name,
             last_name=user.last_name,
-            role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None
+            role=_to_user_role(user.role),
         )
         for user in users
     ]

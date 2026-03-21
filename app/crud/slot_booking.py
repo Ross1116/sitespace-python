@@ -1,9 +1,11 @@
 # crud/slot_booking.py
-from typing import Optional, List, Dict, Any, Tuple
+import warnings
+from typing import Optional, List, Dict, Any, Tuple, Union
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.sql.elements import ColumnElement
 from collections import defaultdict
 
 from ..models.slot_booking import SlotBooking
@@ -32,7 +34,7 @@ from .asset import sync_maintenance_status
 # Helpers shared across conflict-checking, auto-deny, and competing count
 # ---------------------------------------------------------------------------
 
-def _overlapping_time_filter(start_time: Any, end_time: Any) -> Any:
+def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
     """Return an OR clause matching any time overlap with the given window."""
     return or_(
         and_(
@@ -789,6 +791,18 @@ def delete_booking(
     comment: Optional[str] = None,
     hard_delete: bool = False,
     ) -> bool:
+    """Soft-cancel a booking.
+
+    ``hard_delete`` is accepted for backwards-compatibility but is always
+    ignored — bookings are never hard-deleted to preserve audit history.
+    """
+    if hard_delete:
+        warnings.warn(
+            "hard_delete=True passed to delete_booking but hard delete is disabled; "
+            "the booking will be soft-cancelled instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     booking = get_booking(db, booking_id)
     if not booking:

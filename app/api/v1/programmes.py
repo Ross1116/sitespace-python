@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from typing import Any
+from typing import Any, cast
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -335,7 +335,8 @@ def get_activities(
         project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        if not check_sub_project_access(db, current_entity, project):
+        subcontractor = cast(Subcontractor, current_entity)
+        if not check_sub_project_access(db, subcontractor, project):
             raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
         activities = (
