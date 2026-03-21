@@ -24,7 +24,7 @@ class ProgrammeUploadStatus(BaseSchema):
     upload_id: UUID
     status: str
     completeness_score: Optional[float] = None
-    completeness_notes: Optional[str] = None
+    completeness_notes: Optional[dict] = None
     version_number: Optional[int] = None
     file_name: Optional[str] = None
     created_at: Optional[str] = None
