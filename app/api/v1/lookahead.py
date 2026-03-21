@@ -118,7 +118,8 @@ def get_subcontractor_lookahead(
     current_sub: Subcontractor = Depends(require_role([UserRole.SUBCONTRACTOR])),
 ) -> SubcontractorLookaheadResponse:
     project = _check_project_exists(project_id, db)
-    check_sub_project_access(db, current_sub, project)
+    if not check_sub_project_access(db, current_sub, project):
+        raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
     if str(current_sub.id) != str(sub_id):
         raise HTTPException(status_code=403, detail="You can only view your own lookahead data")

@@ -171,21 +171,28 @@ def _resolve_booking_actor(
         if not subcontractor:
             raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
 
+        project_with_members = (
+            db.query(SiteProject)
+            .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
+            .filter(SiteProject.id == project_id)
+            .first()
+        )
+        if not project_with_members:
+            raise ValueError(f"Project with id {project_id} not found")
+        if not any(str(s.id) == str(subcontractor_id) for s in project_with_members.subcontractors):
+            raise ValueError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
+
         if provided_manager_id:
             manager_id = provided_manager_id
             manager = db.query(User).filter(User.id == manager_id).first()
             if not manager:
                 raise ValueError(f"Manager with id {manager_id} not found")
+            if not any(str(m.id) == str(manager_id) for m in project_with_members.managers):
+                raise ValueError(f"Manager {manager_id} is not a member of project {project_id}")
         else:
-            project_with_managers = (
-                db.query(SiteProject)
-                .options(joinedload(SiteProject.managers))
-                .filter(SiteProject.id == project_id)
-                .first()
-            )
-            if not project_with_managers or not project_with_managers.managers:
+            if not project_with_members.managers:
                 raise ValueError("No managers found for this project")
-            manager_id = project_with_managers.managers[0].id
+            manager_id = project_with_members.managers[0].id
 
         booking_status = BookingStatus.PENDING
     else:
@@ -779,7 +786,8 @@ def delete_booking(
     booking_id: UUID,
     deleted_by_id: UUID,
     deleted_by_role: UserRole,
-    comment: Optional[str] = None
+    comment: Optional[str] = None,
+    hard_delete: bool = False,
     ) -> bool:
 
     booking = get_booking(db, booking_id)

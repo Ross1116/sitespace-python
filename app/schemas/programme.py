@@ -37,7 +37,7 @@ class ProgrammeVersionSummary(BaseSchema):
     version_number: Optional[int] = None
     file_name: Optional[str] = None
     status: Optional[str] = None
-    completeness_score: Optional[int] = None
+    completeness_score: Optional[float] = None
     created_at: Optional[str] = None
 
 
@@ -83,7 +83,7 @@ class ProgrammeActivityItem(BaseSchema):
     is_summary: bool | None = None
     wbs_code: str | None = None
     sort_order: int | None = None
-    import_flags: list[str] = []
+    import_flags: list[str] = Field(default_factory=list)
 
 
 class ActivityMappingResponse(BaseSchema):

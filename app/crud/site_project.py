@@ -13,16 +13,21 @@ from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
 
 
+def _escape_ilike(value: str) -> str:
+    """Escape SQL LIKE meta-characters so user input is treated literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _apply_project_filters(query: Any, filters: Optional[SiteProjectFilters]) -> Any:
     """Apply shared project filters to a query."""
     if not filters:
         return query
 
     if filters.name:
-        query = query.filter(SiteProject.name.ilike(f"%{filters.name}%"))
+        query = query.filter(SiteProject.name.ilike(f"%{_escape_ilike(filters.name)}%", escape="\\"))
 
     if filters.location:
-        query = query.filter(SiteProject.location.ilike(f"%{filters.location}%"))
+        query = query.filter(SiteProject.location.ilike(f"%{_escape_ilike(filters.location)}%", escape="\\"))
 
     if filters.status:
         query = query.filter(SiteProject.status == filters.status)
@@ -352,7 +357,7 @@ def get_available_subcontractors(
         )
     
     # Only active subcontractors
-    query = query.filter(Subcontractor.is_active == True)
+    query = query.filter(Subcontractor.is_active.is_(True))
     
     return query.all()
 
@@ -505,12 +510,11 @@ def check_sub_project_access(
     db: Session,
     subcontractor: "Subcontractor",
     project: "SiteProject",
-) -> None:
-    """Raise HTTP 403 if ``subcontractor`` is not assigned to ``project``.
+) -> bool:
+    """Return True if ``subcontractor`` is assigned to ``project``, False otherwise.
 
     The project object must have its ``subcontractors`` relationship loaded
     before calling this (e.g. via a prior ``db.query`` or joinedload).
+    Callers in the API layer are responsible for translating False into HTTP 403.
     """
-    is_assigned = any(str(sub.id) == str(subcontractor.id) for sub in project.subcontractors)
-    if not is_assigned:
-        raise HTTPException(status_code=403, detail="You are not assigned to this project")
+    return any(str(sub.id) == str(subcontractor.id) for sub in project.subcontractors)

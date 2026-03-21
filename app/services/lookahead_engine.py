@@ -5,7 +5,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -319,7 +319,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     timezone_name = project.timezone or "Australia/Adelaide"
     try:
         tz = ZoneInfo(timezone_name)
-    except Exception:
+    except ZoneInfoNotFoundError:
         logger.warning("Invalid project timezone '%s'; using Australia/Adelaide", timezone_name)
         timezone_name = "Australia/Adelaide"
         tz = ZoneInfo("Australia/Adelaide")

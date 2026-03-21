@@ -228,7 +228,7 @@ async def upload_programme(
     )
 
     return ProgrammeUploadAccepted(
-        upload_id=upload_id,
+        upload_id=upload.id,
         status="processing",
         message="Programme upload accepted. Poll /status for progress.",
     )
@@ -335,7 +335,8 @@ def get_activities(
         project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        check_sub_project_access(db, current_entity, project)
+        if not check_sub_project_access(db, current_entity, project):
+            raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
         activities = (
             db.query(ProgrammeActivity)
@@ -363,20 +364,20 @@ def get_activities(
         activities = activities_query.order_by(ProgrammeActivity.sort_order).all()
 
     return [
-        {
-            "id": str(a.id),
-            "parent_id": str(a.parent_id) if a.parent_id else None,
-            "name": a.name,
-            "start_date": a.start_date.isoformat() if a.start_date else None,
-            "end_date": a.end_date.isoformat() if a.end_date else None,
-            "duration_days": a.duration_days,
-            "level_name": a.level_name,
-            "zone_name": a.zone_name,
-            "is_summary": a.is_summary,
-            "wbs_code": a.wbs_code,
-            "sort_order": a.sort_order,
-            "import_flags": a.import_flags or [],
-        }
+        ProgrammeActivityItem(
+            id=str(a.id),
+            parent_id=str(a.parent_id) if a.parent_id else None,
+            name=a.name,
+            start_date=a.start_date.isoformat() if a.start_date else None,
+            end_date=a.end_date.isoformat() if a.end_date else None,
+            duration_days=a.duration_days,
+            level_name=a.level_name,
+            zone_name=a.zone_name,
+            is_summary=a.is_summary,
+            wbs_code=a.wbs_code,
+            sort_order=a.sort_order,
+            import_flags=a.import_flags or [],
+        )
         for a in activities
     ]
 

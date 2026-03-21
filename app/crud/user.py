@@ -89,6 +89,14 @@ def get_users(
     )
 
 
+def _to_user_role(value: Optional[str]) -> Optional[UserRole]:
+    """Safely convert a raw role string to UserRole, returning None for unknown values."""
+    try:
+        return UserRole(value) if value else None
+    except ValueError:
+        return None
+
+
 def get_user_detail(db: Session, user_id: str) -> Optional[UserDetailResponse]:
     """Get detailed user information with relationships"""
     user = db.query(User).filter(User.id == user_id).first()
@@ -124,7 +132,7 @@ def get_user_detail(db: Session, user_id: str) -> Optional[UserDetailResponse]:
         first_name=user.first_name,
         last_name=user.last_name,
         phone=user.phone,
-        role=UserRole(user.role) if user.role in UserRole._value2member_map_ else None,
+        role=_to_user_role(user.role),
         is_active=user.is_active,
         created_at=user.created_at,
         updated_at=user.updated_at,
@@ -136,9 +144,6 @@ def get_user_detail(db: Session, user_id: str) -> Optional[UserDetailResponse]:
 
 def create_user(db: Session, user_data: UserCreate) -> User:
     """Create new user"""
-    # Remove confirm_password from data
-    user_dict = user_data.model_dump()
-    user_dict.pop('confirm_password', None)
     hashed_password = get_password_hash(user_data.password)
 
     db_user = User(
@@ -312,8 +317,8 @@ def get_users_by_role(db: Session, role: UserRole) -> List[User]:
     """Get all active users with specific role"""
     return db.query(User).filter(
         User.role == role.value,
-        User.is_active == True,
-        User.email_verified == True
+        User.is_active.is_(True),
+        User.email_verified.is_(True),
     ).all()
 
 
@@ -323,8 +328,8 @@ def get_managers(db: Session, active_only: bool = True) -> List[User]:
 
     if active_only:
         query = query.filter(
-            User.is_active == True,
-            User.email_verified == True
+            User.is_active.is_(True),
+            User.email_verified.is_(True),
         )
 
     return query.all()
@@ -336,8 +341,8 @@ def get_admins(db: Session, active_only: bool = True) -> List[User]:
 
     if active_only:
         query = query.filter(
-            User.is_active == True,
-            User.email_verified == True
+            User.is_active.is_(True),
+            User.email_verified.is_(True),
         )
 
     return query.all()
