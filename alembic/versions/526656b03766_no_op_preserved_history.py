@@ -1,4 +1,4 @@
-"""major changes
+"""no-op migration preserved for revision chain continuity
 
 Revision ID: 526656b03766
 Revises: ac2d91bc1a20

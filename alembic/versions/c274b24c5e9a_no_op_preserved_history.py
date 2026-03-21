@@ -1,4 +1,4 @@
-"""change moaar
+"""no-op migration preserved for revision chain continuity
 
 Revision ID: c274b24c5e9a
 Revises: 0adc3de1aada
