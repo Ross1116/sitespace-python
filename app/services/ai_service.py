@@ -618,7 +618,7 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
     )
 
 
-def _extract_partial_classifications(text: str) -> list[dict[str, Any]]:
+def _extract_partial_classifications(text: str) -> list[dict[str, str]]:
     """
     Last-resort extraction: pull out any syntactically complete classification
     objects from a truncated response.  Matches objects that have all four

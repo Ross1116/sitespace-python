@@ -13,7 +13,7 @@ from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
 
 
-def _apply_project_filters(query, filters: Optional[SiteProjectFilters]):
+def _apply_project_filters(query: Any, filters: Optional[SiteProjectFilters]) -> Any:
     """Apply shared project filters to a query."""
     if not filters:
         return query
@@ -272,7 +272,7 @@ def add_manager_to_project(
 
     return False
 
-def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID):
+def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID) -> bool:
     """Remove manager from project"""
     project = get_project(db, project_id)
     if project:
@@ -285,8 +285,8 @@ def add_subcontractor_to_project(
     db: Session,
     project_id: UUID,
     subcontractor_id: UUID,
-    is_active: bool = True
-):
+    is_active: bool = True,
+) -> bool:
     """Add subcontractor to project"""
     if not is_active:
         return False
@@ -304,10 +304,10 @@ def add_subcontractor_to_project(
     return False
 
 def remove_subcontractor_from_project(
-    db: Session, 
-    project_id: UUID, 
-    subcontractor_id: UUID
-):
+    db: Session,
+    project_id: UUID,
+    subcontractor_id: UUID,
+) -> bool:
     """Remove subcontractor from project"""
     project = get_project(db, project_id)
     if project:
@@ -322,8 +322,8 @@ def update_project_subcontractor(
     db: Session,
     project_id: UUID,
     subcontractor_id: UUID,
-    update_data: Any
-):
+    update_data: Any,
+) -> bool:
     """Update subcontractor details in project"""
     # Placeholder for future implementation
     return True

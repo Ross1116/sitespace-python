@@ -32,7 +32,7 @@ from .asset import resolve_maintenance_status
 # Helpers shared across conflict-checking, auto-deny, and competing count
 # ---------------------------------------------------------------------------
 
-def _overlapping_time_filter(start_time, end_time):
+def _overlapping_time_filter(start_time: Any, end_time: Any) -> Any:
     """Return an OR clause matching any time overlap with the given window."""
     return or_(
         and_(
@@ -186,12 +186,12 @@ def _resolve_booking_actor(
 # ---------------------------------------------------------------------------
 
 def _apply_booking_stats_filters(
-    query,
+    query: Any,
     project_id: Optional[UUID],
     user_id: Optional[UUID],
-    date_from,
-    date_to,
-):
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> Any:
     """Apply the standard 4-field statistics filters to any SlotBooking query."""
     if project_id:
         query = query.filter(SlotBooking.project_id == project_id)
