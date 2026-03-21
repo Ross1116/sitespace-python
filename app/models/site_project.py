@@ -21,43 +21,6 @@ subcontractor_site_project_association = Table(
     Column('site_project_id', UUID(as_uuid=True), ForeignKey('site_projects.id'))
 )
 
-# class SiteProject(Base):
-#     __tablename__ = "site_projects"
-
-#     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
-#     # External/Integration Keys
-#     contractor_key = Column(String, nullable=True, index=True)
-#     contractor_project_id = Column(String, nullable=True, index=True)
-#     email_id = Column(String, nullable=True)
-    
-#     # Stored as a raw TEXT field (JSON serialization)
-#     contractor_project = Column(Text, nullable=True) 
-#     created_by = Column(String, nullable=True)
-
-#     created_at = Column(DateTime(timezone=True), server_default=func.now())
-#     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-#     # M2M Relationships
-#     managers = relationship(
-#         "User",
-#         secondary=manager_site_project_association,
-#         back_populates="managed_projects"
-#     )
-    
-#     subcontractors = relationship(
-#         "User",
-#         secondary=subcontractor_site_project_association,
-#         back_populates="assigned_projects"
-#     )
-    
-#     # O2M Relationships
-#     assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
-#     slot_bookings = relationship("SlotBooking", back_populates="project", cascade="all, delete-orphan")
-    
-#     def __repr__(self):
-#         return f"<SiteProject(id={self.id}, contractor_project_id={self.contractor_project_id})>"
-
 class SiteProject(Base):
     __tablename__ = "site_projects"
     

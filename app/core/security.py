@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 from .config import settings
 from .database import get_db
 from ..models.user import User
-from ..models.subcontractor import Subcontractor  # Add this import
-from ..crud.user import get_user, get_user_by_email
+from ..models.subcontractor import Subcontractor
 from .password import verify_password, get_password_hash
 from ..schemas.enums import UserRole
 
@@ -34,7 +33,7 @@ TOKEN_TYPE_PASSWORD_RESET = "password_reset"
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT access token"""
     to_encode = data.copy()
     if expires_delta:
@@ -51,7 +50,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return encoded_jwt
 
-def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT refresh token"""
     to_encode = data.copy()
     if expires_delta:
@@ -198,8 +197,8 @@ def get_current_user(
             entity = get_subcontractor_by_email(db, email=email)
     else:
         # Get user
+        from ..crud.user import get_user, get_user_by_email
         if user_id:
-            from ..crud.user import get_user
             entity = get_user(db, user_id=user_id)
         elif email:
             entity = get_user_by_email(db, email=email)
@@ -238,46 +237,20 @@ def get_current_verified_user(
         )
     return current_entity
 
-def get_current_user_or_subcontractor(
-    current_entity: Union[User, Subcontractor] = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """Get current entity info as a dictionary"""
-    if isinstance(current_entity, User):
-        return {
-            "id": str(current_entity.id),
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "role": current_entity.role,
-            "entity_type": "user",
-            "is_active": current_entity.is_active
-        }
-    else:
-        return {
-            "id": str(current_entity.id),
-            "email": current_entity.email,
-            "first_name": current_entity.first_name,
-            "last_name": current_entity.last_name,
-            "role": "subcontractor",
-            "entity_type": "subcontractor",
-            "is_active": current_entity.is_active,
-            "company_name": current_entity.company_name,
-            "trade_specialty": current_entity.trade_specialty
-        }
+def normalize_role(r: object) -> str:
+    """Normalize a role value (enum, string, etc.) to a lowercase string."""
+    if hasattr(r, "value"):
+        return str(r.value).strip().lower()
+    if hasattr(r, "name"):
+        return str(r.name).strip().lower()
+    if isinstance(r, str):
+        return r.strip().lower()
+    return str(r).strip().lower()
+
 
 def require_role(allowed_roles: list):
     """Dependency to check if user has required role (case-insensitive, robust to enums/strings)."""
-    # Normalize allowed_roles to a set of lowercase strings
-    def _normalize_role(r):
-        if hasattr(r, "value"):
-            return str(r.value).strip().lower()
-        if hasattr(r, "name"):
-            return str(r.name).strip().lower()
-        if isinstance(r, str):
-            return r.strip().lower()
-        return str(r).strip().lower()
-
-    allowed_set = set(_normalize_role(r) for r in allowed_roles)
+    allowed_set = set(normalize_role(r) for r in allowed_roles)
 
     def role_checker(current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)):
         # Handle subcontractor
@@ -289,14 +262,24 @@ def require_role(allowed_roles: list):
                 )
         # Handle user
         elif isinstance(current_entity, User):
-            role_norm = _normalize_role(current_entity.role)
-            if role_norm not in allowed_set:
+            if normalize_role(current_entity.role) not in allowed_set:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have permission to access this resource"
                 )
         return current_entity
     return role_checker
+
+
+def require_manager_or_admin(current_user: Union[User, Subcontractor]) -> None:
+    """Raise 403 if current_user is not a manager or admin."""
+    raw_role = getattr(current_user, "role", None)
+    role = normalize_role(raw_role) if raw_role is not None else None
+    if role not in (UserRole.MANAGER, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can access this endpoint"
+        )
 
 # Token blacklist with expiry cleanup (swap to Redis for multi-instance deployments)
 class TokenBlacklist:
@@ -371,10 +354,3 @@ def get_entity_id(entity: Union[User, Subcontractor]) -> UUID:
     """
     return entity.id
 
-def is_subcontractor(entity: Union[User, Subcontractor]) -> bool:
-    """Check if entity is a Subcontractor"""
-    return isinstance(entity, Subcontractor)
-
-def is_user(entity: Union[User, Subcontractor]) -> bool:
-    """Check if entity is a User"""
-    return isinstance(entity, User)

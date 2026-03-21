@@ -1,4 +1,5 @@
 # app/api/v1/endpoints/users.py
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import List
@@ -18,6 +19,7 @@ from ...schemas.user import (
 )
 
 router = APIRouter(prefix="/users", tags=["Users"])
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # SELF PROFILE ROUTES
@@ -116,10 +118,29 @@ def update_user_by_admin(
 
     # 2. Handle Role Change
     if user_update.role is not None and user_update.role != user.role:
+        logger.info(
+            "admin_role_change",
+            extra={
+                "actor_id": str(current_user.id),
+                "target_user_id": str(user_id),
+                "action": "role_change",
+                "from_role": getattr(user.role, "value", user.role),
+                "to_role": getattr(user_update.role, "value", str(user_update.role)),
+            },
+        )
         user = user_crud.update_user_role(db, user, user_update.role)
 
     # 3. Handle Activation/Deactivation
     if user_update.is_active is not None and user_update.is_active != user.is_active:
+        action = "activate_user" if user_update.is_active else "deactivate_user"
+        logger.info(
+            "admin_activation_change",
+            extra={
+                "actor_id": str(current_user.id),
+                "target_user_id": str(user_id),
+                "action": action,
+            },
+        )
         if user_update.is_active:
             user = user_crud.activate_user(db, user)
         else:

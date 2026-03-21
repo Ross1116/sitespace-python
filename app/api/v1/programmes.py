@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from typing import Any
+from typing import Any, cast
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -23,13 +23,22 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
-from ...core.security import require_role
+from ...core.security import normalize_role, require_role
+from ...crud.site_project import check_sub_project_access
 from ...models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ...models.site_project import SiteProject
 from ...models.stored_file import StoredFile
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
-from ...schemas.programme import ActivityMappingResponse, MappingCorrectionRequest
+from ...schemas.programme import (
+    ActivityMappingResponse,
+    MappingCorrectionRequest,
+    ProgrammeActivityItem,
+    ProgrammeDiff,
+    ProgrammeUploadAccepted,
+    ProgrammeUploadStatus,
+    ProgrammeVersionSummary,
+)
 from ...schemas.enums import UserRole
 from ...utils.storage import storage
 from ...services.process_programme import preflight_validate, process_programme
@@ -49,31 +58,19 @@ ALLOWED_CONTENT_TYPES = {
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".pdf"}
 
 
-def _normalize_role(role: Any) -> str:
-    if hasattr(role, "value"):
-        return str(role.value).strip().lower()
-    return str(role).strip().lower()
-
-
 def _check_project_access(project_id: UUID, current_user: User, db: Session) -> SiteProject:
     project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    role = _normalize_role(getattr(current_user, "role", ""))
-    is_admin = role == "admin"
+    role = normalize_role(getattr(current_user, "role", ""))
+    is_admin = role == UserRole.ADMIN.value
     is_project_manager = any(str(m.id) == str(current_user.id) for m in project.managers)
 
     if not is_admin and not is_project_manager:
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
     return project
-
-
-def _check_subcontractor_project_access(project: SiteProject, current_sub: Subcontractor) -> None:
-    is_assigned_sub = any(str(sub.id) == str(current_sub.id) for sub in project.subcontractors)
-    if not is_assigned_sub:
-        raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
 
 def _serialize_mapping(
@@ -100,14 +97,14 @@ def _serialize_mapping(
 # POST /api/programmes/upload
 # ---------------------------------------------------------------------------
 
-@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=ProgrammeUploadAccepted)
 async def upload_programme(
     background_tasks: BackgroundTasks,
     project_id: UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict[str, Any]:
+) -> ProgrammeUploadAccepted:
     """
     Accept a CSV, XLSX, XLSM, or PDF programme file. Returns 202 immediately.
     Processing (AI structure detection → activity import) runs in background.
@@ -230,23 +227,23 @@ async def upload_programme(
         upload_id, project_id, current_user.id, filename,
     )
 
-    return {
-        "upload_id": upload_id,
-        "status": "processing",
-        "message": "Programme upload accepted. Poll /status for progress.",
-    }
+    return ProgrammeUploadAccepted(
+        upload_id=upload.id,
+        status="processing",
+        message="Programme upload accepted. Poll /status for progress.",
+    )
 
 
 # ---------------------------------------------------------------------------
 # GET /api/programmes/{upload_id}/status
 # ---------------------------------------------------------------------------
 
-@router.get("/{upload_id}/status")
+@router.get("/{upload_id}/status", response_model=ProgrammeUploadStatus)
 def get_upload_status(
     upload_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict[str, Any]:
+) -> ProgrammeUploadStatus:
     """Poll processing status. Returns committed once the pipeline completes."""
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
@@ -254,27 +251,27 @@ def get_upload_status(
 
     _check_project_access(upload.project_id, current_user, db)
 
-    return {
-        "upload_id": str(upload.id),
-        "status": upload.status,
-        "completeness_score": round((upload.completeness_score or 0.0) * 100),  # 0–100 for display
-        "completeness_notes": upload.completeness_notes,
-        "version_number": upload.version_number,
-        "file_name": upload.file_name,
-        "created_at": upload.created_at.isoformat() if upload.created_at else None,
-    }
+    return ProgrammeUploadStatus(
+        upload_id=upload.id,
+        status=upload.status,
+        completeness_score=round((upload.completeness_score or 0.0) * 100),
+        completeness_notes=upload.completeness_notes,
+        version_number=upload.version_number,
+        file_name=upload.file_name,
+        created_at=upload.created_at.isoformat() if upload.created_at else None,
+    )
 
 
 # ---------------------------------------------------------------------------
 # GET /api/programmes/{project_id}  — list versions
 # ---------------------------------------------------------------------------
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", response_model=list[ProgrammeVersionSummary])
 def list_programme_versions(
     project_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> list[dict[str, Any]]:
+) -> list[ProgrammeVersionSummary]:
     """List all programme versions for a project, newest first."""
     _check_project_access(project_id, current_user, db)
 
@@ -286,14 +283,14 @@ def list_programme_versions(
     )
 
     return [
-        {
-            "upload_id": str(u.id),
-            "version_number": u.version_number,
-            "file_name": u.file_name,
-            "status": u.status,
-            "completeness_score": round((u.completeness_score or 0.0) * 100),
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-        }
+        ProgrammeVersionSummary(
+            upload_id=u.id,
+            version_number=u.version_number,
+            file_name=u.file_name,
+            status=u.status,
+            completeness_score=round((u.completeness_score or 0.0) * 100),
+            created_at=u.created_at.isoformat() if u.created_at else None,
+        )
         for u in uploads
     ]
 
@@ -302,7 +299,7 @@ def list_programme_versions(
 # GET /api/programmes/{upload_id}/activities
 # ---------------------------------------------------------------------------
 
-@router.get("/{upload_id}/activities")
+@router.get("/{upload_id}/activities", response_model=list[ProgrammeActivityItem])
 def get_activities(
     upload_id: UUID,
     subcontractor_id: UUID | None = None,
@@ -310,7 +307,7 @@ def get_activities(
     current_entity: User | Subcontractor = Depends(
         require_role([UserRole.MANAGER, UserRole.ADMIN, UserRole.SUBCONTRACTOR])
     ),
-) -> list[dict[str, Any]]:
+) -> list[ProgrammeActivityItem]:
     """
     Return activities for a programme version.
 
@@ -325,7 +322,7 @@ def get_activities(
             raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
         raise HTTPException(status_code=409, detail="Programme is still processing.")
 
-    role = _normalize_role(getattr(current_entity, "role", "subcontractor"))
+    role = normalize_role(getattr(current_entity, "role", "subcontractor"))
     is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
 
     if is_subcontractor:
@@ -338,7 +335,9 @@ def get_activities(
         project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        _check_subcontractor_project_access(project, current_entity)
+        subcontractor = cast(Subcontractor, current_entity)
+        if not check_sub_project_access(db, subcontractor, project):
+            raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
         activities = (
             db.query(ProgrammeActivity)
@@ -366,20 +365,20 @@ def get_activities(
         activities = activities_query.order_by(ProgrammeActivity.sort_order).all()
 
     return [
-        {
-            "id": str(a.id),
-            "parent_id": str(a.parent_id) if a.parent_id else None,
-            "name": a.name,
-            "start_date": a.start_date.isoformat() if a.start_date else None,
-            "end_date": a.end_date.isoformat() if a.end_date else None,
-            "duration_days": a.duration_days,
-            "level_name": a.level_name,
-            "zone_name": a.zone_name,
-            "is_summary": a.is_summary,
-            "wbs_code": a.wbs_code,
-            "sort_order": a.sort_order,
-            "import_flags": a.import_flags or [],
-        }
+        ProgrammeActivityItem(
+            id=str(a.id),
+            parent_id=str(a.parent_id) if a.parent_id else None,
+            name=a.name,
+            start_date=a.start_date.isoformat() if a.start_date else None,
+            end_date=a.end_date.isoformat() if a.end_date else None,
+            duration_days=a.duration_days,
+            level_name=a.level_name,
+            zone_name=a.zone_name,
+            is_summary=a.is_summary,
+            wbs_code=a.wbs_code,
+            sort_order=a.sort_order,
+            import_flags=a.import_flags or [],
+        )
         for a in activities
     ]
 
@@ -388,12 +387,12 @@ def get_activities(
 # GET /api/programmes/{upload_id}/diff
 # ---------------------------------------------------------------------------
 
-@router.get("/{upload_id}/diff")
+@router.get("/{upload_id}/diff", response_model=ProgrammeDiff)
 def get_programme_diff(
     upload_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
-) -> dict[str, Any]:
+) -> ProgrammeDiff:
     """
     Diff this version against the previous version for the same project.
     Returns activity count delta and date shift summary.
@@ -428,14 +427,14 @@ def get_programme_diff(
     )
 
     if not previous:
-        return {
-            "upload_id": str(upload_id),
-            "version_number": upload.version_number,
-            "previous_version": None,
-            "activity_count": current_count,
-            "activity_delta": None,
-            "summary": "No previous version to compare.",
-        }
+        return ProgrammeDiff(
+            upload_id=upload_id,
+            version_number=upload.version_number,
+            previous_version=None,
+            activity_count=current_count,
+            activity_delta=None,
+            summary="No previous version to compare.",
+        )
 
     previous_count = (
         db.query(ProgrammeActivity)
@@ -444,15 +443,15 @@ def get_programme_diff(
     )
     delta = current_count - previous_count
 
-    return {
-        "upload_id": str(upload_id),
-        "version_number": upload.version_number,
-        "previous_version": previous.version_number,
-        "activity_count": current_count,
-        "previous_activity_count": previous_count,
-        "activity_delta": delta,
-        "summary": f"{'+' if delta >= 0 else ''}{delta} activities vs previous version.",
-    }
+    return ProgrammeDiff(
+        upload_id=upload_id,
+        version_number=upload.version_number,
+        previous_version=previous.version_number,
+        activity_count=current_count,
+        previous_activity_count=previous_count,
+        activity_delta=delta,
+        summary=f"{'+' if delta >= 0 else ''}{delta} activities vs previous version.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +571,7 @@ def get_unclassified_activity_mappings(
 # PATCH /api/programmes/mappings/{mapping_id}
 # ---------------------------------------------------------------------------
 
-@router.patch("/mappings/{mapping_id}")
+@router.patch("/mappings/{mapping_id}", response_model=ActivityMappingResponse)
 def correct_activity_mapping(
     mapping_id: UUID,
     payload: MappingCorrectionRequest,

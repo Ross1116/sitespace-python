@@ -1,3 +1,4 @@
+import hashlib
 import html as html_mod
 import os
 import requests
@@ -9,6 +10,12 @@ from .config import settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _redact_email(email: str) -> str:
+    """Return a redacted email safe for logging (sha256 prefix)."""
+    digest = hashlib.sha256(email.strip().lower().encode()).hexdigest()[:12]
+    return f"<{digest}>"
 
 class EmailSender:
     """
@@ -25,13 +32,19 @@ class EmailSender:
         self.from_email = settings.FROM_EMAIL
         self.from_name = settings.FROM_NAME
 
-        # Log config status at init for debugging
         mode = "SANDBOX" if self.use_sandbox else "LIVE"
-        logger.info(f"EmailSender initialized in {mode} mode | token_set={bool(self.api_token)} | from={self.from_email}")
+        logger.debug(
+            "Email sender configured",
+            extra={
+                "mail_mode": mode,
+                "mailtrap_token_configured": bool(self.api_token),
+                "from_email": self.from_email,
+            },
+        )
         if not self.api_token:
-            logger.warning("MAILTRAP_TOKEN is not set - emails will not be sent!")
+            logger.warning("Email delivery disabled because MAILTRAP_TOKEN is not configured")
         if self.use_sandbox and not self.inbox_id:
-            logger.warning("MAILTRAP_INBOX_ID is not set - sandbox emails will fail!")
+            logger.warning("Sandbox email delivery disabled because MAILTRAP_INBOX_ID is not configured")
 
     def send_email(
         self,
@@ -67,7 +80,7 @@ class EmailSender:
                 "Api-Token": self.api_token,
                 "Content-Type": "application/json"
             }
-            logger.info(f"📧 Preparing to send SANDBOX email to {to_email} (Inbox {self.inbox_id})...")
+            logger.info(f"📧 Preparing to send SANDBOX email to {_redact_email(to_email)} (Inbox {self.inbox_id})...")
         else:
             # --- LIVE SENDING MODE ---
             # Standard Sending API URL
@@ -78,7 +91,7 @@ class EmailSender:
                 "Authorization": f"Bearer {self.api_token}",
                 "Content-Type": "application/json"
             }
-            logger.info(f"📧 Preparing to send LIVE email to {to_email} via Mailtrap Sending API...")
+            logger.info(f"📧 Preparing to send LIVE email to {_redact_email(to_email)} via Mailtrap Sending API...")
 
         # 3. Payload Construction
         # Mailtrap Sending API and Sandbox share the same payload structure
@@ -107,7 +120,7 @@ class EmailSender:
 
             # 5. Handle Response
             if response.status_code in [200, 201]: # Mailtrap sometimes returns 201 for creation
-                logger.info(f"✅ Email sent successfully to {to_email}")
+                logger.info(f"✅ Email sent successfully to {_redact_email(to_email)}")
                 return True
             else:
                 logger.error(f"❌ Failed to send email. Status: {response.status_code}")
@@ -120,8 +133,8 @@ class EmailSender:
         except requests.exceptions.ConnectionError:
             logger.error("❌ Connection error while contacting Mailtrap.")
             return False
-        except Exception as e:
-            logger.error(f"❌ Unexpected exception in email sending: {str(e)}")
+        except Exception:
+            logger.exception("❌ Unexpected exception in email sending")
             return False
 
 # Create email sender instance
@@ -664,7 +677,7 @@ def notify_booking_change(
                     booking_details=booking_details,
                 )
             except Exception:
-                logger.exception(f"Failed to send booking notification to {email_addr}")
+                logger.exception(f"Failed to send booking notification to {_redact_email(email_addr)}")
 
     thread = threading.Thread(target=_send, daemon=True)
     thread.start()

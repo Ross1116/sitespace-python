@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from fastapi import HTTPException, status
 from .config import settings
 import logging
@@ -80,8 +80,8 @@ def create_database_engine():
     try:
         with engine.connect() as connection:
             logger.info("✅ Database connection test successful.")
-    except Exception as conn_error:
-        logger.warning("❌ Database connectivity check failed at startup: %s", conn_error)
+    except SQLAlchemyError:
+        logger.warning("❌ Database connectivity check failed at startup", exc_info=True)
         logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
 
     return engine

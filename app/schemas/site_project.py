@@ -9,6 +9,20 @@ from .user import UserBriefResponse
 from .subcontractor import SubcontractorBriefResponse  # Import from subcontractor schema
 from .enums import ProjectStatus  # You might want to create/update this enum
 
+
+class SiteProjectFilters(BaseSchema):
+    """Explicit project-list filters shared by routes and CRUD helpers."""
+
+    name: Optional[str] = None
+    location: Optional[str] = None
+    status: Optional[ProjectStatus] = None
+    start_date_from: Optional[date] = None
+    start_date_to: Optional[date] = None
+    end_date_from: Optional[date] = None
+    end_date_to: Optional[date] = None
+    user_id: Optional[UUID] = None
+
+
 class SiteProjectBase(BaseSchema):
     """Base site project schema"""
     name: str = Field(..., min_length=1, max_length=255)

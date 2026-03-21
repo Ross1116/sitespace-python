@@ -16,10 +16,36 @@ logger = logging.getLogger("sitespace.requests")
 class TvReadOnlyMiddleware(BaseHTTPMiddleware):
     """Block all write operations for users with role=tv.
 
-    TV users are intended for display-only usage.
-    - Allows: GET/HEAD/OPTIONS
-    - Blocks: POST/PUT/PATCH/DELETE
-    - Exception: /api/auth/* (login/refresh/logout/etc)
+    TV users are intended for display-only dashboard usage (e.g. a screen in a site
+    office showing live booking and lookahead data). They must never be able to mutate
+    state, but they do need to authenticate and read a scoped subset of project data.
+
+    Enforcement is split across two layers — both are intentional and complementary:
+
+    LAYER 1 — This middleware (blanket write-block):
+        Intercepts every request before it reaches any route handler.
+        Blocks POST/PUT/PATCH/DELETE for TV tokens.
+        Exception: /api/auth/* is always passed through (login, refresh, logout).
+        This is a cheap, early guard that requires no route-level code.
+
+    LAYER 2 — Inline route guards in app/api/v1/*.py:
+        Handle TV-specific restrictions that cannot be expressed as an HTTP-method
+        filter. Examples:
+          - GET /projects: TV users may only see projects they are explicitly assigned to.
+          - GET /bookings: TV users must supply a project_id (cannot list all bookings).
+          - GET /assets (global list): blocked for TV (must use project-scoped endpoint).
+        These guards read `user_role` from the resolved entity and raise HTTP 403 with a
+        descriptive message.
+
+    WHY BOTH:
+        Middleware cannot easily perform role-specific data scoping on reads (it would
+        need to re-parse the body and call into the ORM). Route-level guards can, but
+        they would have to be added to every write endpoint, creating a surface for
+        omissions. Using middleware for writes + inline guards for scoped reads keeps
+        each layer doing what it does best.
+
+    Allowed: GET/HEAD/OPTIONS
+    Blocked: POST/PUT/PATCH/DELETE (except /api/auth/*)
     """
 
     _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

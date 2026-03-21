@@ -6,7 +6,7 @@ import re
 
 from .base import BaseSchema, TimestampSchema
 from .enums import UserRole
-from .auth import PasswordMixin
+from .auth import PasswordConfirmationMixin
 
 class UserBase(BaseSchema):
     """Base user schema"""
@@ -21,21 +21,14 @@ class UserBase(BaseSchema):
             raise ValueError('Invalid phone number format')
         return v
 
-class UserCreate(UserBase, PasswordMixin):
+class UserCreate(UserBase, PasswordConfirmationMixin):
     """User creation schema"""
     role: UserRole = UserRole.MANAGER
-    confirm_password: str
 
     @field_validator('role', mode='before')
     def normalize_role(cls, v):
         if isinstance(v, str):
             return v.strip().lower()
-        return v
-    
-    @field_validator('confirm_password')
-    def passwords_match(cls, v, values):
-        if 'password' in values.data and v != values.data['password']:
-            raise ValueError('Passwords do not match')
         return v
 
 class UserUpdate(BaseSchema):
