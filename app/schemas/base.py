@@ -28,12 +28,12 @@ class TimestampSchema(BaseSchema):
     def default_updated_at(cls, v):
         return v if v is not None else datetime.now(timezone.utc)
 
-class PaginationParams(BaseModel):
+class PaginationParams(BaseSchema):
     """Pagination parameters"""
     skip: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=1000)
 
-class PaginatedResponse(BaseModel):
+class PaginatedResponse(BaseSchema):
     """Generic paginated response"""
     total: int
     skip: int

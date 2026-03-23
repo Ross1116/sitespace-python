@@ -1,17 +1,9 @@
 """
 AI service — structure detection and asset classification.
 
-BE Dev: this file defines the interface contract. The stub implementations
-        return hardcoded fixture data so the orchestrator can be built and
-        tested independently.
-
-AI Dev: replace _detect_structure_real() and _classify_assets_real() with
-        real LLM calls. Do not change the function signatures or return shapes —
-        those are the agreed interface contract (team-split doc Sections 2.1 + 2.2).
-
-Contract:
-  detect_structure(rows)  -> StructureResult   (Section 2.1)
-  classify_assets(activities) -> ClassificationResult  (Section 2.2)
+Public interface:
+  detect_structure(rows)  -> StructureResult
+  classify_assets(activities) -> ClassificationResult
   suggest_subcontractor_asset_types(subcontractors) -> list[SubcontractorAssetSuggestion]
 """
 
@@ -25,32 +17,108 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
+
+import threading
 
 import anthropic
+try:
+    import openai as _openai_module
+except ImportError:
+    _openai_module = None  # type: ignore[assignment]
 
 from ..core.config import settings
+from ..core.constants import ALLOWED_ASSET_TYPES
 
 logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+# P6 and common programme day-step prefix stripped before name dedup.
+# Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
+# Character class explicitly covers hyphen, en-dash (U+2013), and em-dash (U+2014).
+_DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORECASE)
+
+
+def _normalize_for_dedup(name: str) -> str:
+    """Lowercase, strip P6 day-step prefix, collapse whitespace."""
+    norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
+    return re.sub(r"\s{2,}", " ", norm)
+
+
 # ---------------------------------------------------------------------------
-# Allowed asset_type values — Section 2.3 canonical list.
-# BE validates on DB write; AI Dev uses only these values in prompts.
+# Canonical asset type normalizer.
+# Maps raw asset.type strings entered in the UI (mixed-case, varied phrasing)
+# to the canonical ALLOWED_ASSET_TYPES values.  Used in two places:
+#   1. _build_classification_prompt — so project-aware valid_types stays
+#      compatible with the classifier and lookahead pipeline.
+#   2. lookahead_engine — so booked-hours bucketing matches demand bucketing.
 # ---------------------------------------------------------------------------
-ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
-    "crane",
-    "hoist",
-    "loading_bay",
-    "ewp",
-    "concrete_pump",
-    "excavator",
-    "forklift",
-    "telehandler",
-    "compactor",
-    "other",
-})
+_CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    # (substring to match in lowercased raw type, canonical type)
+    # Order: more specific first to avoid early short-circuit on "crane" in "tower crane"
+    ("tower crane",       "crane"),
+    ("mobile crane",      "crane"),
+    ("luffing crane",     "crane"),
+    ("crawler crane",     "crane"),
+    ("pick-and-carry",    "crane"),
+    ("pick and carry",    "crane"),
+    ("crane",             "crane"),
+    ("builder's hoist",   "hoist"),
+    ("builders hoist",    "hoist"),
+    ("personnel hoist",   "hoist"),
+    ("materials hoist",   "hoist"),
+    ("material hoist",    "hoist"),
+    ("construction lift", "hoist"),
+    ("hoist",             "hoist"),
+    ("elevated work platform", "ewp"),
+    ("scissor lift",      "ewp"),
+    ("boom lift",         "ewp"),
+    ("knuckle boom",      "ewp"),
+    ("knuckle lift",      "ewp"),
+    ("cherry picker",     "ewp"),
+    ("man lift",          "ewp"),
+    ("ewp",               "ewp"),
+    ("loading bay",       "loading_bay"),
+    ("unloading bay",     "loading_bay"),
+    ("loading zone",      "loading_bay"),
+    ("boom pump",         "concrete_pump"),
+    ("line pump",         "concrete_pump"),
+    ("concrete pump",     "concrete_pump"),
+    ("kibble",            "concrete_pump"),
+    ("mini excavator",    "excavator"),
+    ("backhoe",           "excavator"),
+    ("excavator",         "excavator"),
+    ("digger",            "excavator"),
+    ("rough terrain forklift", "forklift"),
+    ("forklift",          "forklift"),
+    ("telehandler",       "telehandler"),
+    ("telescopic handler", "telehandler"),
+    ("reach forklift",    "telehandler"),
+    ("telescopic forklift", "telehandler"),
+    ("plate compactor",   "compactor"),
+    ("vibrating",         "compactor"),
+    ("compactor",         "compactor"),
+    ("roller",            "compactor"),
+]
+
+
+def normalize_asset_type(raw_type: str) -> str | None:
+    """
+    Map a raw asset.type string to a canonical ALLOWED_ASSET_TYPES value.
+
+    Returns the canonical string (e.g. "crane") or None if no mapping is found
+    (meaning the asset type is not a bookable construction plant — e.g. "Storage Area").
+    None signals that this asset should not contribute to valid_types.
+    """
+    key = (raw_type or "").strip().lower()
+    if not key:
+        return None
+    for substring, canonical in _CANONICAL_TYPE_KEYWORDS:
+        if substring in key:
+            return canonical
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Trade specialty → asset type heuristic map.
@@ -118,11 +186,11 @@ class ActivityItem:
 @dataclass
 class StructureResult:
     """
-    Return shape for detect_structure() — Section 2.1.
+    Output of detect_structure().
 
     column_mapping keys: name, start_date, end_date, duration, wbs_code,
                          resource, level_indicator, or "unknown"
-    completeness_score: int 0–100 (BE converts to float 0.0–1.0 on DB write)
+    completeness_score: int 0–100 (converted to float 0.0–1.0 on DB write)
     """
     column_mapping: dict[str, str]
     activities: list[ActivityItem]
@@ -144,14 +212,16 @@ class ClassificationItem:
 @dataclass
 class ClassificationResult:
     """
-    Return shape for classify_assets() — Section 2.2.
+    Output of classify_assets().
 
-    classifications: high + medium confidence items (auto-committed by BE)
+    classifications: high + medium confidence items (auto-committed)
     skipped:         activity_id strings for low-confidence items (not committed)
+    fallback_used:   True when AI was unavailable and keyword-only fallback ran
     """
     classifications: list[ClassificationItem]
     skipped: list[str]
     batch_tokens_used: int = 0
+    fallback_used: bool = False
 
 
 @dataclass
@@ -190,24 +260,65 @@ async def detect_structure(rows: list[dict[str, Any]]) -> StructureResult:
         return _detect_structure_fallback(rows)
 
 
-async def classify_assets(activities: list[dict[str, Any]]) -> ClassificationResult:
+async def classify_assets(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Classify a batch of activities by asset type.
     Returns high + medium in classifications[], low-confidence in skipped[].
+
+    project_assets: list of {"name": str, "type": str, "code": str} dicts for
+    assets actually registered on this project.  When provided the AI prompt
+    and keyword pre-screen are scoped to those assets rather than the generic
+    hardcoded list.
 
     Falls back to keyword-only classification if AI is disabled or fails.
     Never raises.
     """
     if not settings.AI_ENABLED:
         logger.info("AI_ENABLED=false — using keyword fallback for classification")
-        return _classify_assets_fallback(activities)
+        return _classify_assets_fallback(activities, project_assets=project_assets)
 
     try:
-        return await _classify_assets_real(activities)
+        return await _classify_assets_real(activities, project_assets=project_assets)
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
-        return _classify_assets_fallback(activities)
+        return _classify_assets_fallback(activities, project_assets=project_assets)
 
+
+def suggest_subcontractor_asset_types(
+    subcontractors: list[dict[str, str]],
+) -> list[SubcontractorAssetSuggestion]:
+    """
+    Given a list of subcontractors with their trade_specialty, return the
+    asset types each one is likely to need based on known trade-to-asset heuristics.
+
+    This is the core of the lookahead planning AI feature: using the subcontractor's
+    registered trade type to predict which bookable assets they will need.
+
+    Args:
+        subcontractors: list of dicts with 'id' and 'trade_specialty' keys.
+
+    Returns:
+        list of SubcontractorAssetSuggestion, one per subcontractor.
+    """
+    suggestions: list[SubcontractorAssetSuggestion] = []
+    for sub in subcontractors:
+        sub_id = str(sub.get("id", ""))
+        specialty = str(sub.get("trade_specialty") or "").lower().strip()
+        asset_types = _lookup_trade_asset_types(specialty)
+        suggestions.append(SubcontractorAssetSuggestion(
+            subcontractor_id=sub_id,
+            trade_specialty=specialty,
+            suggested_asset_types=asset_types,
+        ))
+    return suggestions
+
+
+# ---------------------------------------------------------------------------
+# PDF parsing helpers (no AI required for MS Project / P6 Gantt format)
+# ---------------------------------------------------------------------------
 
 _MS_PROJECT_ROW_RE = re.compile(
     r"^(\d+)\s+(.+?)\s+(\d+)%\s+(\d+)\s+days?\s+"
@@ -270,7 +381,7 @@ def parse_ms_project_pdf(pdf_bytes: bytes) -> tuple[list[dict[str, Any]], str | 
             finish_clean = _DAY_PREFIX_RE.sub("", finish_raw).strip()
 
             # Summary detection:
-            # (a) all meaningful words (len≥2) are uppercase → "SUPERSTRUCTURE",
+            # (a) all meaningful words (len≥2) are uppercase — catches "SUPERSTRUCTURE",
             #     "LEVEL 1 ~ 2,200m2 CARPARK" (the lone "m" in m2 is ignored)
             # (b) "Zone A" / "Zone B" section-header pattern
             words = re.sub(r"[^a-zA-Z\s]", " ", name).split()
@@ -301,116 +412,60 @@ def parse_ms_project_pdf(pdf_bytes: bytes) -> tuple[list[dict[str, Any]], str | 
 
 async def extract_pdf_activities(pdf_bytes: bytes) -> list[dict[str, Any]]:
     """
-    Extract activity rows from a PDF programme file using Claude Vision.
+    Last-resort Claude Vision extraction for scanned or complex PDFs that
+    neither pypdf regex nor pdfplumber can handle.
 
-    Called when pdfplumber table extraction returns insufficient data — typically
-    for PDFs with complex Gantt chart layouts or image-heavy formatting.
-
-    Pipeline:
-    - Renders each PDF page to PNG at 1.5× scale using pypdfium2
-    - Sends all page images to Claude with the pdf_extraction.txt prompt
-    - Claude reads the visuals and returns structured JSON rows
-    - Returns list of row dicts compatible with the CSV/XLSX detect_structure pipeline
-
-    Hard timeout: 120 seconds (PDF vision is slower than text classification).
-    Raises ValueError if Claude cannot find any activity rows.
+    Renders each page as a PNG image and sends to Claude Vision API.
+    Returns list of row dicts with keys: ID, Name, Start, Finish (at minimum).
     """
-    import base64
-    import io
-
-    import pypdfium2
+    try:
+        import pypdfium2 as pdfium
+        import base64
+        from PIL import Image as _Image
+    except ImportError as exc:
+        raise RuntimeError(f"Claude Vision PDF extraction requires pypdfium2 and Pillow: {exc}") from exc
 
     client = _get_async_client()
     system_prompt = _load_prompt("pdf_extraction.txt")
 
-    doc = pypdfium2.PdfDocument(pdf_bytes)
-    # Cap at 8 pages — beyond that we risk token limits; most PMP tables fit in first 8
-    n_pages = min(len(doc), 8)
+    all_rows: list[dict[str, Any]] = []
+    doc = pdfium.PdfDocument(pdf_bytes)
 
-    content_parts: list[dict[str, Any]] = []
-    for i in range(n_pages):
-        page = doc[i]
-        # 1.5× scale: readable for Claude, ~half the token cost of 3×
-        bitmap = page.render(scale=1.5)
-        pil_img = bitmap.to_pil()
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        bitmap = page.render(scale=2)
+        pil_image = bitmap.to_pil()
+
         buf = io.BytesIO()
-        pil_img.save(buf, format="PNG")
-        img_b64 = base64.standard_b64encode(buf.getvalue()).decode()
-        content_parts.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": img_b64,
-            },
-        })
+        pil_image.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
 
-    doc.close()
+        try:
+            msg = await asyncio.wait_for(
+                client.messages.create(
+                    model=settings.AI_MODEL,
+                    max_tokens=4096,
+                    system=system_prompt,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": "image/png", "data": b64},
+                            },
+                            {"type": "text", "text": f"Extract all activity rows from this programme page (page {page_num + 1})."},
+                        ],
+                    }],
+                ),
+                timeout=120,
+            )
+            parsed = _parse_json_response(msg.content[0].text)
+            page_rows = parsed.get("activities") or parsed.get("rows") or []
+            all_rows.extend(page_rows)
+        except Exception as exc:
+            logger.warning("Claude Vision failed on page %d: %s", page_num + 1, exc)
 
-    content_parts.append({
-        "type": "text",
-        "text": (
-            f"This is a {n_pages}-page construction programme schedule PDF. "
-            "Extract all activity/task rows into structured JSON. "
-            "Return ONLY valid JSON."
-        ),
-    })
-
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=settings.AI_MODEL,
-            max_tokens=8192,
-            system=system_prompt,
-            messages=[{"role": "user", "content": content_parts}],
-        ),
-        timeout=120.0,
-    )
-
-    data = _parse_json_response(response.content[0].text)
-    rows: list[dict] = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
-
-    if not rows:
-        raise ValueError(
-            "Claude PDF vision returned no activity rows. "
-            f"Notes: {data.get('notes', 'none')}"
-        )
-
-    logger.info(
-        "PDF vision extraction: %d rows extracted from %d pages. Notes: %s",
-        len(rows),
-        n_pages,
-        data.get("notes"),
-    )
-    return rows
-
-
-def suggest_subcontractor_asset_types(
-    subcontractors: list[dict[str, str]],
-) -> list[SubcontractorAssetSuggestion]:
-    """
-    Given a list of subcontractors with their trade_specialty, return the
-    asset types each one is likely to need based on known trade-to-asset heuristics.
-
-    This is the core of the lookahead planning AI feature: using the subcontractor's
-    registered trade type to predict which bookable assets they will need.
-
-    Args:
-        subcontractors: list of dicts with 'id' and 'trade_specialty' keys.
-
-    Returns:
-        list of SubcontractorAssetSuggestion, one per subcontractor.
-    """
-    suggestions: list[SubcontractorAssetSuggestion] = []
-    for sub in subcontractors:
-        sub_id = str(sub.get("id", ""))
-        specialty = str(sub.get("trade_specialty") or "").lower().strip()
-        asset_types = _lookup_trade_asset_types(specialty)
-        suggestions.append(SubcontractorAssetSuggestion(
-            subcontractor_id=sub_id,
-            trade_specialty=specialty,
-            suggested_asset_types=asset_types,
-        ))
-    return suggestions
+    return all_rows
 
 
 # ---------------------------------------------------------------------------
@@ -422,11 +477,114 @@ def _load_prompt(filename: str) -> str:
     return (_PROMPTS_DIR / filename).read_text(encoding="utf-8")
 
 
-def _get_async_client() -> anthropic.AsyncAnthropic:
-    """Create a configured Anthropic async client. Raises if API key missing."""
-    if not settings.AI_API_KEY:
-        raise ValueError("AI_API_KEY is not configured — cannot make Claude API calls")
-    return anthropic.AsyncAnthropic(api_key=settings.AI_API_KEY)
+# Module-level singleton clients — created once, reused across all calls.
+# Creating a new AsyncOpenAI/AsyncAnthropic per call spawns a new httpx
+# connection pool each time; when many parallel batches complete they all race
+# to close their pools concurrently, producing TCPTransport closed errors and
+# unnecessary 429s from opening too many simultaneous connections.
+_async_client: anthropic.AsyncAnthropic | Any | None = None
+_async_client_lock = threading.Lock()
+
+
+def _get_async_client() -> anthropic.AsyncAnthropic | Any:
+    """Return the module-level singleton async client for the configured AI provider."""
+    global _async_client
+    if _async_client is not None:
+        return _async_client
+
+    with _async_client_lock:
+        # Double-check after acquiring lock
+        if _async_client is not None:
+            return _async_client
+
+        if not settings.AI_API_KEY:
+            raise ValueError("AI_API_KEY is not configured")
+
+        provider = settings.AI_PROVIDER.lower()
+        if provider == "openai":
+            if _openai_module is None:
+                raise ImportError("openai package is not installed — add 'openai' to requirements.txt")
+            _async_client = _openai_module.AsyncOpenAI(
+                api_key=settings.AI_API_KEY,
+                max_retries=3,  # built-in exponential back-off for 429/5xx
+            )
+        else:
+            _async_client = anthropic.AsyncAnthropic(
+                api_key=settings.AI_API_KEY,
+                max_retries=3,
+            )
+
+        logger.info("AI async client created (provider=%s)", provider)
+        return _async_client
+
+
+def _is_openai_client(client: Any) -> bool:
+    return _openai_module is not None and isinstance(client, _openai_module.AsyncOpenAI)
+
+
+async def _call_api(
+    client: Any,
+    system_prompt: str,
+    user_message: str,
+    max_tokens: int,
+    timeout: float,
+) -> tuple[str, int]:
+    """
+    Unified async call — returns (text_content, tokens_used) regardless of provider.
+
+    Quota/billing errors (OpenAI insufficient_quota, Anthropic credit exhausted) are
+    re-raised immediately as RuntimeError so the SDK's built-in retry loop doesn't
+    waste minutes retrying a permanent billing error.
+    """
+    try:
+        if _is_openai_client(client):
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=settings.AI_MODEL,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                ),
+                timeout=timeout,
+            )
+            content = response.choices[0].message.content if response.choices else None
+            usage = getattr(response, "usage", None)
+            tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
+        else:
+            response = await asyncio.wait_for(
+                client.messages.create(
+                    model=settings.AI_MODEL,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                ),
+                timeout=timeout,
+            )
+            content = response.content[0].text if response.content else None
+            usage = getattr(response, "usage", None)
+            tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+    except Exception as exc:
+        # Permanent billing/quota errors — skip retries and fail fast.
+        # OpenAI:    RateLimitError with code="insufficient_quota"
+        # Anthropic: APIStatusError with status 400 + "credit balance is too low"
+        err_code = getattr(exc, "code", None) or ""
+        err_body = str(getattr(exc, "message", "") or exc)
+        is_quota = (
+            err_code == "insufficient_quota"
+            or "insufficient_quota" in err_body
+            or "credit balance is too low" in err_body
+            or "exceeded your current quota" in err_body
+        )
+        if is_quota:
+            logger.error("AI provider quota/billing limit reached — disabling AI for this request: %s", exc)
+            raise RuntimeError(f"AI quota exhausted: {exc}") from exc
+        raise
+
+    if not content:
+        raise ValueError("Empty or malformed API response")
+    return content, tokens
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
@@ -450,13 +608,33 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Last resort: find the largest JSON object in the response
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group())
-        except json.JSONDecodeError:
-            pass
+    # Last resort: balanced-brace extraction to handle nested objects correctly
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, ch in enumerate(text[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
 
     raise ValueError(f"Could not extract valid JSON from response: {text[:300]!r}")
 
@@ -536,17 +714,8 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
         f"ROWS:\n{json.dumps(sample, default=str)}"
     )
 
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=settings.AI_MODEL,
-            max_tokens=2048,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-        timeout=float(settings.AI_TIMEOUT_STRUCTURE),
-    )
-
-    data = _parse_json_response(response.content[0].text)
+    text, _tokens = await _call_api(client, system_prompt, user_message, max_tokens=2048, timeout=float(settings.AI_TIMEOUT_STRUCTURE))
+    data = _parse_json_response(text)
 
     # Extract mapping, dropping null values
     raw_mapping = data.get("column_mapping") or {}
@@ -586,13 +755,33 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
     )
 
 
+def _extract_partial_classifications(text: str) -> list[dict[str, str]]:
+    """
+    Last-resort extraction: pull out any syntactically complete classification
+    objects from a truncated response.  Matches objects that have all four
+    required fields in the fixed order: activity_id, asset_type, confidence,
+    source (enforced by ``pattern`` via sequential named groups — objects with
+    fields in any other order will not match).
+    """
+    pattern = re.compile(
+        r'\{\s*'
+        r'"activity_id"\s*:\s*"(?P<activity_id>[^"]+)"\s*,\s*'
+        r'"asset_type"\s*:\s*"(?P<asset_type>[^"]+)"\s*,\s*'
+        r'"confidence"\s*:\s*"(?P<confidence>[^"]+)"\s*,\s*'
+        r'"source"\s*:\s*"(?P<source>[^"]+)"\s*'
+        r'\}',
+        re.DOTALL,
+    )
+    return [m.groupdict() for m in pattern.finditer(text)]
+
+
 async def _classify_batch(
     batch: list[dict[str, Any]],
     system_prompt: str,
-    client: anthropic.AsyncAnthropic,
+    client: Any,
 ) -> dict[str, Any]:
     """
-    Send a single batch of up to 100 activities to Claude for classification.
+    Send a single batch of up to 50 activities to the configured AI provider for classification.
     Returns dict with 'classifications', 'skipped', and 'tokens_used'.
     Hard timeout: settings.AI_TIMEOUT_CLASSIFY seconds.
     """
@@ -602,29 +791,165 @@ async def _classify_batch(
         f"ACTIVITIES:\n{json.dumps(batch, ensure_ascii=False)}"
     )
 
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=settings.AI_MODEL,
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-        timeout=float(settings.AI_TIMEOUT_CLASSIFY),
-    )
+    # Each activity produces ~30 output tokens (UUID + asset_type + confidence + source).
+    # 50-activity batches → ~1,500 tokens + JSON overhead; 8192 gives a safe 5× headroom.
+    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=8192, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
+    try:
+        data = _parse_json_response(text)
+        return {
+            "classifications": list(data.get("classifications") or []),
+            "skipped": list(data.get("skipped") or []),
+            "tokens_used": tokens_used,
+        }
+    except ValueError:
+        # Response was truncated or malformed — attempt field-by-field rescue
+        partial = _extract_partial_classifications(text)
+        if partial:
+            logger.warning(
+                "Batch response truncated — rescued %d/%d classifications via partial extraction",
+                len(partial),
+                len(batch),
+            )
+            return {"classifications": partial, "skipped": [], "tokens_used": tokens_used}
+        raise
 
-    data = _parse_json_response(response.content[0].text)
-    tokens_used = (
-        (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
-    )
 
-    return {
-        "classifications": list(data.get("classifications") or []),
-        "skipped": list(data.get("skipped") or []),
-        "tokens_used": tokens_used,
+_DEFAULT_ASSET_TYPES_BLOCK = (
+    "ALLOWED ASSET TYPES (use ONLY these exact strings):\n"
+    "  - crane          → Tower crane, mobile crane, luffing crane, pick-and-carry\n"
+    "  - hoist          → Builder's hoist, personnel/materials hoist, construction lift\n"
+    "  - loading_bay    → Dedicated loading bay / unloading zone at building perimeter\n"
+    "  - ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom\n"
+    "  - concrete_pump  → Boom pump, line pump, concrete kibble\n"
+    "  - excavator      → Excavator, backhoe, mini excavator\n"
+    "  - forklift       → Forklift, rough terrain forklift (dedicated forklift only)\n"
+    "  - telehandler    → Telehandler, reach forklift, telescopic handler\n"
+    "  - compactor      → Plate compactor, roller, vibrating compactor\n"
+    "  - other          → Any asset need that doesn't fit above\n"
+    "  - none           → Activity genuinely requires no bookable site asset"
+)
+
+
+def _build_classification_prompt(
+    project_assets: list[dict[str, Any]] | None,
+) -> tuple[str, frozenset[str]]:
+    """
+    Build the system prompt and valid-type set for asset classification.
+
+    When project_assets are provided the {{ASSET_TYPES_BLOCK}} placeholder in
+    the base prompt is replaced with the project's registered assets so the AI
+    classifies against what is actually on site.
+
+    Returns (system_prompt, valid_types_frozenset).
+    """
+    base_prompt = _load_prompt("asset_classification.txt")
+
+    if "{{ASSET_TYPES_BLOCK}}" not in base_prompt:
+        logger.warning(
+            "asset_classification.txt is missing {{ASSET_TYPES_BLOCK}} placeholder — "
+            "falling back to default asset types block"
+        )
+        base_prompt = base_prompt + "\n\n" + _DEFAULT_ASSET_TYPES_BLOCK
+
+    if not project_assets:
+        return base_prompt.replace("{{ASSET_TYPES_BLOCK}}", _DEFAULT_ASSET_TYPES_BLOCK), ALLOWED_ASSET_TYPES
+
+    # Normalise: deduplicate by (name, type) and map each asset's type to a
+    # canonical ALLOWED_ASSET_TYPES value.  Assets whose type doesn't map to a
+    # canonical type (e.g. "Storage Area") are listed for context but excluded
+    # from valid_types so the classifier cannot emit them — they are not
+    # bookable plant and would be silently filtered by the lookahead anyway.
+    seen: set[tuple[str, str]] = set()
+    asset_lines: list[str] = []
+    valid_types: set[str] = set()
+
+    for a in project_assets:
+        raw_name = str(a.get("name") or "").strip()
+        raw_type = str(a.get("type") or "").strip()
+        code = str(a.get("code") or "").strip()
+        if not raw_name:
+            continue
+        key = (raw_name.lower(), raw_type.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        canonical = normalize_asset_type(raw_type)
+        if canonical is None:
+            # Type is generic (e.g. "EQUIPMENT") — fall back to the asset name.
+            # Covers cases like Forklift/EQUIPMENT or Excavator/EQUIPMENT.
+            canonical = normalize_asset_type(raw_name)
+        if canonical and canonical != "none":
+            valid_types.add(canonical)
+
+        label = f"- {raw_name}"
+        if raw_type:
+            label += f" (type: {raw_type})"
+        if code:
+            label += f" [code: {code}]"
+        asset_lines.append(label)
+
+    # If no project assets mapped to canonical types, fall back to the full
+    # default set so classification still produces useful output.
+    if not valid_types:
+        logger.warning(
+            "No project assets mapped to canonical types — falling back to default asset types"
+        )
+        return base_prompt.replace("{{ASSET_TYPES_BLOCK}}", _DEFAULT_ASSET_TYPES_BLOCK), ALLOWED_ASSET_TYPES
+
+    # Always keep "none" and "other" available.
+    valid_types.update({"none", "other"})
+    valid_types_frozen = frozenset(valid_types)
+
+    # Build the canonical type lines for types actually present on this project.
+    _TYPE_DESCRIPTIONS: dict[str, str] = {
+        "crane":         "crane          → Tower crane, mobile crane, luffing crane, pick-and-carry",
+        "hoist":         "hoist          → Builder's hoist, personnel/materials hoist, construction lift",
+        "loading_bay":   "loading_bay    → Dedicated loading bay / unloading zone at building perimeter",
+        "ewp":           "ewp            → Elevated work platform — scissor lift, boom lift, knuckle boom",
+        "concrete_pump": "concrete_pump  → Boom pump, line pump, concrete kibble",
+        "excavator":     "excavator      → Excavator, backhoe, mini excavator",
+        "forklift":      "forklift       → Forklift, rough terrain forklift",
+        "telehandler":   "telehandler    → Telehandler, reach forklift, telescopic handler",
+        "compactor":     "compactor      → Plate compactor, roller, vibrating compactor",
+        "other":         "other          → Any asset need that doesn't fit the types above",
+        "none":          "none           → Activity genuinely requires no bookable site asset",
     }
+    type_lines = "\n".join(
+        f"  - {_TYPE_DESCRIPTIONS[t]}"
+        for t in sorted(valid_types)
+        if t in _TYPE_DESCRIPTIONS
+    )
+
+    asset_block = (
+        "THIS PROJECT'S REGISTERED ASSETS (for context — use to guide classification):\n"
+        + "\n".join(asset_lines)
+        + "\n\n"
+        "ALLOWED ASSET TYPES for this project (use ONLY these exact strings in \"asset_type\"):\n"
+        + type_lines
+        + "\n\n"
+        "Classify each activity into one of the canonical types above based on what "
+        "the work actually requires. Use the registered asset list to understand what "
+        "is physically on site — only classify to a type if the project has that asset.\n"
+        "Use \"none\" for milestones/summaries or activities that need no bookable asset.\n"
+        "Use \"other\" only if the activity clearly needs physical plant not covered above."
+    )
+
+    prompt = base_prompt.replace("{{ASSET_TYPES_BLOCK}}", asset_block)
+
+    logger.debug(
+        "Built dynamic classification prompt with %d project assets, %d valid types",
+        len(asset_lines),
+        len(valid_types_frozen),
+    )
+
+    return prompt, valid_types_frozen
 
 
-async def _classify_assets_real(activities: list[dict[str, Any]]) -> ClassificationResult:
+async def _classify_assets_real(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Classify activities via keyword pre-screening + Claude batched calls.
 
@@ -643,9 +968,11 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         return ClassificationResult(classifications=[], skipped=[], batch_tokens_used=0)
 
     client = _get_async_client()
-    system_prompt = _load_prompt("asset_classification.txt")
+    system_prompt, valid_types = _build_classification_prompt(project_assets)
 
     # Step 1: Keyword pre-screening
+    # When project assets are provided, restrict keyword hits to types that
+    # actually exist in this project (normalised).
     keyword_matched: dict[str, str] = {}   # activity_id → asset_type
     ai_candidates: list[dict[str, Any]] = []
 
@@ -656,6 +983,9 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         matched_type: str | None = None
         for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name_lower:
+                # Only accept keyword hit if that type exists on this project
+                if project_assets and asset_type not in valid_types:
+                    continue
                 matched_type = asset_type
                 break
 
@@ -664,28 +994,61 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         else:
             ai_candidates.append(act)
 
+    # Dedup AI candidates by normalised name: send one representative per unique
+    # name to the AI, then fan the result back to all activities sharing that name.
+    # Eliminates redundant calls for P6 day-step repetitions like
+    # "Day 7 - Commence Bubbledeck install" / "Day 8 - Continue Bubbledeck install".
+    norm_to_rep: dict[str, str] = {}       # normalised_name → representative act_id
+    rep_to_ids: dict[str, list[str]] = {}  # rep_id → all act_ids with same norm name
+    deduped_candidates: list[dict[str, Any]] = []
+
+    for act in ai_candidates:
+        act_id = str(act.get("id", ""))
+        norm = _normalize_for_dedup(str(act.get("name", "")))
+        if norm in norm_to_rep:
+            rep_to_ids[norm_to_rep[norm]].append(act_id)
+        else:
+            norm_to_rep[norm] = act_id
+            rep_to_ids[act_id] = [act_id]
+            deduped_candidates.append(act)
+
     logger.info(
-        "Classification pre-screen: %d keyword-matched, %d for AI (%d total)",
+        "Classification pre-screen: %d keyword-matched, %d AI candidates → %d unique (%d total)",
         len(keyword_matched),
         len(ai_candidates),
+        len(deduped_candidates),
         len(activities),
     )
 
-    # Step 2: Batch remaining through Claude
-    BATCH_SIZE = 100
+    # Step 2: Batch remaining through AI
+    # 50 activities × ~30 output tokens each = ~1,500 tokens per batch, well
+    # within the 8192 max_tokens ceiling even when all activities need a skipped[].
+    BATCH_SIZE = 50
     all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
     total_tokens = 0
 
-    if ai_candidates:
+    if deduped_candidates:
         batches = [
-            ai_candidates[i:i + BATCH_SIZE]
-            for i in range(0, len(ai_candidates), BATCH_SIZE)
+            deduped_candidates[i:i + BATCH_SIZE]
+            for i in range(0, len(deduped_candidates), BATCH_SIZE)
         ]
         batch_tasks = [_classify_batch(batch, system_prompt, client) for batch in batches]
 
-        # Parallel for large volumes, sequential otherwise
-        if len(ai_candidates) >= 500:
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        # Parallel for large volumes (bounded concurrency), sequential otherwise.
+        # The semaphore prevents multiplying long per-batch timeouts into
+        # unbounded in-flight requests when many batches are fanned out at once.
+        # Threshold: >2 batches (>100 unique candidates) goes parallel.
+        if len(deduped_candidates) > 100:
+            _sem = asyncio.Semaphore(4)
+
+            async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
+                async with _sem:
+                    return await task
+
+            batch_results = await asyncio.gather(
+                *[_bounded(t) for t in batch_tasks],
+                return_exceptions=True,
+            )
         else:
             batch_results = []
             for task in batch_tasks:
@@ -703,7 +1066,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
                 act_id = str(item.get("activity_id", ""))
                 if act_id:
                     all_ai_results[act_id] = item
-            # Low-confidence items returned by Claude in skipped[]
+            # Low-confidence items returned in skipped[]
             for skipped_id in result.get("skipped", []):
                 sid = str(skipped_id)
                 if sid and sid not in all_ai_results:
@@ -713,6 +1076,15 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
                         "confidence": "low",
                     }
             total_tokens += result.get("tokens_used", 0)
+
+        # Fan-out: copy representative result to all duplicate activities
+        expanded: dict[str, dict[str, Any]] = {}
+        for rep_id, dup_ids in rep_to_ids.items():
+            rep_result = all_ai_results.get(rep_id)
+            if rep_result is not None:
+                for aid in dup_ids:
+                    expanded[aid] = rep_result
+        all_ai_results = expanded
 
     # Step 3: Merge keyword + AI results
     classifications: list[ClassificationItem] = []
@@ -732,7 +1104,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
             ai_type = ai_result.get("asset_type")
             ai_confidence = str(ai_result.get("confidence") or "medium").lower()
 
-            if ai_type == keyword_type and ai_type in ALLOWED_ASSET_TYPES:
+            if ai_type == keyword_type and ai_type in valid_types:
                 # Both agree — highest confidence
                 classifications.append(ClassificationItem(
                     activity_id=act_id,
@@ -741,7 +1113,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
                     source="keyword_boost",
                     reasoning=ai_result.get("reasoning"),
                 ))
-            elif ai_type and ai_type in ALLOWED_ASSET_TYPES and ai_type != "none":
+            elif ai_type and ai_type in valid_types and ai_type != "none":
                 if ai_confidence == "low":
                     # Low-confidence AI disagreement: trust the keyword
                     classifications.append(ClassificationItem(
@@ -781,7 +1153,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
             ai_type = ai_result.get("asset_type")
             ai_confidence = str(ai_result.get("confidence") or "medium").lower()
 
-            if not ai_type or ai_type == "none" or ai_type not in ALLOWED_ASSET_TYPES:
+            if not ai_type or ai_type == "none" or ai_type not in valid_types:
                 skipped.append(act_id)
             elif ai_confidence == "low":
                 skipped.append(act_id)
@@ -808,6 +1180,7 @@ async def _classify_assets_real(activities: list[dict[str, Any]]) -> Classificat
         classifications=classifications,
         skipped=skipped,
         batch_tokens_used=total_tokens,
+        fallback_used=False,
     )
 
 
@@ -829,10 +1202,17 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
     if specialty in TRADE_TO_ASSET_TYPES:
         return list(TRADE_TO_ASSET_TYPES[specialty])
 
-    # Substring: specialty contains a key or a key contains specialty
-    for key, types in TRADE_TO_ASSET_TYPES.items():
-        if key in specialty or specialty in key:
-            return list(types)
+    # Substring: specialty contains a key or a key contains specialty.
+    # Pick the longest (most specific) matching key to avoid wrong matches
+    # when similar keys exist (e.g. "crane" vs "tower crane").
+    substring_matches = [
+        (key, types)
+        for key, types in TRADE_TO_ASSET_TYPES.items()
+        if key in specialty or specialty in key
+    ]
+    if substring_matches:
+        _best_key, best_types = max(substring_matches, key=lambda kv: len(kv[0]))
+        return list(best_types)
 
     # Word-level: any shared word
     specialty_words = set(specialty.split())
@@ -856,7 +1236,7 @@ _KEYWORD_MAP: dict[str, str] = {
     "column cage": "crane",      # column cage reo/formwork lifts
     "column cages": "crane",
     "lift column": "crane",      # "Lift column cages", "Lift column formwork"
-    "lift bd false work": "crane",   # "Lift BD false work" — explicit lift, not inspect
+    "lift bd false work": "crane",   # explicit lift, not inspection
     "lift bd reo": "crane",
     "lift bd panels": "crane",
     "install bd false work": "crane",
@@ -868,8 +1248,8 @@ _KEYWORD_MAP: dict[str, str] = {
     "lift screw": "crane",
     "column formwork install": "crane",
     "install formwork": "crane",
-    # NOTE: "formwork" / "false work" alone is intentionally NOT a keyword because
-    # "BD false work inspection and sign off" should NOT match — AI handles that.
+    # NOTE: "formwork" / "bd false work" alone excluded — too broad and
+    # would match inspection/sign-off activities. Let AI handle those.
     "bd panels": "crane",        # Bubbledeck panel installs (large precast units)
     "bubbledeck": "crane",       # Bubbledeck = precast concrete deck system
     # ── Hoist ────────────────────────────────────────────────────────────────
@@ -882,13 +1262,15 @@ _KEYWORD_MAP: dict[str, str] = {
     "loading bay": "loading_bay",
     "loading_bay": "loading_bay",
     "unloading": "loading_bay",
-    "delivery": "loading_bay",   # material deliveries (reo delivery etc.)
     "reo delivery": "loading_bay",
+    "delivery": "loading_bay",   # material deliveries
     # ── EWP (Elevated Work Platform / scissor lift / boom lift) ──────────────
     "ewp": "ewp",
     "elevated work platform": "ewp",
     "scissor lift": "ewp",
     "boom lift": "ewp",
+    "man lift": "ewp",
+    "knuckle lift": "ewp",
     "scaffold": "ewp",           # scaffold erect/dismantle needs EWP
     "scaffolding": "ewp",
     "install scaffold": "ewp",
@@ -928,19 +1310,14 @@ _KEYWORD_MAP: dict[str, str] = {
     "earthworks": "excavator",
     "demolish": "excavator",
     "demolition": "excavator",
-    # NOTE: "strip slab" intentionally excluded — "Strip slab edge and set downs - tidy up"
-    # is formwork clean-up (no asset), not excavation. Let AI handle it.
     "site clearance": "excavator",
-    "site establishment": "excavator",
     "cut and fill": "excavator",
     "trenching": "excavator",
-    "footing": "excavator",
     "footing excavation": "excavator",
     "piling": "excavator",
     # ── Forklift ─────────────────────────────────────────────────────────────
     "forklift": "forklift",
     "pallet": "forklift",
-    "stack": "forklift",
     # ── Telehandler ──────────────────────────────────────────────────────────
     "telehandler": "telehandler",
     "telescopic": "telehandler",
@@ -972,9 +1349,11 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
     # Detect date columns via regex on first 10 non-empty values
     date_patterns = [
-        re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"),   # dd/mm/yyyy
-        re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"),    # dd/mm/yy
-        re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # yyyy-mm-dd
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"),                      # dd/mm/yyyy
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"),                      # dd/mm/yy
+        re.compile(r"^\d{4}-\d{2}-\d{2}$"),                          # yyyy-mm-dd
+        re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{2,4}$"),                # dd-Mon-yy / dd-Mon-yyyy (P6 PDF)
+        re.compile(r"^\d{1,2} [A-Za-z]{3} \d{4}$"),                  # dd Mon yyyy
     ]
 
     def _looks_like_date(col: str) -> bool:
@@ -1015,7 +1394,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
     else:
         missing += ["start_date", "end_date"]
 
-    # Detect is_summary and id columns by exact or fuzzy header name match
+    # Detect is_summary, is_milestone, and id columns by header name
     _summary_col = next(
         (h for h in headers if h.lower().replace(" ", "_") in ("is_summary", "summary")),
         None,
@@ -1039,19 +1418,15 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not val:
             return None
         s = str(val).strip()
-        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%d %b %y"):
             try:
                 parsed = datetime.strptime(s, fmt)
-                if "%y" in fmt:
-                    yy = parsed.year % 100
-                    parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
                 return parsed.date().isoformat()
             except ValueError:
                 pass
         return None
 
     def _is_truthy(val: Any) -> bool:
-        """Return True for Yes/True/1/true values used in summary/milestone flags."""
         return str(val).strip().lower() in ("yes", "true", "1", "y")
 
     activities: list[ActivityItem] = []
@@ -1070,7 +1445,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         if not is_summary and _milestone_col:
             is_summary = _is_truthy(row.get(_milestone_col, ""))
 
-        row_id = str(row.get(_id_col, "")).strip() if _id_col else f"row-{i}"
+        row_id = str(row.get(_id_col, "")).strip() if _id_col else ""
         if not row_id:
             row_id = f"row-{i}"
 
@@ -1087,7 +1462,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
     imported = len(activities)
     total = len(rows)
-    # Bonus points for detecting the is_summary and id columns (max 90 for fallback)
+    # Bonus for detecting summary/id columns (max 90 for fallback)
     base = int((imported / total) * 75) if total else 0
     bonus = (5 if _summary_col else 0) + (5 if _id_col else 0) + (5 if _milestone_col else 0)
     score = min(90, base + bonus)
@@ -1105,12 +1480,31 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
     )
 
 
-def _classify_assets_fallback(activities: list[dict[str, Any]]) -> ClassificationResult:
+def _classify_assets_fallback(
+    activities: list[dict[str, Any]],
+    project_assets: list[dict[str, Any]] | None = None,
+) -> ClassificationResult:
     """
     Keyword-only classification fallback.
     Matches activity names against _KEYWORD_MAP. No AI call.
+    When project_assets are provided, only accepts keyword hits for types
+    that exist on the project (same scoping as the AI path).
     Unmatched activities go to skipped[].
     """
+    # Build valid_types from project assets (mirrors _build_classification_prompt logic)
+    valid_types: frozenset[str] | None = None
+    if project_assets:
+        vt: set[str] = set()
+        for a in project_assets:
+            canonical = normalize_asset_type(str(a.get("type") or ""))
+            if canonical is None:
+                canonical = normalize_asset_type(str(a.get("name") or ""))
+            if canonical and canonical != "none":
+                vt.add(canonical)
+        if vt:
+            vt.update({"none", "other"})
+            valid_types = frozenset(vt)
+
     classifications: list[ClassificationItem] = []
     skipped: list[str] = []
 
@@ -1121,6 +1515,8 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         matched_type: str | None = None
         for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
             if keyword in name:
+                if valid_types and asset_type not in valid_types:
+                    continue
                 matched_type = asset_type
                 break
 
@@ -1138,4 +1534,5 @@ def _classify_assets_fallback(activities: list[dict[str, Any]]) -> Classificatio
         classifications=classifications,
         skipped=skipped,
         batch_tokens_used=0,
+        fallback_used=True,
     )

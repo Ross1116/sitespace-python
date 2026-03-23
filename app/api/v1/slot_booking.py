@@ -195,10 +195,9 @@ def create_booking(
                     detail="Subcontractors can only create bookings for themselves"
                 )
             
-            from app.crud import subcontractor as subcontractor_crud
-            if not subcontractor_crud.is_subcontractor_assigned(
-                db, 
-                booking_data.project_id, 
+            if not project_crud.is_subcontractor_assigned(
+                db,
+                booking_data.project_id,
                 user_id
             ):
                 raise HTTPException(
@@ -216,10 +215,9 @@ def create_booking(
                         )
             
             if booking_data.subcontractor_id:
-                from app.crud import subcontractor as subcontractor_crud
-                if not subcontractor_crud.is_subcontractor_assigned(
-                    db, 
-                    booking_data.project_id, 
+                if not project_crud.is_subcontractor_assigned(
+                    db,
+                    booking_data.project_id,
                     booking_data.subcontractor_id
                 ):
                     raise HTTPException(
@@ -324,10 +322,9 @@ def create_bulk_bookings(
                     detail="Subcontractors can only create bookings for themselves"
                 )
             
-            from app.crud import subcontractor as subcontractor_crud
-            if not subcontractor_crud.is_subcontractor_assigned(
-                db, 
-                bulk_data.project_id, 
+            if not project_crud.is_subcontractor_assigned(
+                db,
+                bulk_data.project_id,
                 user_id
             ):
                 raise HTTPException(
@@ -345,10 +342,9 @@ def create_bulk_bookings(
                         )
             
             if bulk_data.subcontractor_id:
-                from app.crud import subcontractor as subcontractor_crud
-                if not subcontractor_crud.is_subcontractor_assigned(
-                    db, 
-                    bulk_data.project_id, 
+                if not project_crud.is_subcontractor_assigned(
+                    db,
+                    bulk_data.project_id,
                     bulk_data.subcontractor_id
                 ):
                     raise HTTPException(
@@ -466,8 +462,7 @@ def get_bookings(
             # If a project filter is provided, enforce membership to avoid ID guessing.
             if project_id and user_role != UserRole.ADMIN:
                 if user_role == UserRole.SUBCONTRACTOR:
-                    from app.crud import subcontractor as subcontractor_crud
-                    if not subcontractor_crud.is_subcontractor_assigned(db, project_id, user_id):
+                    if not project_crud.is_subcontractor_assigned(db, project_id, user_id):
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
                             detail="You don't have access to this project"
@@ -547,8 +542,7 @@ def get_calendar_view(
             if user_role == UserRole.ADMIN:
                 has_access = True
             elif user_role == UserRole.SUBCONTRACTOR:
-                from app.crud import subcontractor as subcontractor_crud
-                has_access = subcontractor_crud.is_subcontractor_assigned(db, project_id, user_id)
+                has_access = project_crud.is_subcontractor_assigned(db, project_id, user_id)
             else:
                 has_access = project_crud.has_project_access(db, project_id, user_id)
 

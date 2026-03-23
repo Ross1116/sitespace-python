@@ -28,7 +28,8 @@ from ...core.security import (
     verify_email_token,
     create_password_reset_token,
     verify_password_reset_token,
-    revoke_token_payload
+    revoke_token_payload,
+    normalize_email,
 )
 from ...core.config import settings
 from ...core.email import send_verification_email, send_password_reset_email
@@ -71,9 +72,6 @@ def hash_identifier(value: str) -> str:
     normalized = value.strip().lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-
-def normalize_email(email: str) -> str:
-    return email.strip().lower()
 
 def get_entity_by_email(db: Session, email: str) -> Union[User, Subcontractor, None]:
     """Get user or subcontractor by email"""
@@ -256,11 +254,14 @@ def refresh_token(
         
         return build_token_response(entity)
         
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception("Refresh token failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
-        )
+        ) from e
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
@@ -305,8 +306,8 @@ def forgot_password(
                 logger.info("Password reset email sent successfully to %s", entity_id)
             else:
                 logger.error("Failed to send password reset email to %s", entity_id)
-        except Exception as e:
-            logger.error("Exception sending password reset email to %s: %s", entity_id, str(e))
+        except Exception:
+            logger.exception("Exception sending password reset email to %s", entity_id)
     else:
         logger.warning("No entity found for password reset email hash: %s", request_id)
 
@@ -315,7 +316,6 @@ def forgot_password(
         message="If the email exists, password reset instructions have been sent",
         email=forgot_data.email,
         success=True,
-        reset_token_sent=True,
         expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
     )
 

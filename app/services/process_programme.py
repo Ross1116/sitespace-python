@@ -26,20 +26,19 @@ import hashlib
 import importlib
 import io
 import logging
-import re
 import threading
 import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
+from ..models.asset import Asset
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..utils.storage import storage
 from .ai_service import (
-    ALLOWED_ASSET_TYPES,
     ActivityItem,
     ClassificationResult,
     StructureResult,
@@ -49,6 +48,7 @@ from .ai_service import (
     parse_ms_project_pdf,
     suggest_subcontractor_asset_types,
 )
+from .lookahead_engine import calculate_lookahead_for_project
 
 logger = logging.getLogger(__name__)
 SAFE_FAILURE_REASON = "processing_failed"
@@ -64,11 +64,12 @@ def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
     Quick synchronous parse check — called before the background task is enqueued.
     Returns an error message string if the file is corrupt or empty, None if valid.
 
-    For PDFs: only validates the file is a readable PDF — rows are extracted in the
-    background (pdfplumber first, then Claude Vision if needed).
-    For CSV/XLSX: full parse to catch corrupt files immediately.
+    PDFs get a lightweight check (page 1 only) — full parsing takes 30-60s on large
+    Gantt exports and must not block the async event loop. The background task does
+    the real parse. Run this via run_in_executor from async endpoints.
     """
-    if file_name.lower().endswith(".pdf"):
+    name_lower = file_name.lower()
+    if name_lower.endswith(".pdf"):
         return _preflight_pdf(file_bytes)
 
     rows, error = _parse_file(file_bytes, file_name)
@@ -80,16 +81,27 @@ def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
 
 
 def _preflight_pdf(file_bytes: bytes) -> str | None:
-    """Validate a PDF is readable and has at least one page."""
+    """Check page 1 only — confirms the PDF is readable and has at least one activity row."""
+    import re as _re
     try:
-        import io
-        import pypdf
-        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-        if len(reader.pages) == 0:
-            return "PDF contains no pages."
-        return None
+        pdfplumber = importlib.import_module("pdfplumber")
+        _RE = _re.compile(
+            r"^(\d{3,6})\s+.+?\s+\d+%\s+\d+\s+days?"
+            r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}/\d{1,2}/\d{2,4}"
+        )
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if not pdf.pages:
+                return "PDF contains no pages."
+            text = pdf.pages[0].extract_text() or ""
+            for line in text.splitlines():
+                if _RE.match(line.strip()):
+                    return None  # found at least one activity row — good enough
+        return (
+            "No schedule activities found on page 1 of PDF. "
+            "Ensure the PDF is a P6 Gantt export with ID, Name, Start, and Finish columns."
+        )
     except Exception as exc:
-        return f"Invalid or unreadable PDF: {exc}"
+        return f"Could not read PDF: {exc}"
 
 
 def process_programme(upload_id: str) -> None:
@@ -117,61 +129,94 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.error("process_programme: upload %s not found", upload_id)
         return
 
-    # 1. Read file bytes from storage
+    # Capture primitive values before releasing the connection — ORM objects
+    # become detached/expired after Session.close().
     stored_file = upload.file
+    _storage_path = stored_file.storage_path
+    _file_name = upload.file_name
+    _project_id = str(upload.project_id)
+
+    # Release the connection back to the pool BEFORE long-running CPU/AI work.
+    # PDF parsing takes 30-60s and AI structure detection adds 10-15s — holding
+    # the connection idle that long risks SSL EOF from Railway's load balancer
+    # even though pool_pre_ping validated it at checkout.  The session remains
+    # usable; the next query will check out a fresh, pre-pinged connection.
+    db.close()
+
+    # 1. Read file bytes from storage
     try:
-        file_bytes = storage.read(stored_file.storage_path)
+        file_bytes = storage.read(_storage_path)
     except Exception:
         logger.exception("Could not read file for upload %s", upload_id)
-        _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
+        upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+        if upload:
+            _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
         return
 
-    # 2. Parse rows from CSV, XLSX/XLSM, or PDF (pdfplumber)
-    rows, parse_error = _parse_file(file_bytes, upload.file_name)
-
-    # 2b. PDF fallback: pdfplumber returned no rows — try Claude Vision
-    is_pdf = upload.file_name.lower().endswith(".pdf")
-    if is_pdf and not parse_error and not rows:
-        logger.info("PDF pdfplumber extraction empty — trying Claude Vision for upload %s", upload_id)
-        try:
-            rows = await extract_pdf_activities(file_bytes)
-            logger.info("Claude Vision extracted %d rows for upload %s", len(rows), upload_id)
-        except Exception as exc:
-            logger.warning("Claude Vision PDF extraction failed for upload %s: %s", upload_id, exc)
-            _commit_degraded(upload, db, completeness_score=0.0, notes=["pdf_extraction_failed"])
-            return
-
+    # 2. Parse rows from file (CSV, XLSX/XLSM, or PDF)
+    rows, parse_error = _parse_file(file_bytes, _file_name)
     if parse_error or not rows:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
-        _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
+        upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+        if upload:
+            _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
         return
 
-    sample = rows[:100]
-
-    # 3. Header hash cache — skip AI if same headers seen before
-    header_hash = _compute_header_hash(sample)
-    with _header_cache_lock:
-        cached = _header_cache.get(header_hash)
-
-    if cached:
-        logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
-        structure = _build_structure_from_cached_mapping(sample, cached)
+    # 3. Detect column structure.
+    is_pdf = _file_name.lower().endswith(".pdf")
+    if is_pdf:
+        # PDFs have fixed columns (ID, Name, Start, Finish) — pre-build the
+        # activities from the known mapping, then let Claude score data quality.
+        pdf_result = _pdf_structure(rows)
+        try:
+            ai_score = await detect_structure(rows[:100])
+            score = min(ai_score.completeness_score, 90)
+        except Exception:
+            logger.warning("PDF upload %s — AI scoring failed, falling back to row-based score", upload_id)
+            total = len(pdf_result.activities)
+            dated = sum(1 for a in pdf_result.activities if a.start and a.finish)
+            score = int((dated / total) * 90) if total > 0 else 0
+        structure = StructureResult(
+            column_mapping=pdf_result.column_mapping,
+            activities=pdf_result.activities,
+            completeness_score=score,
+            missing_fields=pdf_result.missing_fields,
+            notes=pdf_result.notes,
+        )
+        logger.info(
+            "PDF upload %s — pre-determined column mapping, AI-scored completeness %d%% (%d activities)",
+            upload_id, score, len(structure.activities),
+        )
     else:
-        structure = await detect_structure(sample)
+        sample = rows[:100]
+        header_hash = _compute_header_hash(sample)
         with _header_cache_lock:
-            _header_cache[header_hash] = {
-                "column_mapping": dict(structure.column_mapping),
-                # Persist hierarchy-related mapping keys so cache hits can preserve
-                # parent/summary/level/zone metadata when those columns exist.
-                "hierarchy_mapping": {
-                    key: structure.column_mapping[key]
-                    for key in ("parent_id", "is_summary", "level_name", "zone_name")
-                    if key in structure.column_mapping
-                },
-            }
+            cached = _header_cache.get(header_hash)
+
+        if cached:
+            logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
+            structure = _build_structure_from_cached_mapping(sample, cached)
+        else:
+            structure = await detect_structure(sample)
+            with _header_cache_lock:
+                _header_cache[header_hash] = {"column_mapping": dict(structure.column_mapping)}
 
     # 4. completeness_score: AI returns int 0–100, store as float 0.0–1.0
     completeness_float = max(0.0, min(1.0, structure.completeness_score / 100.0))
+
+    # 6. Build activity list (no DB needed).
+    #    PDFs: all rows already parsed into ActivityItems by _pdf_structure.
+    #    CSV/XLSX: AI analysed first 100 rows; apply mapping deterministically to the rest.
+    ai_activities = structure.activities
+    extra_rows = [] if _file_name.lower().endswith(".pdf") else (rows[100:] if len(rows) > 100 else [])
+    extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
+    all_activity_items = ai_activities + extra_activities
+
+    # Re-acquire a fresh DB connection (pool_pre_ping verifies it) for all writes.
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+    if not upload:
+        logger.error("process_programme: upload %s disappeared after parse", upload_id)
+        return
 
     # 5. Persist column_mapping + score on programme_uploads
     upload.column_mapping = structure.column_mapping
@@ -181,15 +226,6 @@ async def _run(upload_id: str, db: Session) -> None:
         "notes": structure.notes,
     }
     db.flush()
-
-    # 6. Build activity rows from AI output + remaining rows
-    #    AI analyses first 100 rows and returns the parsed activities array.
-    #    For files > 100 rows, apply column_mapping deterministically to the rest.
-    ai_activities = structure.activities
-    extra_rows = rows[100:] if len(rows) > 100 else []
-    extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
-
-    all_activity_items = ai_activities + extra_activities
 
     # 7. Bulk-insert programme_activities
     #    Insert parents before children to satisfy the deferred FK constraint.
@@ -208,8 +244,65 @@ async def _run(upload_id: str, db: Session) -> None:
         )
         if real_id is not None
     ]
+
+    # Fetch the project's registered assets so the AI classifies against what
+    # is actually on site rather than a hardcoded generic list.
+    project_assets: list[dict] = []
     try:
-        classification = await classify_assets(activity_dicts)
+        db_assets = (
+            db.query(Asset)
+            .filter(Asset.project_id == upload.project_id)
+            .all()
+        )
+        project_assets = [
+            {"name": a.name, "type": a.type or "", "code": a.asset_code}
+            for a in db_assets
+        ]
+        logger.info(
+            "Loaded %d project assets for classification (project %s)",
+            len(project_assets),
+            upload.project_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load project assets for classification (project %s): %s — using generic prompt",
+            _project_id,
+            exc,
+        )
+
+    # Commit all writes so far (upload metadata + activities) before releasing the
+    # connection. db.close() without a prior commit would roll back the transaction,
+    # leaving the activity rows absent from the DB — causing FK violations when
+    # activity_asset_mappings are inserted after classification.
+    db.commit()
+
+    # Release connection again before AI classification — large programmes run
+    # many batches in parallel and the idle window can reach 60+ seconds.
+    # upload is re-fetched below before any further writes.
+    db.close()
+
+    classification: ClassificationResult | None = None
+    try:
+        classification = await classify_assets(activity_dicts, project_assets=project_assets or None)
+    except Exception as exc:
+        logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
+
+    # Re-acquire a fresh connection for post-classification writes.
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+    if not upload:
+        logger.error("process_programme: upload %s disappeared after classification", upload_id)
+        return
+
+    if classification is not None:
+        if classification.fallback_used and activity_dicts:
+            # AI was unavailable — stamp a visible warning into completeness_notes
+            # so the status poll response surfaces it on the frontend.
+            notes_dict = dict(upload.completeness_notes or {})
+            existing = str(notes_dict.get("notes") or "")
+            warning = "AI classification unavailable — asset demand forecast may be incomplete. Re-upload once the AI service is restored."
+            notes_dict["notes"] = f"{existing} | {warning}" if existing else warning
+            notes_dict["ai_classification_fallback"] = True
+            upload.completeness_notes = notes_dict
         try:
             with db.begin_nested():
                 _write_classifications(classification, db)
@@ -219,8 +312,22 @@ async def _run(upload_id: str, db: Session) -> None:
                 upload_id,
                 exc,
             )
-    except Exception as exc:
-        logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
+            # A connection-level error (e.g. SSL EOF) inside begin_nested() leaves
+            # the session in PendingRollback state.  db.is_active is False in that
+            # case.  We must rollback fully before any further DB work; and because
+            # the outer transaction (activities) was on the same dead connection it
+            # is also gone, so we cannot commit as "committed".
+            if not db.is_active:
+                try:
+                    db.rollback()
+                except Exception as rb_exc:
+                    logger.warning("Rollback failed during degraded classification cleanup for upload %s: %s", upload_id, rb_exc)
+                _mark_failed_as_committed(
+                    upload_id,
+                    db,
+                    "DB connection lost during classification persistence — re-upload to retry.",
+                )
+                return
 
     # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
     #     Best-effort — failure does not block commit. Wrapped in a savepoint so any
@@ -234,6 +341,17 @@ async def _run(upload_id: str, db: Session) -> None:
             upload_id,
             exc,
         )
+        if not db.is_active:
+            try:
+                db.rollback()
+            except Exception as rb_exc:
+                logger.warning("Rollback failed during degraded subcontractor assignment for upload %s: %s", upload_id, rb_exc)
+            _mark_failed_as_committed(
+                upload_id,
+                db,
+                "DB connection lost during subcontractor assignment — re-upload to retry.",
+            )
+            return
 
     # 10. Mark committed
     upload.status = "committed"
@@ -246,6 +364,14 @@ async def _run(upload_id: str, db: Session) -> None:
         inserted_rows,
         completeness_float * 100,
     )
+
+    # Refresh the lookahead snapshot immediately so the dashboard reflects this
+    # upload without waiting for the nightly job.
+    try:
+        calculate_lookahead_for_project(uuid.UUID(_project_id), db)
+        logger.info("Lookahead snapshot refreshed for project %s", _project_id)
+    except Exception:
+        logger.warning("Lookahead snapshot refresh failed for project %s — nightly job will catch up", _project_id)
 
 
 def _insert_activities(
@@ -308,6 +434,32 @@ def _insert_activities(
         if uuids:
             id_map[token] = uuids[0]
     return len(db_rows), id_map
+
+
+def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
+    """
+    Build a StructureResult directly from PDF rows without calling detect_structure.
+    parse_ms_project_pdf outputs: ID, Name, Start, Finish, Is Summary, Is Milestone.
+    """
+    _PDF_MAPPING = {
+        "id": "ID",
+        "name": "Name",
+        "start_date": "Start",
+        "end_date": "Finish",
+        "is_summary": "Is Summary",
+        "is_milestone": "Is Milestone",
+    }
+    activities = _apply_mapping(rows, _PDF_MAPPING, start_index=0)
+    total = len(activities)
+    dated = sum(1 for a in activities if a.start and a.finish)
+    score = int((dated / total) * 90) if total > 0 else 0
+    return StructureResult(
+        column_mapping=_PDF_MAPPING,
+        activities=activities,
+        completeness_score=score,
+        missing_fields=[],
+        notes="MS Project / P6 Gantt PDF — column structure pre-determined by parser.",
+    )
 
 
 def _apply_mapping(
@@ -406,9 +558,6 @@ def _parse_file(
     """
     Parse CSV, XLSX/XLSM, or PDF bytes into a list of row dicts.
     Returns (rows, error_message). error_message is None on success.
-
-    For PDFs: attempts pdfplumber table extraction. Returns empty rows (not an error)
-    when no tables are found — the background pipeline will then call Claude Vision.
     """
     name_lower = file_name.lower()
     try:
@@ -432,97 +581,44 @@ def _parse_file(
             return result, None
 
         if name_lower.endswith(".pdf"):
-            # Try the fast MS Project / P6 text-regex parser first (no AI, no pdfplumber)
-            rows, error = parse_ms_project_pdf(file_bytes)
+            # Stage 1: MS Project / P6 pypdf regex parser (fastest — handles this exact
+            # format with Is Summary / Is Milestone detection and all-ID ranges).
+            rows, _err = parse_ms_project_pdf(file_bytes)
             if rows:
                 return rows, None
-            # Fall back to pdfplumber for other PDF table formats
-            return _parse_pdf_with_pdfplumber(file_bytes)
+
+            # Stage 2: pdfplumber table extraction (fallback for other PDF layouts)
+            try:
+                pdfplumber = importlib.import_module("pdfplumber")
+                all_rows: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                    for page in pdf.pages:
+                        table = page.extract_table()
+                        if not table:
+                            continue
+                        headers = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(table[0])]
+                        for data_row in table[1:]:
+                            row_dict = {headers[i]: (v or "") for i, v in enumerate(data_row) if i < len(headers)}
+                            row_id = str(row_dict.get("ID") or row_dict.get("id") or "").strip()
+                            if row_id and row_id in seen_ids:
+                                continue
+                            if row_id:
+                                seen_ids.add(row_id)
+                            all_rows.append(row_dict)
+                if all_rows:
+                    return all_rows, None
+            except Exception as exc:
+                logger.debug("pdfplumber fallback failed: %s", exc)
+
+            return [], (
+                "No schedule activities found in PDF. "
+                "Ensure the PDF is a P6 or MS Project Gantt export with ID, Name, Start, and Finish columns."
+            )
 
         return [], f"Unsupported file type: {file_name}"
     except Exception as exc:
         return [], str(exc)
-
-
-def _parse_pdf_with_pdfplumber(file_bytes: bytes) -> tuple[list[dict[str, Any]], str | None]:
-    """
-    Extract tabular data from a PDF using pdfplumber.
-
-    Strategy:
-    - Scans every page for tables using pdfplumber's layout engine
-    - Combines tables across pages that share the same header structure
-      (handles multi-page activity lists where the header repeats each page)
-    - Returns empty rows (not an error) if no tables are found — the caller
-      (_run) will then fall back to Claude Vision extraction
-
-    Returns (rows, error). error is only set for hard failures (corrupt file, etc.).
-    """
-    try:
-        pdfplumber = importlib.import_module("pdfplumber")
-    except ImportError:
-        logger.warning("pdfplumber not installed — PDF table extraction unavailable")
-        return [], None  # Soft fail: let Claude Vision handle it
-
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            main_headers: list[str] | None = None
-            all_rows: list[dict[str, Any]] = []
-
-            for page in pdf.pages:
-                tables = page.extract_tables() or []
-                for table in tables:
-                    if not table or len(table) < 2:
-                        continue
-
-                    row0 = [str(c or "").strip() for c in table[0]]
-
-                    if main_headers is None:
-                        # First table found — use its header row
-                        main_headers = [h if h else f"col_{i}" for i, h in enumerate(row0)]
-                        data_rows = table[1:]
-                    elif row0 == main_headers or _headers_match(row0, main_headers):
-                        # Continuation of the same table on a new page — skip repeated header
-                        data_rows = table[1:]
-                    else:
-                        # Different table on this page — only adopt if it's much larger
-                        if len(table) > len(all_rows) + 10:
-                            main_headers = [h if h else f"col_{i}" for i, h in enumerate(row0)]
-                            all_rows = []
-                            data_rows = table[1:]
-                        else:
-                            continue
-
-                    for row in data_rows:
-                        row_dict: dict[str, Any] = {
-                            main_headers[i]: str(cell or "").strip() if cell is not None else ""
-                            for i, cell in enumerate(row)
-                            if i < len(main_headers)
-                        }
-                        if any(v for v in row_dict.values()):
-                            all_rows.append(row_dict)
-
-            if all_rows:
-                logger.info(
-                    "pdfplumber extracted %d rows with headers: %s",
-                    len(all_rows),
-                    main_headers,
-                )
-            else:
-                logger.info("pdfplumber found no tables in PDF — will try Claude Vision")
-
-            return all_rows, None
-
-    except Exception as exc:
-        logger.warning("pdfplumber parse error: %s — will try Claude Vision", exc)
-        return [], None  # Soft fail: let Claude Vision handle it
-
-
-def _headers_match(candidate: list[str], reference: list[str]) -> bool:
-    """Check if two header rows are substantially the same (continuation page detection)."""
-    if len(candidate) == 0 or len(reference) == 0:
-        return False
-    overlap = sum(1 for h in candidate if h in reference)
-    return overlap / max(len(candidate), len(reference)) >= 0.6
 
 
 def _compute_header_hash(rows: list[dict[str, Any]]) -> str:
@@ -544,10 +640,8 @@ def _build_structure_from_cached_mapping(
     recalculated for each upload to avoid cross-file contamination.
     """
     column_mapping = dict(cached_structure.get("column_mapping", {}))
-    hierarchy_mapping = dict(cached_structure.get("hierarchy_mapping", {}))
-    merged_mapping = {**column_mapping, **hierarchy_mapping}
 
-    activities = _apply_mapping(rows, merged_mapping, start_index=0)
+    activities = _apply_mapping(rows, column_mapping, start_index=0)
     total_rows = len(rows)
     dated_rows = 0
     for item in activities:
@@ -558,11 +652,11 @@ def _build_structure_from_cached_mapping(
     missing_fields = [
         field_name
         for field_name in ("name", "start_date", "end_date")
-        if field_name not in merged_mapping
+        if field_name not in column_mapping
     ]
 
     return StructureResult(
-        column_mapping=dict(column_mapping),
+        column_mapping=column_mapping,
         activities=activities,
         completeness_score=completeness,
         missing_fields=missing_fields,
@@ -593,6 +687,20 @@ def _parse_date(value: str | None) -> date | None:
         except ValueError:
             pass
 
+    # Space-separated text-month formats ("01 Mar 2026") must be tried on the
+    # full string before the space-split below strips the month and year away.
+    # The manual %y pivot (yy >= 69 → 1900+yy, else 2000+yy) overrides Python's
+    # default strptime pivot of 2068/1969 to match our codebase-wide convention.
+    for fmt in ("%d %b %Y", "%d %b %y"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if "%y" in fmt and "%Y" not in fmt:
+                yy = parsed.year % 100
+                parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
+            return parsed.date()
+        except (ValueError, AttributeError):
+            pass
+
     # If datetime-like text includes a date prefix, parse only the date portion.
     date_only_candidate = text
     if "T" in text:
@@ -600,10 +708,10 @@ def _parse_date(value: str | None) -> date | None:
     elif " " in text:
         date_only_candidate = text.split(" ", 1)[0].strip()
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%b-%Y", "%d-%b-%y"):
         try:
             parsed = datetime.strptime(date_only_candidate, fmt)
-            if "%y" in fmt:
+            if "%y" in fmt and "%Y" not in fmt:
                 yy = parsed.year % 100
                 parsed = parsed.replace(year=1900 + yy if yy >= 69 else 2000 + yy)
             return parsed.date()
@@ -637,13 +745,14 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
     suggestion_rows: list[AISuggestionLog] = []
 
     for item in classification.classifications:
-        if item.asset_type not in ALLOWED_ASSET_TYPES:
+        normalised_type = (item.asset_type or "").strip().lower()
+        if not normalised_type or normalised_type == "none":
             logger.warning(
-                "Skipping invalid classification asset_type='%s' for activity=%s",
-                item.asset_type,
+                "Skipping none/empty asset_type for activity=%s",
                 item.activity_id,
             )
             continue
+        item.asset_type = normalised_type
 
         confidence = (item.confidence or "").strip().lower()
         if confidence not in {"high", "medium", "low"}:
@@ -722,7 +831,12 @@ def _assign_subcontractor_suggestions(
         - If exactly one subcontractor's trade matches → set subcontractor_id.
         - If zero or multiple match → leave subcontractor_id null (ambiguous).
     """
-    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
     if not project or not project.subcontractors:
         return
 
@@ -745,6 +859,7 @@ def _assign_subcontractor_suggestions(
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             ActivityAssetMapping.auto_committed.is_(True),
+            ActivityAssetMapping.manually_corrected.is_(False),
             ActivityAssetMapping.asset_type.isnot(None),
             ActivityAssetMapping.subcontractor_id.is_(None),
         )

@@ -5,11 +5,11 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.asset import Asset
@@ -18,7 +18,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from .ai_service import ALLOWED_ASSET_TYPES, suggest_subcontractor_asset_types
+from .ai_service import ALLOWED_ASSET_TYPES, normalize_asset_type, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def _compute_anomaly_flags(
     current_activity_count: int,
     previous_mapping_set: set[tuple[str, str]],
     current_mapping_set: set[tuple[str, str]],
-) -> dict:
+) -> dict[str, bool | float]:
     flags: dict[str, bool | float] = {
         "demand_spike_over_100pct": False,
         "mapping_changes_over_40pct": False,
@@ -130,33 +130,19 @@ def _compute_anomaly_flags(
     return flags
 
 
-def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
-    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
-    if not project:
-        return None
+def _compute_demand_by_week_asset(
+    db: Session,
+    upload_id: uuid.UUID,
+) -> tuple[dict[tuple[date, str], float], set[tuple[str, str]]]:
+    """Query committed activity-asset mappings and bucket demand hours by (week, asset_type).
 
-    latest_upload = (
-        db.query(ProgrammeUpload)
-        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
-    if not latest_upload:
-        return None
-
-    timezone_name = project.timezone or "Australia/Adelaide"
-    try:
-        tz = ZoneInfo(timezone_name)
-    except Exception:
-        logger.warning("Invalid project timezone '%s'; using Australia/Adelaide", timezone_name)
-        timezone_name = "Australia/Adelaide"
-        tz = ZoneInfo("Australia/Adelaide")
-
+    Returns (demand_by_week_asset, current_mapping_set).
+    """
     mapping_rows = (
         db.query(ActivityAssetMapping, ProgrammeActivity)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .filter(
-            ProgrammeActivity.programme_upload_id == latest_upload.id,
+            ProgrammeActivity.programme_upload_id == upload_id,
             or_(
                 ActivityAssetMapping.auto_committed.is_(True),
                 and_(
@@ -176,7 +162,6 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
 
     demand_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     current_mapping_set: set[tuple[str, str]] = set()
-    activity_ids = []
 
     for mapping, activity in mapping_rows:
         if mapping.asset_type not in ALLOWED_ASSET_TYPES:
@@ -189,8 +174,16 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
             demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
 
         current_mapping_set.add((str(activity.id), mapping.asset_type))
-        activity_ids.append(activity.id)
 
+    return demand_by_week_asset, current_mapping_set
+
+
+def _compute_booked_by_week_asset(
+    db: Session,
+    project_id: uuid.UUID,
+    tz: ZoneInfo,
+) -> dict[tuple[date, str], float]:
+    """Query active bookings for a project and bucket booked hours by (week, asset_type)."""
     booking_rows = (
         db.query(SlotBooking, Asset)
         .join(Asset, Asset.id == SlotBooking.asset_id)
@@ -202,11 +195,30 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     )
 
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
+    _warned_unknown_types: set[str] = set()
+
     for booking, asset in booking_rows:
-        asset_type = (asset.type or "").strip().lower()
-        if asset_type not in ALLOWED_ASSET_TYPES:
-            logger.warning("Asset type '%s' is not in allowed set; skipping booking %s", asset.type, booking.id)
-            continue
+        # Normalize asset.type to a canonical type — handles UI-entered values
+        # like "Tower Crane" → "crane", "EWP" → "ewp", etc.
+        # Falls back to asset.name when type is generic (e.g. "EQUIPMENT").
+        raw_asset_type = asset.type or ""
+        asset_type = normalize_asset_type(raw_asset_type)
+        if asset_type is None:
+            asset_type = normalize_asset_type(asset.name or "")
+        if asset_type is None or asset_type not in ALLOWED_ASSET_TYPES:
+            raw_attempted = raw_asset_type or (asset.name or "")
+            if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
+                logger.warning(
+                    "Asset type '%s' not in allowed set; bucketing as 'other' (booking %s). "
+                    "Check asset configuration.",
+                    raw_attempted,
+                    booking.id,
+                )
+                _warned_unknown_types.add(raw_attempted)
+            elif raw_attempted:
+                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", raw_attempted, booking.id)
+            asset_type = "other"
+
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue
 
@@ -230,23 +242,103 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
                 booked_by_week_asset[(week, asset_type)] += segment_hours
             segment_start = segment_end
 
-    all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
-    rows: list[LookaheadRow] = []
+    return booked_by_week_asset
 
-    for week, asset_type in all_keys:
-        demand = round(demand_by_week_asset.get((week, asset_type), 0.0), 2)
-        booked = round(booked_by_week_asset.get((week, asset_type), 0.0), 2)
-        gap = round(max(demand - booked, 0.0), 2)
-        rows.append(
-            LookaheadRow(
-                asset_type=asset_type,
-                week_start=week,
-                demand_hours=demand,
-                booked_hours=booked,
-                demand_level=_demand_level(demand),
-                gap_hours=gap,
-            )
+
+def _upsert_snapshot(
+    db: Session,
+    project_id: uuid.UUID,
+    latest_upload_id: uuid.UUID,
+    snapshot_date: date,
+    snapshot_payload: dict,
+    anomaly_flags: dict,
+) -> LookaheadSnapshot:
+    """Upsert a LookaheadSnapshot for (project_id, snapshot_date), handling concurrent races."""
+    snapshot = (
+        db.query(LookaheadSnapshot)
+        .filter(
+            LookaheadSnapshot.project_id == project_id,
+            LookaheadSnapshot.snapshot_date == snapshot_date,
         )
+        .first()
+    )
+
+    if snapshot:
+        snapshot.programme_upload_id = latest_upload_id
+        snapshot.data = snapshot_payload
+        snapshot.anomaly_flags = anomaly_flags
+    else:
+        snapshot = LookaheadSnapshot(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            programme_upload_id=latest_upload_id,
+            snapshot_date=snapshot_date,
+            data=snapshot_payload,
+            anomaly_flags=anomaly_flags,
+        )
+        db.add(snapshot)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent runs can race on (project_id, snapshot_date); reload and update.
+        db.rollback()
+        snapshot = (
+            db.query(LookaheadSnapshot)
+            .filter(
+                LookaheadSnapshot.project_id == project_id,
+                LookaheadSnapshot.snapshot_date == snapshot_date,
+            )
+            .first()
+        )
+        if snapshot is None:
+            raise
+        snapshot.programme_upload_id = latest_upload_id
+        snapshot.data = snapshot_payload
+        snapshot.anomaly_flags = anomaly_flags
+        db.commit()
+
+    db.refresh(snapshot)
+    return snapshot
+
+
+def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    if not project:
+        return None
+
+    latest_upload = (
+        db.query(ProgrammeUpload)
+        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
+        .order_by(ProgrammeUpload.version_number.desc())
+        .first()
+    )
+    if not latest_upload:
+        return None
+
+    timezone_name = project.timezone or "Australia/Adelaide"
+    try:
+        tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Invalid project timezone '%s'; using Australia/Adelaide", timezone_name)
+        timezone_name = "Australia/Adelaide"
+        tz = ZoneInfo("Australia/Adelaide")
+
+    demand_by_week_asset, current_mapping_set = _compute_demand_by_week_asset(db, latest_upload.id)
+    booked_by_week_asset = _compute_booked_by_week_asset(db, project_id, tz)
+
+    all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
+    rows: list[LookaheadRow] = [
+        LookaheadRow(
+            asset_type=asset_type,
+            week_start=week,
+            demand_hours=round(demand_by_week_asset.get((week, asset_type), 0.0), 2),
+            booked_hours=round(booked_by_week_asset.get((week, asset_type), 0.0), 2),
+            demand_level=_demand_level(demand_by_week_asset.get((week, asset_type), 0.0)),
+            gap_hours=round(max(demand_by_week_asset.get((week, asset_type), 0.0) - booked_by_week_asset.get((week, asset_type), 0.0), 0.0), 2),
+        )
+        for week, asset_type in all_keys
+    ]
 
     previous_snapshot = (
         db.query(LookaheadSnapshot)
@@ -255,11 +347,12 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         .first()
     )
 
-    previous_rows = previous_snapshot.data.get("rows", []) if previous_snapshot and previous_snapshot.data else []
-    previous_activity_count = int(previous_snapshot.data.get("activity_count", 0)) if previous_snapshot and previous_snapshot.data else 0
+    previous_data = (previous_snapshot.data or {}) if previous_snapshot else {}
+    previous_rows = previous_data.get("rows", [])
+    previous_activity_count = int(previous_data.get("activity_count", 0))
     previous_mapping_set = {
         (entry.get("activity_id", ""), entry.get("asset_type", ""))
-        for entry in (previous_snapshot.data.get("mapping_set", []) if previous_snapshot and previous_snapshot.data else [])
+        for entry in previous_data.get("mapping_set", [])
     }
 
     current_rows_payload = [
@@ -301,51 +394,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         ],
     }
 
-    snapshot = (
-        db.query(LookaheadSnapshot)
-        .filter(
-            LookaheadSnapshot.project_id == project_id,
-            LookaheadSnapshot.snapshot_date == snapshot_date,
-        )
-        .first()
-    )
-
-    if snapshot:
-        snapshot.programme_upload_id = latest_upload.id
-        snapshot.data = snapshot_payload
-        snapshot.anomaly_flags = anomaly_flags
-    else:
-        snapshot = LookaheadSnapshot(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            programme_upload_id=latest_upload.id,
-            snapshot_date=snapshot_date,
-            data=snapshot_payload,
-            anomaly_flags=anomaly_flags,
-        )
-        db.add(snapshot)
-
-    try:
-        db.commit()
-    except IntegrityError:
-        # Concurrent runs can race on (project_id, snapshot_date); reload and update.
-        db.rollback()
-        snapshot = (
-            db.query(LookaheadSnapshot)
-            .filter(
-                LookaheadSnapshot.project_id == project_id,
-                LookaheadSnapshot.snapshot_date == snapshot_date,
-            )
-            .first()
-        )
-        if snapshot is None:
-            raise
-        snapshot.programme_upload_id = latest_upload.id
-        snapshot.data = snapshot_payload
-        snapshot.anomaly_flags = anomaly_flags
-        db.commit()
-    db.refresh(snapshot)
-    return snapshot
+    return _upsert_snapshot(db, project_id, latest_upload.id, snapshot_date, snapshot_payload, anomaly_flags)
 
 
 def get_latest_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
@@ -411,7 +460,12 @@ def get_sub_asset_suggestions_for_project(
       }
     ]
     """
-    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
     if not project or not project.subcontractors:
         return []
 

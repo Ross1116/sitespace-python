@@ -11,12 +11,9 @@ from ..models.slot_booking import SlotBooking
 from ..models.user import User
 from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
 
-from ..core.security import get_password_hash, verify_password
-from ..schemas.enums import BookingStatus
+from ..core.security import get_password_hash, normalize_email as _normalize_email, verify_password
+from ..schemas.enums import BookingStatus, ProjectStatus
 
-
-def _normalize_email(email: str) -> str:
-    return email.strip().lower()
 
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
     """Create a new subcontractor"""
@@ -205,11 +202,13 @@ def search_subcontractors(
     query = db.query(Subcontractor)
     
     if search_term:
+        escaped = search_term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         search_filter = or_(
-            Subcontractor.first_name.ilike(f"%{search_term}%"),
-            Subcontractor.last_name.ilike(f"%{search_term}%"),
-            Subcontractor.company_name.ilike(f"%{search_term}%"),
-            Subcontractor.email.ilike(f"%{search_term}%")
+            Subcontractor.first_name.ilike(pattern, escape="\\"),
+            Subcontractor.last_name.ilike(pattern, escape="\\"),
+            Subcontractor.company_name.ilike(pattern, escape="\\"),
+            Subcontractor.email.ilike(pattern, escape="\\"),
         )
         query = query.filter(search_filter)
     
@@ -253,9 +252,9 @@ def get_subcontractor_projects(
     # Filter by active status if specified
     if is_active is not None:
         if is_active:
-            projects = [p for p in projects if p.status == "active" or p.status is None]
+            projects = [p for p in projects if p.status == ProjectStatus.ACTIVE.value or p.status is None]
         else:
-            projects = [p for p in projects if p.status != "active" and p.status is not None]
+            projects = [p for p in projects if p.status != ProjectStatus.ACTIVE.value and p.status is not None]
     
     # Apply pagination
     return projects[skip:skip + limit]
@@ -427,12 +426,12 @@ def get_subcontractor_statistics(
     # Project statistics
     total_projects = len(subcontractor.assigned_projects)
     active_projects = sum(
-        1 for p in subcontractor.assigned_projects 
-        if p.status == "active" or p.status is None
+        1 for p in subcontractor.assigned_projects
+        if p.status == ProjectStatus.ACTIVE.value or p.status is None
     )
     completed_projects = sum(
-        1 for p in subcontractor.assigned_projects 
-        if p.status == "completed"
+        1 for p in subcontractor.assigned_projects
+        if p.status == ProjectStatus.COMPLETED.value
     )
     
     # Booking statistics with date filtering
@@ -590,8 +589,8 @@ def get_subcontractor_current_projects(
     
     # Return only active projects
     return [
-        p for p in subcontractor.assigned_projects 
-        if p.status == "active" or p.status is None
+        p for p in subcontractor.assigned_projects
+        if p.status == ProjectStatus.ACTIVE.value or p.status is None
     ]
 
 def count_subcontractor_bookings_by_status(
@@ -766,33 +765,7 @@ def get_manager_statistics(
         "by_trade": trade_counts,
         "subcontractor_list": subcontractors
     }
-    
-def is_subcontractor_assigned(
-    db: Session,
-    project_id: UUID,
-    subcontractor_id: UUID
-) -> bool:
-    """
-    Check if a subcontractor is already assigned to a project.
-    """
-    # Query to check if the relationship exists
-    project = db.query(SiteProject).filter(
-        SiteProject.id == project_id
-    ).first()
-    
-    if not project:
-        return False
-    
-    # Check if subcontractor is in the project's subcontractors list
-    subcontractor_assigned = db.query(Subcontractor).filter(
-        Subcontractor.id == subcontractor_id
-    ).join(
-        Subcontractor.assigned_projects
-    ).filter(
-        SiteProject.id == project_id
-    ).first()
-    
-    return subcontractor_assigned is not None
+
 
 def assign_subcontractor_to_project(db: Session, subcontractor_id: UUID, project_id: UUID) -> bool:
     """

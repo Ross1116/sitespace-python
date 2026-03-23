@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import date, datetime, timedelta, timezone
 
 from ...core.database import get_db
-from ...core.security import get_current_active_user, create_password_reset_token, verify_password
+from ...core.security import get_current_active_user, create_password_reset_token, require_manager_or_admin, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
 from ...models.user import User
@@ -20,67 +20,15 @@ from ...schemas.subcontractor import (
     ProjectAssignmentResponse,
     ManagerSubcontractorStatsResponse,
     BookingCountsByStatusResponse,
-    SubcontractorAvailabilityResponse
+    SubcontractorAvailabilityResponse,
+    SubcontractorBookingSummary,
+    SubcontractorProjectSummary,
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import BookingStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
-
-def require_manager_or_admin(current_user: Any) -> None:
-    """Restrict endpoint access to manager/admin roles only."""
-    role = getattr(current_user, "role", None)
-    if role not in [UserRole.MANAGER, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers and admins can access this endpoint"
-        )
-
-# --- Helper Class for the Fix ---
-class EnumValueWrapper:
-    """
-    Fix for 'str object has no attribute value':
-    Wraps a string so that code expecting an Enum (calling .value) 
-    gets the string back instead of crashing.
-    """
-    def __init__(self, value):
-        self.value = value
-    
-    def __str__(self):
-        return self.value
-
-# ========================================================
-# HELPER FUNCTIONS
-# ========================================================
-
-async def verify_manager_access(
-    subcontractor_id: UUID,
-    db: Session,
-    current_user: User
-) -> bool:
-    """Verify that the current user can access this subcontractor"""
-    
-    if current_user.role == UserRole.ADMIN:
-        return True
-    
-    if current_user.role == UserRole.MANAGER:
-        has_access = subcontractor_crud.check_manager_can_access_subcontractor(
-            db,
-            manager_id=current_user.id,
-            subcontractor_id=subcontractor_id
-        )
-        if not has_access:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to this subcontractor"
-            )
-        return True
-    
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Insufficient permissions"
-    )
 
 # ========================================================
 # LIST & SEARCH ROUTES
@@ -700,7 +648,7 @@ def get_subcontractor_projects(
     
     return projects
 
-@router.get("/{subcontractor_id}/projects/current", response_model=List[dict])
+@router.get("/{subcontractor_id}/projects/current", response_model=List[SubcontractorProjectSummary])
 def get_current_projects(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
@@ -731,7 +679,7 @@ def get_current_projects(
         } for p in current_projects
     ]
 
-@router.get("/{subcontractor_id}/bookings", response_model=List[dict])
+@router.get("/{subcontractor_id}/bookings", response_model=List[SubcontractorBookingSummary])
 def get_subcontractor_bookings(
     subcontractor_id: UUID,
     project_id: Optional[UUID] = Query(None),
@@ -780,7 +728,7 @@ def get_subcontractor_bookings(
         } for b in bookings
     ]
 
-@router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[dict])
+@router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[SubcontractorBookingSummary])
 def get_upcoming_bookings(
     subcontractor_id: UUID,
     days_ahead: int = Query(7, ge=1, le=90, description="Number of days to look ahead"),

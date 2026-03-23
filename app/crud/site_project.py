@@ -4,11 +4,50 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import date
 
+from fastapi import HTTPException
+
 from ..models.site_project import SiteProject
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import ProjectStatus, UserRole
-from ..schemas.site_project import SiteProjectCreate, SiteProjectUpdate
+from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
+
+
+def _escape_ilike(value: str) -> str:
+    """Escape SQL LIKE meta-characters so user input is treated literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _apply_project_filters(query: Any, filters: Optional[SiteProjectFilters]) -> Any:
+    """Apply shared project filters to a query."""
+    if not filters:
+        return query
+
+    if filters.name:
+        query = query.filter(SiteProject.name.ilike(f"%{_escape_ilike(filters.name)}%", escape="\\"))
+
+    if filters.location:
+        query = query.filter(SiteProject.location.ilike(f"%{_escape_ilike(filters.location)}%", escape="\\"))
+
+    if filters.status:
+        query = query.filter(SiteProject.status == filters.status)
+
+    if filters.start_date_from:
+        query = query.filter(SiteProject.start_date >= filters.start_date_from)
+
+    if filters.start_date_to:
+        query = query.filter(SiteProject.start_date <= filters.start_date_to)
+
+    if filters.end_date_from:
+        query = query.filter(SiteProject.end_date >= filters.end_date_from)
+
+    if filters.end_date_to:
+        query = query.filter(SiteProject.end_date <= filters.end_date_to)
+
+    if filters.user_id:
+        query = query.filter(SiteProject.managers.any(User.id == filters.user_id))
+
+    return query
 
 def create_project(
     db: Session,
@@ -66,91 +105,17 @@ def get_project_with_details(db: Session, project_id: UUID) -> Optional[SiteProj
 
 def get_projects(
     db: Session,
-    filters: Optional[Dict[str, Any]] = None,
+    filters: Optional[SiteProjectFilters] = None,
     skip: int = 0,
     limit: int = 100
 ) -> List[SiteProject]:
     """Get projects with filters"""
-    if filters is None:
-        filters = {}
-
-    query = db.query(SiteProject)
-    
-    # Text search filters
-    if 'name' in filters and filters['name']:
-        query = query.filter(
-            SiteProject.name.ilike(f"%{filters['name']}%")
-        )
-    
-    if 'location' in filters and filters['location']:
-        query = query.filter(
-            SiteProject.location.ilike(f"%{filters['location']}%")
-        )
-    
-    if 'status' in filters and filters['status']:
-        query = query.filter(SiteProject.status == filters['status'])
-    
-    # Date range filters
-    if 'start_date_from' in filters and filters['start_date_from']:
-        query = query.filter(SiteProject.start_date >= filters['start_date_from'])
-    
-    if 'start_date_to' in filters and filters['start_date_to']:
-        query = query.filter(SiteProject.start_date <= filters['start_date_to'])
-    
-    if 'end_date_from' in filters and filters['end_date_from']:
-        query = query.filter(SiteProject.end_date >= filters['end_date_from'])
-    
-    if 'end_date_to' in filters and filters['end_date_to']:
-        query = query.filter(SiteProject.end_date <= filters['end_date_to'])
-    
-    # User access filter - get projects where user is a manager
-    # Note: Subcontractors don't have user_id, they're separate entities
-    if 'user_id' in filters and filters['user_id']:
-        query = query.filter(
-            SiteProject.managers.any(User.id == filters['user_id'])
-        )
-    
+    query = _apply_project_filters(db.query(SiteProject), filters)
     return query.order_by(SiteProject.created_at.desc()).offset(skip).limit(limit).all()
 
-def count_projects(db: Session, filters: Optional[Dict[str, Any]] = None) -> int:
+def count_projects(db: Session, filters: Optional[SiteProjectFilters] = None) -> int:
     """Count projects with filters"""
-    if filters is None:
-        filters = {}
-
-    query = db.query(SiteProject)
-    
-    # Apply same filters as get_projects
-    if 'name' in filters and filters['name']:
-        query = query.filter(
-            SiteProject.name.ilike(f"%{filters['name']}%")
-        )
-    
-    if 'location' in filters and filters['location']:
-        query = query.filter(
-            SiteProject.location.ilike(f"%{filters['location']}%")
-        )
-    
-    if 'status' in filters and filters['status']:
-        query = query.filter(SiteProject.status == filters['status'])
-    
-    if 'start_date_from' in filters and filters['start_date_from']:
-        query = query.filter(SiteProject.start_date >= filters['start_date_from'])
-    
-    if 'start_date_to' in filters and filters['start_date_to']:
-        query = query.filter(SiteProject.start_date <= filters['start_date_to'])
-    
-    if 'end_date_from' in filters and filters['end_date_from']:
-        query = query.filter(SiteProject.end_date >= filters['end_date_from'])
-    
-    if 'end_date_to' in filters and filters['end_date_to']:
-        query = query.filter(SiteProject.end_date <= filters['end_date_to'])
-    
-    # User access filter - get projects where user is a manager
-    if 'user_id' in filters and filters['user_id']:
-        query = query.filter(
-            SiteProject.managers.any(User.id == filters['user_id'])
-        )
-    
+    query = _apply_project_filters(db.query(SiteProject), filters)
     return query.count()
 
 def update_project(
@@ -207,10 +172,6 @@ def archive_project(db: Session, project: SiteProject) -> SiteProject:
 
     return project
 
-
-def delete_project(db: Session, project: SiteProject) -> SiteProject:
-    """Backward-compatible alias for `archive_project`."""
-    return archive_project(db, project)
 
 def has_project_access(db: Session, project_id: UUID, user_id: UUID) -> bool:
     """Check if user has access to project (as manager only)"""
@@ -289,42 +250,47 @@ def count_lead_managers(db: Session, project_id: UUID) -> int:
     return 0
 
 def add_manager_to_project(
-    db: Session, 
-    project_id: UUID, 
-    manager_id: UUID, 
-    is_lead: bool = False
-):
-    """Add manager to project"""
+    db: Session,
+    project_id: UUID,
+    manager_id: UUID,
+    is_lead: bool = False,
+) -> bool:
+    """Add manager to project. Returns True if the manager was added, False otherwise."""
     project = get_project(db, project_id)
     manager = db.query(User).filter(User.id == manager_id).first()
-    
-    if project and manager:
-        if manager not in project.managers:
-            if is_lead:
-                # If setting as lead, add at beginning
-                project.managers.insert(0, manager)
-            else:
-                project.managers.append(manager)
-            db.commit()
-            return True
+
+    if not project or not manager:
+        return False
+
+    if manager not in project.managers:
+        if is_lead:
+            # If setting as lead, add at beginning
+            project.managers.insert(0, manager)
+        else:
+            project.managers.append(manager)
+        db.commit()
+        return True
+
     return False
 
-def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID):
+def remove_manager_from_project(db: Session, project_id: UUID, manager_id: UUID) -> bool:
     """Remove manager from project"""
     project = get_project(db, project_id)
     if project:
+        original = [m for m in project.managers if m.id == manager_id]
+        if not original:
+            return False
         project.managers = [m for m in project.managers if m.id != manager_id]
         db.commit()
         return True
     return False
 
 def add_subcontractor_to_project(
-    db: Session, 
-    project_id: UUID, 
+    db: Session,
+    project_id: UUID,
     subcontractor_id: UUID,
-    hourly_rate: Optional[float] = None,
-    is_active: bool = True
-):
+    is_active: bool = True,
+) -> bool:
     """Add subcontractor to project"""
     if not is_active:
         return False
@@ -342,13 +308,16 @@ def add_subcontractor_to_project(
     return False
 
 def remove_subcontractor_from_project(
-    db: Session, 
-    project_id: UUID, 
-    subcontractor_id: UUID
-):
+    db: Session,
+    project_id: UUID,
+    subcontractor_id: UUID,
+) -> bool:
     """Remove subcontractor from project"""
     project = get_project(db, project_id)
     if project:
+        original = [s for s in project.subcontractors if s.id == subcontractor_id]
+        if not original:
+            return False
         project.subcontractors = [
             s for s in project.subcontractors if s.id != subcontractor_id
         ]
@@ -360,11 +329,11 @@ def update_project_subcontractor(
     db: Session,
     project_id: UUID,
     subcontractor_id: UUID,
-    update_data: Any
-):
+    update_data: Any,
+) -> bool:
     """Update subcontractor details in project"""
     # Placeholder for future implementation
-    return True
+    return False
 
 def get_available_subcontractors(
     db: Session,
@@ -390,11 +359,11 @@ def get_available_subcontractors(
     # Filter by trade specialty if provided
     if trade_specialty:
         query = query.filter(
-            Subcontractor.trade_specialty.ilike(f"%{trade_specialty}%")
+            Subcontractor.trade_specialty.ilike(f"%{_escape_ilike(trade_specialty)}%", escape="\\")
         )
     
     # Only active subcontractors
-    query = query.filter(Subcontractor.is_active == True)
+    query = query.filter(Subcontractor.is_active.is_(True))
     
     return query.all()
 
@@ -425,10 +394,11 @@ def search_projects(
     query = db.query(SiteProject)
     
     # Search in multiple fields
+    escaped = _escape_ilike(search_term)
     search_filter = or_(
-        SiteProject.name.ilike(f"%{search_term}%"),
-        SiteProject.location.ilike(f"%{search_term}%") if SiteProject.location else False,
-        SiteProject.description.ilike(f"%{search_term}%") if SiteProject.description else False
+        SiteProject.name.ilike(f"%{escaped}%", escape="\\"),
+        SiteProject.location.ilike(f"%{escaped}%", escape="\\") if SiteProject.location else False,
+        SiteProject.description.ilike(f"%{escaped}%", escape="\\") if SiteProject.description else False,
     )
     query = query.filter(search_filter)
     
@@ -448,7 +418,7 @@ def get_active_projects(
     """Get active projects"""
     query = db.query(SiteProject).filter(
         or_(
-            SiteProject.status == 'active',
+            SiteProject.status == ProjectStatus.ACTIVE.value,
             SiteProject.status == None
         )
     )
@@ -528,10 +498,10 @@ def is_subcontractor_assigned(
 def get_project_statistics(db: Session, project_id: UUID) -> Optional[Dict[str, Any]]:
     """Get project statistics"""
     project = get_project_with_details(db, project_id)
-    
+
     if not project:
         return None
-    
+
     return {
         "project_id": str(project.id),
         "project_name": project.name,
@@ -541,3 +511,17 @@ def get_project_statistics(db: Session, project_id: UUID) -> Optional[Dict[str, 
         "total_bookings": len(project.slot_bookings) if hasattr(project, 'slot_bookings') else 0,
         "status": project.status
     }
+
+
+def check_sub_project_access(
+    db: Session,
+    subcontractor: "Subcontractor",
+    project: "SiteProject",
+) -> bool:
+    """Return True if ``subcontractor`` is assigned to ``project``, False otherwise.
+
+    The project object must have its ``subcontractors`` relationship loaded
+    before calling this (e.g. via a prior ``db.query`` or joinedload).
+    Callers in the API layer are responsible for translating False into HTTP 403.
+    """
+    return any(str(sub.id) == str(subcontractor.id) for sub in project.subcontractors)

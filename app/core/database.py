@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from fastapi import HTTPException, status
 from .config import settings
 import logging
@@ -46,13 +46,27 @@ def create_database_engine():
         engine = create_engine(
             settings.database_url,
             pool_pre_ping=True,
-            pool_recycle=1800,
+            # Recycle connections every 5 minutes so Railway's LB (which drops
+            # idle TCP connections around that mark) never silently kills them
+            # before we can detect the stale state via pool_pre_ping.
+            pool_recycle=300,
             pool_timeout=30,
-            pool_size=20,
-            max_overflow=40,
+            # Smaller pool: Railway hobby/starter plans cap at ~25 connections;
+            # 10 base + 20 overflow leaves headroom for the nightly job and
+            # concurrent uploads without exhausting the server limit.
+            pool_size=10,
+            max_overflow=20,
             connect_args={
                 "connect_timeout": connect_timeout,
-                "application_name": "sitespace-api"
+                "application_name": "sitespace-api",
+                # TCP keepalives: OS will probe the connection after 60s idle,
+                # retry every 10s, and declare it dead after 5 failures (110s).
+                # This surfaces broken connections before pool_pre_ping ever
+                # gets a chance to recycle them.
+                "keepalives": 1,
+                "keepalives_idle": 60,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
             },
             echo=False  # Set to True for SQL debugging
         )
@@ -66,8 +80,8 @@ def create_database_engine():
     try:
         with engine.connect() as connection:
             logger.info("✅ Database connection test successful.")
-    except Exception as conn_error:
-        logger.warning("❌ Database connectivity check failed at startup: %s", conn_error)
+    except SQLAlchemyError:
+        logger.warning("❌ Database connectivity check failed at startup", exc_info=True)
         logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
 
     return engine
@@ -88,7 +102,9 @@ def get_db():
         yield db
     except OperationalError as db_error:
         db.rollback()
-        logger.exception("Database operational error during request: %s", db_error)
+        # Log at WARNING, not ERROR — the 503 HTTPException is already captured
+        # by Sentry's starlette middleware, so logger.exception would double-report.
+        logger.warning("Database operational error during request: %s", db_error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database temporarily unavailable. Please retry shortly."
@@ -98,4 +114,10 @@ def get_db():
         db.rollback()
         raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except OperationalError:
+            # Connection already dead (e.g. SSL EOF after a successful commit).
+            # SQLAlchemy invalidates and discards the connection automatically —
+            # swallow the error so it doesn't surface as a false Sentry alert.
+            pass
