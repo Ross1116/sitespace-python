@@ -84,6 +84,10 @@ class ProgrammeActivityItem(BaseSchema):
     wbs_code: str | None = None
     sort_order: int | None = None
     import_flags: list[str] = Field(default_factory=list)
+    # Stage 1 correctness fields
+    pct_complete: int | None = None
+    activity_kind: str | None = None   # 'summary' | 'task' | 'milestone'
+    row_confidence: str | None = None  # 'high' | 'medium' | 'low'
 
 
 class ActivityMappingResponse(BaseSchema):

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from typing import Any
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -395,6 +394,9 @@ def get_activities(
             wbs_code=a.wbs_code,
             sort_order=a.sort_order,
             import_flags=a.import_flags or [],
+            pct_complete=a.pct_complete,
+            activity_kind=a.activity_kind,
+            row_confidence=a.row_confidence,
         )
         for a in activities
     ]

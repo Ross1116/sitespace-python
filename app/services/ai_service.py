@@ -46,6 +46,71 @@ def _normalize_for_dedup(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Stage 1 — row typing and row confidence helpers
+# ---------------------------------------------------------------------------
+
+# Milestone names often end with a parenthetical date or are a single short
+# phrase with no duration.  We detect milestones structurally (zero duration
+# + non-summary) rather than by name pattern to avoid false positives.
+
+def classify_row_kind(
+    *,
+    is_summary: bool,
+    start: str | None,
+    finish: str | None,
+) -> str:
+    """
+    Return 'summary', 'milestone', or 'task'.
+
+    Rules (in priority order):
+      1. is_summary=True → 'summary'
+      2. Both dates present and start == finish (zero-duration row) → 'milestone'
+      3. Everything else → 'task'
+    """
+    if is_summary:
+        return "summary"
+    if start and finish and start == finish:
+        return "milestone"
+    return "task"
+
+
+def score_row_confidence(
+    *,
+    name: str,
+    start: str | None,
+    finish: str | None,
+    activity_kind: str,
+) -> str:
+    """
+    Return 'high', 'medium', or 'low' based on data completeness.
+
+    Rules:
+      - 'high':   name non-empty + both dates present (or milestone with at least one date)
+      - 'medium': name non-empty + exactly one date present
+      - 'low':    name missing/whitespace-only, OR both dates absent on a task/summary row
+    """
+    clean_name = name.strip()
+    has_start = bool(start)
+    has_finish = bool(finish)
+
+    if not clean_name:
+        return "low"
+
+    if activity_kind == "milestone":
+        # Milestones legitimately have start == finish; one date is fine.
+        return "high" if (has_start or has_finish) else "medium"
+
+    if has_start and has_finish:
+        return "high"
+
+    if has_start or has_finish:
+        return "medium"
+
+    # task/summary row with no dates at all
+    return "low"
+
+
+# ---------------------------------------------------------------------------
 # Canonical asset type normalizer.
 # Maps raw asset.type strings entered in the UI (mixed-case, varied phrasing)
 # to the canonical ALLOWED_ASSET_TYPES values.  Used in two places:
@@ -182,6 +247,10 @@ class ActivityItem:
     is_summary: bool
     level_name: str | None
     zone_name: str | None
+    # Stage 1 correctness fields (may be None when not available in source file)
+    pct_complete: int | None = None  # 0–100 extracted from source file
+    activity_kind: str | None = None # 'summary' | 'task' | 'milestone'
+    row_confidence: str | None = None  # 'high' | 'medium' | 'low'
 
 
 @dataclass
@@ -495,6 +564,7 @@ def _build_activities_from_rows(
     """
     Build ActivityItem list from raw rows using the detected column_mapping.
     Handles id, parent_id, is_summary, level_name, zone_name when mapped.
+    Populates Stage 1 correctness fields: activity_kind, row_confidence.
     """
     name_col = column_mapping.get("name")
     start_col = column_mapping.get("start_date")
@@ -504,6 +574,7 @@ def _build_activities_from_rows(
     summary_col = column_mapping.get("is_summary")
     level_col = column_mapping.get("level_name") or column_mapping.get("level_indicator")
     zone_col = column_mapping.get("zone_name")
+    pct_col = column_mapping.get("pct_complete")
 
     activities: list[ActivityItem] = []
 
@@ -528,15 +599,42 @@ def _build_activities_from_rows(
             if summary_raw is not None:
                 is_summary = str(summary_raw).strip().lower() in {"1", "true", "yes", "y", "t"}
 
+        start_str = str(start_raw).strip() if start_raw is not None else None
+        finish_str = str(end_raw).strip() if end_raw is not None else None
+
+        pct_complete: int | None = None
+        if pct_col:
+            pct_raw = row.get(pct_col)
+            if pct_raw is not None:
+                try:
+                    pct_complete = max(0, min(100, int(float(str(pct_raw).rstrip("%").strip()))))
+                except (ValueError, TypeError):
+                    pass
+
+        activity_kind = classify_row_kind(
+            is_summary=is_summary,
+            start=start_str,
+            finish=finish_str,
+        )
+        row_confidence = score_row_confidence(
+            name=name,
+            start=start_str,
+            finish=finish_str,
+            activity_kind=activity_kind,
+        )
+
         activities.append(ActivityItem(
             id=activity_id,
             name=name,
-            start=str(start_raw).strip() if start_raw is not None else None,
-            finish=str(end_raw).strip() if end_raw is not None else None,
+            start=start_str,
+            finish=finish_str,
             parent_id=str(parent_raw).strip() if parent_raw is not None else None,
             is_summary=is_summary,
             level_name=str(level_raw).strip() if level_raw is not None else None,
             zone_name=str(zone_raw).strip() if zone_raw is not None else None,
+            pct_complete=pct_complete,
+            activity_kind=activity_kind,
+            row_confidence=row_confidence,
         ))
 
     return activities
@@ -1253,6 +1351,10 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
         start = _parse_date(row.get(column_mapping.get("start_date", ""), ""))
         finish = _parse_date(row.get(column_mapping.get("end_date", ""), ""))
+        activity_kind = classify_row_kind(is_summary=False, start=start, finish=finish)
+        row_confidence = score_row_confidence(
+            name=name, start=start, finish=finish, activity_kind=activity_kind
+        )
         activities.append(ActivityItem(
             id=f"row-{i}",
             name=name,
@@ -1262,6 +1364,8 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
             is_summary=False,
             level_name=None,
             zone_name=None,
+            activity_kind=activity_kind,
+            row_confidence=row_confidence,
         ))
 
     rows_with_dates = sum(1 for a in activities if a.start and a.finish)
