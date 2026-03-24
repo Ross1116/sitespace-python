@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import backref, relationship
 from sqlalchemy.sql import func
@@ -38,6 +38,7 @@ class ProgrammeUpload(Base):
     completeness_notes = Column(JSONB, nullable=True)       # list of degradation reason strings
     status = Column(String(20), nullable=False, default="processing")  # processing | committed
     ai_tokens_used = Column(Integer, nullable=True)
+    work_days_per_week = Column(SmallInteger, nullable=False, default=5)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
@@ -80,6 +81,10 @@ class ProgrammeActivity(Base):
     sort_order = Column(Integer, nullable=True)
     # import_flags: e.g. ["dates_missing", "unstructured", "date_parse_failed"]
     import_flags = Column(JSONB, nullable=True)
+    # Stage 1 correctness columns
+    pct_complete = Column(SmallInteger, nullable=True)          # 0–100 extracted from file
+    activity_kind = Column(String(20), nullable=True)           # 'summary' | 'task' | 'milestone'
+    row_confidence = Column(String(10), nullable=True)          # 'high' | 'medium' | 'low'
 
     __table_args__ = (
         ForeignKeyConstraint(

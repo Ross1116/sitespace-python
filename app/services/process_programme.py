@@ -46,7 +46,9 @@ from .ai_service import (
     ClassificationResult,
     StructureResult,
     classify_assets,
+    classify_row_kind,
     detect_structure,
+    score_row_confidence,
     suggest_subcontractor_asset_types,
 )
 from .lookahead_engine import calculate_lookahead_for_project
@@ -241,8 +243,8 @@ async def _run(upload_id: str, db: Session) -> None:
     #    but ordering is still safer for large batches.
     inserted_rows, id_map = _insert_activities(upload_id, all_activity_items, db)
 
-    # 8. Classify assets for all inserted activities
-    #    Pass real UUID strings so classify_assets() can return them in classifications[].activity_id
+    # 8. Classify assets — only task rows generate demand; summary and milestone
+    #    rows are excluded so they don't pollute asset-type suggestions.
     activity_dicts = [
         {"id": str(real_id), "name": item.name}
         for item, real_id in zip(
@@ -250,7 +252,7 @@ async def _run(upload_id: str, db: Session) -> None:
             [id_map.get(f"__idx_{idx}") for idx, _ in enumerate(all_activity_items)],
             strict=True,
         )
-        if real_id is not None
+        if real_id is not None and item.activity_kind != "summary" and item.activity_kind != "milestone"
     ]
 
     # Fetch the project's registered assets so the AI classifies against what
@@ -441,6 +443,9 @@ def _insert_activities(
             wbs_code=source_id,
             sort_order=sort_order,
             import_flags=flags if flags else None,
+            pct_complete=item.pct_complete,
+            activity_kind=item.activity_kind,
+            row_confidence=item.row_confidence,
         ))
 
     db.bulk_save_objects(db_rows)
@@ -455,9 +460,15 @@ def _insert_activities(
 def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
     """
     Build a StructureResult directly from PDF rows without calling detect_structure.
-    The PDF regex parser always outputs fixed columns: ID, Name, Start, Finish.
+    The PDF regex parser always outputs fixed columns: ID, Name, PctComplete, Start, Finish.
     """
-    _PDF_MAPPING = {"id": "ID", "name": "Name", "start_date": "Start", "end_date": "Finish"}
+    _PDF_MAPPING = {
+        "id": "ID",
+        "name": "Name",
+        "pct_complete": "PctComplete",
+        "start_date": "Start",
+        "end_date": "Finish",
+    }
     activities = _apply_mapping(rows, _PDF_MAPPING, start_index=0)
     total = len(activities)
     dated = sum(1 for a in activities if a.start and a.finish)
@@ -479,6 +490,7 @@ def _apply_mapping(
     """
     Apply detected column_mapping deterministically to rows beyond the AI sample.
     Returns flat ActivityItems (no hierarchy — AI only detects hierarchy in sample).
+    Populates Stage 1 correctness fields: pct_complete, activity_kind, row_confidence.
     """
     name_col = column_mapping.get("name")
     start_col = column_mapping.get("start_date")
@@ -488,6 +500,7 @@ def _apply_mapping(
     is_summary_col = column_mapping.get("is_summary")
     level_col = column_mapping.get("level_name")
     zone_col = column_mapping.get("zone_name")
+    pct_col = column_mapping.get("pct_complete")
 
     items: list[ActivityItem] = []
     for i, row in enumerate(rows):
@@ -504,6 +517,28 @@ def _apply_mapping(
         zone_value = "" if zone_raw is None else str(zone_raw).strip()
         source_value = _normalize_parent_token(row.get(source_id_col)) if source_id_col else None
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
+
+        pct_complete: int | None = None
+        if pct_col:
+            pct_raw = row.get(pct_col)
+            if pct_raw is not None:
+                try:
+                    pct_complete = max(0, min(100, int(float(str(pct_raw).rstrip("%").strip()))))
+                except (ValueError, TypeError):
+                    pass
+
+        activity_kind = classify_row_kind(
+            is_summary=is_summary,
+            start=start_value,
+            finish=end_value,
+        )
+        row_confidence = score_row_confidence(
+            name=name,
+            start=start_value,
+            finish=end_value,
+            activity_kind=activity_kind,
+        )
+
         items.append(ActivityItem(
             id=source_value or f"extra-{start_index + i}",
             name=name,
@@ -513,6 +548,9 @@ def _apply_mapping(
             is_summary=is_summary,
             level_name=level_value or None,
             zone_name=zone_value or None,
+            pct_complete=pct_complete,
+            activity_kind=activity_kind,
+            row_confidence=row_confidence,
         ))
     return items
 
@@ -599,15 +637,29 @@ def _parse_file(
             # Matches lines like:
             #   1028 SITE CLEARANCE 100% 17 daysFri 17/01/25 Sat 8/02/25 SITE CLEARANCE
             # Duration and start day-of-week are concatenated with no space in P6 exports.
+            # Group 3 captures % complete (integer, 0-100).
             _ACTIVITY_RE = _re.compile(
-                r"^(\d{3,6})\s+"                                  # ID
-                r"(.+?)\s+"                                        # Name (non-greedy)
-                r"\d+%\s+"                                         # % Complete (discard)
+                r"^(\d{3,6})\s+"                                  # Group 1: ID
+                r"(.+?)\s+"                                        # Group 2: Name (non-greedy)
+                r"(\d+)%\s+"                                       # Group 3: % Complete
                 r"\d+\s+days?"                                     # Duration (discard)
                 r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Start DOW (discard)
-                r"(\d{1,2}/\d{1,2}/\d{2,4})\s+"                  # Start date
+                r"(\d{1,2}/\d{1,2}/\d{2,4})\s+"                  # Group 4: Start date
                 r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Finish DOW (discard)
-                r"(\d{1,2}/\d{1,2}/\d{2,4})",                    # Finish date
+                r"(\d{1,2}/\d{1,2}/\d{2,4})",                    # Group 5: Finish date
+            )
+
+            # Noise suppression: skip lines that are page headers, legends,
+            # column-header repetitions, revision footers, or page titles.
+            # These patterns are checked BEFORE the activity regex.
+            _NOISE_RE = _re.compile(
+                r"(?:"
+                r"^(?:activity\s+id|id\s+activity|wbs|name\s+%|task\s+name)"  # column headers
+                r"|^(?:revision|data\s+date|print\s+date|printed|page\s+\d+)"  # footers
+                r"|^(?:critical|near\s*critical|total\s+float|driving)"        # legend keys
+                r"|^\d+\s+of\s+\d+$"                                           # page N of M
+                r")",
+                _re.IGNORECASE,
             )
 
             all_rows: list[dict[str, Any]] = []
@@ -616,14 +668,19 @@ def _parse_file(
                 for page in pdf.pages:
                     text = page.extract_text() or ""
                     for line in text.splitlines():
-                        m = _ACTIVITY_RE.match(line.strip())
+                        stripped = line.strip()
+                        if not stripped or _NOISE_RE.match(stripped):
+                            continue
+                        m = _ACTIVITY_RE.match(stripped)
                         if m and m.group(1) not in seen_ids:
                             seen_ids.add(m.group(1))
+                            pct_raw = m.group(3)
                             all_rows.append({
                                 "ID": m.group(1),
                                 "Name": m.group(2).strip(),
-                                "Start": m.group(3),
-                                "Finish": m.group(4),
+                                "PctComplete": int(pct_raw) if pct_raw.isdigit() else None,
+                                "Start": m.group(4),
+                                "Finish": m.group(5),
                             })
 
             if not all_rows:

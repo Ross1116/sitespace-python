@@ -21,3 +21,14 @@ os.environ["JWT_SECRET"] = "unit-test-secret-not-for-production"
 os.environ["SECRET_KEY"] = "unit-test-secret-not-for-production"
 os.environ["AI_API_KEY"] = "test-key-unit-tests-never-call-ai"
 os.environ["AI_ENABLED"] = "false"
+
+# Eagerly import every ORM model so that SQLAlchemy's mapper registry is fully
+# populated before any test triggers mapper configuration.  Without this,
+# models that reference each other via string-name relationships (e.g.
+# SiteProject → "SitePlan") fail with InvalidRequestError when the referenced
+# class hasn't been imported yet in the unit-test process.
+import app.models.site_plan  # noqa: F401, E402
+import app.models.stored_file  # noqa: F401, E402
+import app.models.asset  # noqa: F401, E402
+import app.models.lookahead  # noqa: F401, E402
+import app.models.programme  # noqa: F401, E402
