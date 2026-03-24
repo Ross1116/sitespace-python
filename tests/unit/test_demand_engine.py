@@ -6,10 +6,10 @@ Covers:
     demand buckets at 8 hours per calendar day.
   - _compute_anomaly_flags: compares two snapshots and raises threshold flags.
 
-NOTE — known limitation in _iter_weekly_activity_hours:
+NOTE -- known limitation in _iter_weekly_activity_hours:
   The current implementation counts ALL calendar days (including Saturday and
-  Sunday) at 8 h/day.  A 5-day Mon–Fri activity produces 40 h, which is correct,
-  but a 7-day Mon–Sun activity produces 56 h rather than 40 h.
+  Sunday) at 8 h/day.  A 5-day Mon-Fri activity produces 40 h, which is correct,
+  but a 7-day Mon-Sun activity produces 56 h rather than 40 h.
 
   Stage 1 will add `work_days_per_week` to projects/uploads so the demand
   engine can exclude non-working days.  Tests that document this behaviour are
@@ -27,7 +27,7 @@ from app.services.lookahead_engine import (
 )
 
 
-# Reference dates — all in week of Mon 2026-03-16
+# Reference dates -- all in week of Mon 2026-03-16
 MON = date(2026, 3, 16)
 TUE = date(2026, 3, 17)
 WED = date(2026, 3, 18)
@@ -62,14 +62,14 @@ class TestWeeklyBuckets:
         assert result == [(MON, 56.0)]
 
     def test_activity_spans_two_weeks(self):
-        # Mon–Wed of next week: 7 days in week 1, 3 days in week 2
+        # Mon-Wed of next week: 7 days in week 1, 3 days in week 2
         result = _iter_weekly_activity_hours(MON, WED2)
         assert len(result) == 2
-        assert result[0] == (MON, 56.0)   # Mon–Sun = 7 days
-        assert result[1] == (MON2, 24.0)  # Mon–Wed = 3 days
+        assert result[0] == (MON, 56.0)   # Mon-Sun = 7 days
+        assert result[1] == (MON2, 24.0)  # Mon-Wed = 3 days
 
     def test_activity_mid_week_start_spans_two_partial_weeks(self):
-        # FRI → WED2 (6 calendar days): 3 tail days in week 1, 3 head days in week 2
+        # FRI -> WED2 (6 calendar days): 3 tail days in week 1, 3 head days in week 2
         result = _iter_weekly_activity_hours(FRI, WED2)
         assert len(result) == 2
         # Week 1: Fri + Sat + Sun = 3 days
@@ -78,7 +78,7 @@ class TestWeeklyBuckets:
         assert result[1] == (MON2, 24.0)
 
     def test_cross_week_start_saturday(self):
-        # Activity starting Sat — falls in week starting Mon before it
+        # Activity starting Sat -- falls in week starting Mon before it
         result = _iter_weekly_activity_hours(SAT, MON2)
         assert len(result) == 2
         assert result[0][0] == MON        # week containing Sat
@@ -93,7 +93,7 @@ class TestWeeklyBuckets:
         assert forward == reversed_
 
     def test_total_hours_preserved_across_weeks(self):
-        # Sum of all bucket hours must equal total_days × 8
+        # Sum of all bucket hours must equal total_days * 8
         start, end = MON, WED2   # 10 calendar days
         buckets = _iter_weekly_activity_hours(start, end)
         total = sum(h for _, h in buckets)
@@ -147,7 +147,7 @@ class TestAnomalyFlags:
         assert flags["demand_spike_over_100pct"] is True
 
     def test_demand_spike_exact_100pct_does_not_trigger(self):
-        # pct_change = 1.0, test is > 1.0 → should NOT fire
+        # pct_change = 1.0, test is > 1.0 -> should NOT fire
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
         curr = [self._make_row("crane", "2026-03-16", 200.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
@@ -186,14 +186,14 @@ class TestAnomalyFlags:
     # ---- mapping changes ----
 
     def test_mapping_changes_exact_40pct_triggers(self):
-        # 4 activities changed out of 10 total = 0.4 >= 0.4 → True
+        # 4 activities changed out of 10 total = 0.4 >= 0.4 -> True
         prev_set = {(f"act{i}", "crane") for i in range(10)}
         curr_set = {(f"act{i}", "forklift" if i < 4 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
         assert flags["mapping_changes_over_40pct"] is True
 
     def test_mapping_changes_below_40pct_no_flag(self):
-        # 3 of 10 changed = 0.3 < 0.4 → False
+        # 3 of 10 changed = 0.3 < 0.4 -> False
         prev_set = {(f"act{i}", "crane") for i in range(10)}
         curr_set = {(f"act{i}", "forklift" if i < 3 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
@@ -213,12 +213,12 @@ class TestAnomalyFlags:
     # ---- activity count delta ----
 
     def test_activity_count_delta_triggers_above_30pct(self):
-        # 131 vs 100 = 31% > 30% → True
+        # 131 vs 100 = 31% > 30% -> True
         flags = _compute_anomaly_flags([], [], 100, 131, set(), set())
         assert flags["activity_count_delta_over_30pct"] is True
 
     def test_activity_count_delta_exact_30pct_no_flag(self):
-        # 130 vs 100 = 30%, NOT > 30% → False
+        # 130 vs 100 = 30%, NOT > 30% -> False
         flags = _compute_anomaly_flags([], [], 100, 130, set(), set())
         assert flags["activity_count_delta_over_30pct"] is False
 
@@ -231,12 +231,12 @@ class TestAnomalyFlags:
         assert flags["activity_count_delta_over_30pct"] is False
 
     def test_activity_count_delta_decrease_triggers(self):
-        # |70 - 100| / 100 = 0.3, NOT > 0.3 → False
+        # |70 - 100| / 100 = 0.3, NOT > 0.3 -> False
         flags = _compute_anomaly_flags([], [], 100, 70, set(), set())
         assert flags["activity_count_delta_over_30pct"] is False
 
     def test_activity_count_delta_large_decrease_triggers(self):
-        # |60 - 100| / 100 = 0.4 > 0.3 → True
+        # |60 - 100| / 100 = 0.4 > 0.3 -> True
         flags = _compute_anomaly_flags([], [], 100, 60, set(), set())
         assert flags["activity_count_delta_over_30pct"] is True
 
@@ -281,7 +281,7 @@ class TestWeekStart:
 
 class TestHoursBetween:
     def test_same_time_returns_24h(self):
-        # end <= start → wraps to next day
+        # end <= start -> wraps to next day
         assert _hours_between(time(8, 0), time(8, 0)) == 24.0
 
     def test_eight_to_five(self):
@@ -295,14 +295,14 @@ class TestHoursBetween:
         assert _hours_between(time(0, 0), time(0, 0)) == 24.0
 
     def test_overnight_shift(self):
-        # 22:00 → 06:00 = 8 hours overnight
+        # 22:00 -> 06:00 = 8 hours overnight
         assert _hours_between(time(22, 0), time(6, 0)) == 8.0
 
     def test_partial_hours(self):
         assert _hours_between(time(8, 0), time(8, 30)) == 0.5
 
     def test_end_before_start_wraps(self):
-        # 17:00 → 08:00 = 15 hours (overnight)
+        # 17:00 -> 08:00 = 15 hours (overnight)
         assert _hours_between(time(17, 0), time(8, 0)) == 15.0
 
 

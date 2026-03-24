@@ -44,6 +44,12 @@ class Notification(Base):
         nullable=False,
         index=True,
     )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     activity_id = Column(
         UUID(as_uuid=True),
         ForeignKey("programme_activities.id", ondelete="SET NULL"),
@@ -63,5 +69,6 @@ class Notification(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     subcontractor = relationship("Subcontractor", foreign_keys=[sub_id])
+    project = relationship("SiteProject", foreign_keys=[project_id])
     activity = relationship("ProgrammeActivity", foreign_keys=[activity_id])
     booking = relationship("SlotBooking", foreign_keys=[booking_id])

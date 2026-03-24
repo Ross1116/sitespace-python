@@ -15,9 +15,9 @@ via `python tests/run_tests.py`.
 
 import os
 
-os.environ.setdefault("DEBUG", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_unit.db")
-os.environ.setdefault("JWT_SECRET", "unit-test-secret-not-for-production")
-os.environ.setdefault("SECRET_KEY", "unit-test-secret-not-for-production")
-os.environ.setdefault("AI_API_KEY", "test-key-unit-tests-never-call-ai")
-os.environ.setdefault("AI_ENABLED", "false")
+os.environ["DEBUG"] = "true"
+os.environ["DATABASE_URL"] = "sqlite:///./test_unit.db"
+os.environ["JWT_SECRET"] = "unit-test-secret-not-for-production"
+os.environ["SECRET_KEY"] = "unit-test-secret-not-for-production"
+os.environ["AI_API_KEY"] = "test-key-unit-tests-never-call-ai"
+os.environ["AI_ENABLED"] = "false"

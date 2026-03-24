@@ -59,11 +59,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Remove any rows where activity_id is NULL before restoring NOT NULL —
-    # otherwise the downgrade will fail on existing data.
-    op.execute(
-        "DELETE FROM notifications WHERE activity_id IS NULL"
-    )
+    from sqlalchemy import text
+
+    bind = op.get_bind()
+    result = bind.execute(text("SELECT COUNT(*) FROM notifications WHERE activity_id IS NULL"))
+    null_count = result.scalar()
+    if null_count:
+        raise RuntimeError(
+            f"Downgrade aborted: {null_count} notification row(s) have activity_id IS NULL. "
+            "Reconcile or backfill those rows before attempting this downgrade."
+        )
 
     op.drop_constraint(
         "notifications_activity_id_fkey",

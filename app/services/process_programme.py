@@ -302,7 +302,7 @@ async def _run(upload_id: str, db: Session) -> None:
         return
 
     if classification is not None:
-        if classification.batch_tokens_used:
+        if classification.batch_tokens_used is not None:
             upload.ai_tokens_used = classification.batch_tokens_used
         if classification.fallback_used and activity_dicts:
             # AI was unavailable — stamp a visible warning into completeness_notes
@@ -841,7 +841,7 @@ def _write_classifications(
                 confidence="low",
                 accepted=False,
                 correction=None,
-                source=None,
+                source="keyword" if fallback_used else "ai",
                 pipeline_stage="classify_assets",
                 model_name=None if fallback_used else model_name,
                 fallback_used=fallback_used,

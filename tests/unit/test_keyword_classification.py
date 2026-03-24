@@ -21,7 +21,7 @@ from app.services.ai_service import _KEYWORD_MAP
 
 def _keyword_match(name: str) -> str | None:
     """Replicate the exact lookup logic from _classify_assets_real."""
-    name_lower = name.lower()
+    name_lower = str(name).lower()
     for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
         if keyword in name_lower:
             return asset_type

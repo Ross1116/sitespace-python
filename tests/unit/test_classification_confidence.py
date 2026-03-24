@@ -45,7 +45,7 @@ from app.services.process_programme import _normalize_mapping_source, _write_cla
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _item(asset_type: str, confidence: str, source: str = "ai") -> ClassificationItem:
+def _item(asset_type: str | None, confidence: str, source: str = "ai") -> ClassificationItem:
     return ClassificationItem(
         activity_id=str(uuid.uuid4()),
         asset_type=asset_type,
@@ -142,6 +142,12 @@ class TestNoneAssetTypeSkipped:
 
     def test_none_string_asset_type_produces_no_rows(self):
         mappings, suggestions = _run(_result(_item("none", "high")))
+        assert mappings == []
+        assert suggestions == []
+
+    def test_python_none_asset_type_produces_no_rows(self):
+        # ClassificationItem with actual None (not the string "none") is also skipped.
+        mappings, suggestions = _run(_result(_item(None, "high")))
         assert mappings == []
         assert suggestions == []
 

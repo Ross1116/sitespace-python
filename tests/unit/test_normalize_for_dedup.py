@@ -77,6 +77,13 @@ class TestDayStepPrefixStripping:
     def test_day_prefix_case_insensitive(self):
         assert _normalize_for_dedup("DAY 3 - Slab pour") == "slab pour"
 
+    def test_leading_whitespace_before_day_prefix_stripped(self):
+        # Input with leading spaces — the Day-N prefix must still be removed.
+        assert _normalize_for_dedup("  Day 7 - Slab pour") == "slab pour"
+
+    def test_leading_whitespace_no_prefix(self):
+        assert _normalize_for_dedup("  Pour slab  ") == "pour slab"
+
 
 class TestDedupCollapse:
     """

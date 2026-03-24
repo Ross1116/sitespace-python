@@ -41,7 +41,7 @@ _DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORE
 
 def _normalize_for_dedup(name: str) -> str:
     """Lowercase, strip P6 day-step prefix, collapse whitespace."""
-    norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
+    norm = _DEDUP_PREFIX_RE.sub("", name.strip().lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
 
 
@@ -81,6 +81,7 @@ _CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("loading bay",       "loading_bay"),
     ("unloading bay",     "loading_bay"),
     ("loading zone",      "loading_bay"),
+    ("loading_bay",       "loading_bay"),
     ("boom pump",         "concrete_pump"),
     ("line pump",         "concrete_pump"),
     ("concrete pump",     "concrete_pump"),
