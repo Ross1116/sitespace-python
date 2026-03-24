@@ -1,7 +1,7 @@
 """enrich_ai_suggestion_logs
 
-Revision ID: b2c3d4e5f6a7
-Revises: a1b2c3d4e5f6
+Revision ID: d2e3f4a5b6c7
+Revises: c1d2e3f4a5b6
 Create Date: 2026-03-24
 
 Adds observability columns to ai_suggestion_logs so each row carries full
@@ -25,8 +25,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "b2c3d4e5f6a7"
-down_revision: Union[str, None] = "a1b2c3d4e5f6"
+revision: str = "d2e3f4a5b6c7"
+down_revision: Union[str, None] = "c1d2e3f4a5b6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

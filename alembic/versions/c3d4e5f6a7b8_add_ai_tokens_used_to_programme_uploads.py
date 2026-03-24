@@ -1,7 +1,7 @@
 """add_ai_tokens_used_to_programme_uploads
 
 Revision ID: c3d4e5f6a7b8
-Revises: b2c3d4e5f6a7
+Revises: d2e3f4a5b6c7
 Create Date: 2026-03-24
 
 Adds ai_tokens_used (INTEGER, nullable) to programme_uploads so the API cost
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 
 
 revision = "c3d4e5f6a7b8"
-down_revision = "b2c3d4e5f6a7"
+down_revision = "d2e3f4a5b6c7"
 branch_labels = None
 depends_on = None
 

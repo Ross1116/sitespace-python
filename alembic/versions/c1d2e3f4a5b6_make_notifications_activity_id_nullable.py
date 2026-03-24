@@ -1,7 +1,7 @@
 """make_notifications_activity_id_nullable
 
-Revision ID: a1b2c3d4e5f6
-Revises: f9a0b1c2d3e4
+Revision ID: c1d2e3f4a5b6
+Revises: b0c1d2e3f4a5
 Create Date: 2026-03-24
 
 Makes notifications.activity_id nullable and changes its ON DELETE behaviour
@@ -22,8 +22,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "a1b2c3d4e5f6"
-down_revision: Union[str, None] = "f9a0b1c2d3e4"
+revision: str = "c1d2e3f4a5b6"
+down_revision: Union[str, None] = "b0c1d2e3f4a5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
