@@ -46,8 +46,8 @@ class Notification(Base):
     )
     activity_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("programme_activities.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("programme_activities.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     asset_type = Column(String(50), nullable=False)

@@ -37,6 +37,7 @@ class ProgrammeUpload(Base):
     completeness_score = Column(Float, nullable=True)       # 0.0–1.0
     completeness_notes = Column(JSONB, nullable=True)       # list of degradation reason strings
     status = Column(String(20), nullable=False, default="processing")  # processing | committed
+    ai_tokens_used = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
@@ -158,16 +159,29 @@ class AISuggestionLog(Base):
         nullable=False,
         index=True,
     )
+    # Upload that triggered this classification run (nullable for legacy rows).
+    upload_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("programme_uploads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     suggested_asset_type = Column(String(50), nullable=True)
     confidence = Column(String(10), nullable=True)
     # accepted=True: PM left it; False: PM corrected it
     accepted = Column(Boolean, nullable=False, default=True)
     # correction populated when accepted=False
     correction = Column(String(50), nullable=True)
+    # Observability fields — populated by process_programme._write_classifications()
+    source = Column(String(20), nullable=True)          # "ai" | "keyword_boost"
+    pipeline_stage = Column(String(30), nullable=True)  # "classify_assets"
+    model_name = Column(String(100), nullable=True)     # e.g. "claude-haiku-4-5-20251001"
+    fallback_used = Column(Boolean, nullable=True)      # True when AI unavailable
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     activity = relationship("ProgrammeActivity", foreign_keys=[activity_id])
+    upload = relationship("ProgrammeUpload", foreign_keys=[upload_id])
 
     def __repr__(self) -> str:
         return f"<AISuggestionLog(id={self.id}, accepted={self.accepted})>"
