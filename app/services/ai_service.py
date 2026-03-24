@@ -41,7 +41,7 @@ _DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORE
 
 def _normalize_for_dedup(name: str) -> str:
     """Lowercase, strip P6 day-step prefix, collapse whitespace."""
-    norm = _DEDUP_PREFIX_RE.sub("", name.lower()).strip()
+    norm = _DEDUP_PREFIX_RE.sub("", name.strip().lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
 
 
@@ -81,20 +81,22 @@ _CANONICAL_TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("loading bay",       "loading_bay"),
     ("unloading bay",     "loading_bay"),
     ("loading zone",      "loading_bay"),
+    ("loading_bay",       "loading_bay"),
     ("boom pump",         "concrete_pump"),
     ("line pump",         "concrete_pump"),
     ("concrete pump",     "concrete_pump"),
+    ("concrete_pump",     "concrete_pump"),
     ("kibble",            "concrete_pump"),
     ("mini excavator",    "excavator"),
     ("backhoe",           "excavator"),
     ("excavator",         "excavator"),
     ("digger",            "excavator"),
     ("rough terrain forklift", "forklift"),
-    ("forklift",          "forklift"),
-    ("telehandler",       "telehandler"),
-    ("telescopic handler", "telehandler"),
-    ("reach forklift",    "telehandler"),
-    ("telescopic forklift", "telehandler"),
+    ("telehandler",           "telehandler"),
+    ("telescopic handler",    "telehandler"),
+    ("reach forklift",        "telehandler"),
+    ("telescopic forklift",   "telehandler"),
+    ("forklift",              "forklift"),
     ("plate compactor",   "compactor"),
     ("vibrating",         "compactor"),
     ("compactor",         "compactor"),
@@ -1074,30 +1076,93 @@ def _lookup_trade_asset_types(specialty: str) -> list[str]:
 # Deterministic fallbacks — always produce a usable result
 # ---------------------------------------------------------------------------
 
-# Keywords that map directly to asset types (keyword boost layer)
+# Keywords that map directly to asset types (keyword boost layer).
+#
+# Lookup is sorted longest-key-first, so more specific phrases always win over
+# shorter substrings (e.g. "jump the hoist" → crane beats "hoist" → hoist).
+#
+# Crane additions verified against ARC Bowden Overall Programme V36.1 (PDF):
+#   RC superstructure programmes write work-package names, not plant names.
+#   The tower crane is implicit in ~400 activities that never say "crane".
 _KEYWORD_MAP: dict[str, str] = {
+    # ── Crane ──────────────────────────────────────────────────────────────────
     "crane": "crane",
-    # "lift" removed — too ambiguous ("scissor lift", "boom lift" are ewp, not crane)
+    # "lift" alone removed — too ambiguous ("scissor lift", "boom lift" are ewp)
+
+    # Precast panels — TC lifts every panel to each floor
     "precast": "crane",
     "pre-cast": "crane",
+
+    # Column reinforcement cages — TC lifts cages to deck level
     "column cage": "crane",
     "column cages": "crane",
+
+    # Bubbledeck false-work, panels and installation — all TC-lifted
+    # (note: "Install BD reo" / "Install (BD) reo" are manual reo-fixing → other,
+    #  so we match the specific panel/false-work phrases, not a blanket "install bd")
+    "bubbledeck installation": "crane",   # e.g. "Bubbledeck installation ZONE (A)"
+    "bubbledeck install":      "crane",   # e.g. "Commence/Continue/Complete Bubbledeck install"
+    "bubbledeck false work":   "crane",   # e.g. "Bubbledeck false work" (L1 form)
+    "install bd panels":       "crane",   # e.g. "Install BD panels"
+    "install bd false":        "crane",   # e.g. "Install BD false work"
+    "lift bd":                 "crane",   # e.g. "Lift BD false work", "Lift BD reo"
+
+    # Column formwork — TC lifts heavy steel forms to each floor
+    "lift column":             "crane",   # e.g. "Lift column formwork", "Lift column cages"
+
+    # Screw-in / threaded bars — TC lifts bundles of bars
+    "lift screw":              "crane",   # e.g. "Lift screw in bars"
+
+    # TC repositions stair-form and raises construction hoist to next level
+    # (longer keys checked first → these override the plain "hoist" entry below)
+    "jump the stretcher":      "crane",   # e.g. "Jump the stretcher stairs"
+    "jump the hoist":          "crane",   # e.g. "Jump the Hoist"
+    "hoist off site":          "crane",   # e.g. "Hoist off site following Builders Lift Ready"
+
+    # TC lifts shoring props between floors
+    "recycle props to upper":  "crane",   # e.g. "Recycle props to upper levels"
+
+    # TC installs the permanent builder's hoist level by level
+    "install builder's lift":  "crane",   # e.g. "Install Builder's Lift @ 4d/ level"
+
+    # External canopy steel — installed with TC ("use of TC" in activity name)
+    "install canopy steel":    "crane",   # e.g. "Install canopy steel with use of TC"
+
+    # ── Hoist ──────────────────────────────────────────────────────────────────
     "hoist": "hoist",
-    "loading bay": "loading_bay",
-    "loading_bay": "loading_bay",
-    "ewp": "ewp",
+
+    # ── Loading bay ────────────────────────────────────────────────────────────
+    "loading bay":  "loading_bay",
+    "loading_bay":  "loading_bay",
+
+    # ── EWP ────────────────────────────────────────────────────────────────────
+    "ewp":                    "ewp",
     "elevated work platform": "ewp",
-    "scissor lift": "ewp",
-    "boom lift": "ewp",
-    "man lift": "ewp",
-    "knuckle lift": "ewp",
-    "concrete pump": "concrete_pump",
-    "concrete_pump": "concrete_pump",
-    "slab pour": "concrete_pump",
-    "concrete pour": "concrete_pump",
-    "excavator": "excavator",
+    "scissor lift":           "ewp",
+    "boom lift":              "ewp",
+    "man lift":               "ewp",
+    "knuckle lift":           "ewp",
+
+    # ── Concrete pump ──────────────────────────────────────────────────────────
+    "concrete pump":  "concrete_pump",
+    "concrete_pump":  "concrete_pump",
+    "slab pour":      "concrete_pump",   # e.g. "Slab pour, pour 1"
+    "concrete pour":  "concrete_pump",   # e.g. "Concrete pour floor slab Zone [A]"
+    "pour concrete":  "concrete_pump",   # e.g. "Pour concrete columns" (reversed word order)
+    "pour columns":   "concrete_pump",   # e.g. "Day 3 - Pour columns to pour 1"
+    "column pour":    "concrete_pump",   # e.g. "Ground floor column pour"
+
+    # ── Excavator ──────────────────────────────────────────────────────────────
+    "excavator":   "excavator",
+    "dig footings": "excavator",         # e.g. "Dig footings / piles for steel canopy columns/posts"
+
+    # ── Forklift ───────────────────────────────────────────────────────────────
     "forklift": "forklift",
+
+    # ── Telehandler ────────────────────────────────────────────────────────────
     "telehandler": "telehandler",
+
+    # ── Compactor ──────────────────────────────────────────────────────────────
     "compactor": "compactor",
 }
 
@@ -1199,9 +1264,9 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
             zone_name=None,
         ))
 
-    imported = len(activities)
+    rows_with_dates = sum(1 for a in activities if a.start and a.finish)
     total = len(rows)
-    score = int((imported / total) * 80) if total else 0  # cap at 80 for fallback
+    score = int((rows_with_dates / total) * 80) if total else 0  # cap at 80 for fallback
 
     notes_parts = ["Regex fallback — AI unavailable."]
     if missing:

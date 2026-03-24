@@ -31,8 +31,11 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
+import sentry_sdk
+
 from sqlalchemy.orm import Session, joinedload
 
+from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models.asset import Asset
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
@@ -107,18 +110,22 @@ def process_programme(upload_id: str) -> None:
     Entry point called by BackgroundTasks.
     Opens its own DB session — never shares with the request session.
     """
-    db = SessionLocal()
-    try:
-        asyncio.run(_run(upload_id, db))
-    except Exception:
-        logger.exception("Unhandled error in process_programme for upload %s", upload_id)
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("task", "process_programme")
+        scope.set_tag("upload_id", upload_id)
+        db = SessionLocal()
         try:
-            db.rollback()
-        except Exception:
-            logger.exception("Rollback failed in process_programme for upload %s", upload_id)
-        _mark_failed_as_committed(upload_id, db, SAFE_FAILURE_REASON)
-    finally:
-        db.close()
+            asyncio.run(_run(upload_id, db))
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.exception("Unhandled error in process_programme for upload %s", upload_id)
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Rollback failed in process_programme for upload %s", upload_id)
+            _mark_failed_as_committed(upload_id, db, SAFE_FAILURE_REASON)
+        finally:
+            db.close()
 
 
 async def _run(upload_id: str, db: Session) -> None:
@@ -133,6 +140,9 @@ async def _run(upload_id: str, db: Session) -> None:
     _storage_path = stored_file.storage_path
     _file_name = upload.file_name
     _project_id = str(upload.project_id)
+    _file_ext = _file_name.rsplit(".", 1)[-1].lower() if "." in _file_name else "unknown"
+    sentry_sdk.set_tag("project_id", _project_id)
+    sentry_sdk.set_tag("file_format", _file_ext)
 
     # Release the connection back to the pool BEFORE long-running CPU/AI work.
     # PDF parsing takes 30-60s and AI structure detection adds 10-15s — holding
@@ -292,6 +302,8 @@ async def _run(upload_id: str, db: Session) -> None:
         return
 
     if classification is not None:
+        if classification.batch_tokens_used is not None:
+            upload.ai_tokens_used = classification.batch_tokens_used
         if classification.fallback_used and activity_dicts:
             # AI was unavailable — stamp a visible warning into completeness_notes
             # so the status poll response surfaces it on the frontend.
@@ -303,7 +315,13 @@ async def _run(upload_id: str, db: Session) -> None:
             upload.completeness_notes = notes_dict
         try:
             with db.begin_nested():
-                _write_classifications(classification, db)
+                _write_classifications(
+                    classification,
+                    db,
+                    upload_id=upload_id,
+                    model_name=settings.AI_MODEL,
+                    fallback_used=classification.fallback_used,
+                )
         except Exception as exc:
             logger.warning(
                 "Classification persistence failed for upload %s (%s) — continuing without mappings",
@@ -731,7 +749,14 @@ def _normalize_mapping_source(source: str | None) -> str:
     return "ai"
 
 
-def _write_classifications(classification: ClassificationResult, db: Session) -> None:
+def _write_classifications(
+    classification: ClassificationResult,
+    db: Session,
+    *,
+    upload_id: str | None = None,
+    model_name: str | None = None,
+    fallback_used: bool | None = None,
+) -> None:
     """
     Persist classification output.
 
@@ -739,6 +764,11 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
     - high + medium: mapping row with auto_committed=True
     - low (skipped): mapping row with asset_type=None, auto_committed=False
     - every suggestion (including low placeholders) gets an ai_suggestion_logs row
+
+    Keyword-only args populate the new observability columns on AISuggestionLog:
+      upload_id    — UUID of the programme_uploads row that triggered this run
+      model_name   — AI model name (e.g. "claude-haiku-4-5-20251001") or None if fallback
+      fallback_used — True when keyword-only fallback ran instead of AI
     """
     mapping_rows: list[ActivityAssetMapping] = []
     suggestion_rows: list[AISuggestionLog] = []
@@ -779,10 +809,15 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
             AISuggestionLog(
                 id=uuid.uuid4(),
                 activity_id=item.activity_id,
+                upload_id=upload_id,
                 suggested_asset_type=item.asset_type,
                 confidence=confidence,
                 accepted=auto_commit,
                 correction=None,
+                source=item.source,
+                pipeline_stage="classify_assets",
+                model_name=None if fallback_used else model_name,
+                fallback_used=fallback_used,
             )
         )
 
@@ -801,10 +836,15 @@ def _write_classifications(classification: ClassificationResult, db: Session) ->
             AISuggestionLog(
                 id=uuid.uuid4(),
                 activity_id=skipped_activity_id,
+                upload_id=upload_id,
                 suggested_asset_type=None,
                 confidence="low",
                 accepted=False,
                 correction=None,
+                source="keyword" if fallback_used else "ai",
+                pipeline_stage="classify_assets",
+                model_name=None if fallback_used else model_name,
+                fallback_used=fallback_used,
             )
         )
 

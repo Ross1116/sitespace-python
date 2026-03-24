@@ -30,7 +30,7 @@ class SubNotification(BaseSchema):
     """A single subcontractor notification entry."""
 
     id: UUID
-    activity_id: UUID
+    activity_id: UUID | None = None
     asset_type: str | None = None
     trigger_type: str | None = None
     status: str | None = None

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import sentry_sdk
+
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -418,11 +420,17 @@ def get_snapshot_history(project_id: uuid.UUID, db: Session) -> list[LookaheadSn
 def get_sub_notifications(project_id: uuid.UUID, sub_id: uuid.UUID, db: Session) -> list[Notification]:
     return (
         db.query(Notification)
-        .join(ProgrammeActivity, ProgrammeActivity.id == Notification.activity_id)
-        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .outerjoin(ProgrammeActivity, ProgrammeActivity.id == Notification.activity_id)
+        .outerjoin(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
         .filter(
             Notification.sub_id == sub_id,
-            ProgrammeUpload.project_id == project_id,
+            or_(
+                ProgrammeUpload.project_id == project_id,
+                and_(
+                    Notification.activity_id.is_(None),
+                    Notification.project_id == project_id,
+                ),
+            ),
         )
         .order_by(Notification.created_at.desc())
         .all()
@@ -503,23 +511,28 @@ def get_sub_asset_suggestions_for_project(
 
 
 def nightly_lookahead_job() -> None:
-    db = SessionLocal()
-    try:
-        project_ids = [
-            row[0]
-            for row in (
-                db.query(ProgrammeUpload.project_id)
-                .filter(ProgrammeUpload.status == "committed")
-                .distinct()
-                .all()
-            )
-        ]
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("task", "nightly_lookahead_job")
+        db = SessionLocal()
+        try:
+            project_ids = [
+                row[0]
+                for row in (
+                    db.query(ProgrammeUpload.project_id)
+                    .filter(ProgrammeUpload.status == "committed")
+                    .distinct()
+                    .all()
+                )
+            ]
 
-        for project_id in project_ids:
-            try:
-                calculate_lookahead_for_project(project_id=project_id, db=db)
-            except Exception:
-                logger.exception("Nightly lookahead failed for project %s", project_id)
-                db.rollback()
-    finally:
-        db.close()
+            for project_id in project_ids:
+                try:
+                    calculate_lookahead_for_project(project_id=project_id, db=db)
+                except Exception as exc:
+                    with sentry_sdk.new_scope() as project_scope:
+                        project_scope.set_tag("project_id", str(project_id))
+                        sentry_sdk.capture_exception(exc)
+                    logger.exception("Nightly lookahead failed for project %s", project_id)
+                    db.rollback()
+        finally:
+            db.close()
