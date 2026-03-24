@@ -48,6 +48,7 @@ from .ai_service import (
     classify_assets,
     classify_row_kind,
     detect_structure,
+    parse_pct_raw,
     score_row_confidence,
     suggest_subcontractor_asset_types,
 )
@@ -413,6 +414,8 @@ def _insert_activities(
         token_map.setdefault(source_id, []).append(row_id_map[idx])
 
     # Pass 2: build rows with resolved parent links.
+    # Cache item-id resolution per upload so repeated activity names don't hit the DB twice.
+    item_id_cache: dict[str, uuid.UUID | None] = {}
     db_rows: list[ProgrammeActivity] = []
     for sort_order, item in enumerate(items):
         source_id = _normalize_parent_token(item.id) or f"__idx_{sort_order}"
@@ -430,7 +433,9 @@ def _insert_activities(
         if not start or not end:
             flags.append("dates_missing")
 
-        item_id = resolve_or_create_item(db, item.name)
+        if item.name not in item_id_cache:
+            item_id_cache[item.name] = resolve_or_create_item(db, item.name)
+        item_id = item_id_cache[item.name]
 
         db_rows.append(ProgrammeActivity(
             id=real_id,
@@ -522,14 +527,7 @@ def _apply_mapping(
         source_value = _normalize_parent_token(row.get(source_id_col)) if source_id_col else None
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
 
-        pct_complete: int | None = None
-        if pct_col:
-            pct_raw = row.get(pct_col)
-            if pct_raw is not None:
-                try:
-                    pct_complete = max(0, min(100, int(float(str(pct_raw).rstrip("%").strip()))))
-                except (ValueError, TypeError):
-                    pass
+        pct_complete = parse_pct_raw(row.get(pct_col) if pct_col else None)
 
         activity_kind = classify_row_kind(
             is_summary=is_summary,

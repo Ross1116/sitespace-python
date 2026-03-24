@@ -40,7 +40,7 @@ def list_items(
         q = q.filter(Item.display_name.ilike(f"%{search}%"))
     if identity_status:
         q = q.filter(Item.identity_status == identity_status)
-    items = q.order_by(Item.display_name).offset(offset).limit(limit).all()
+    items = q.order_by(Item.display_name, Item.id).offset(offset).limit(limit).all()
     return [ItemResponse(
         id=i.id,
         display_name=i.display_name,

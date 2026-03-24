@@ -4074,7 +4074,7 @@ Only if earned.
 2. enrich existing Sentry + background job reporting
 3. parser hardening
 4. PDF programme ingestion support
-5. `work_days_per_week`, `pct_complete`, `activity_kind`, `row_confidence`z
+5. `work_days_per_week`, `pct_complete`, `activity_kind`, `row_confidence`
 6. identity layer with aliases
 7. asset taxonomy table
 8. classification layer with persistent `item_classifications`

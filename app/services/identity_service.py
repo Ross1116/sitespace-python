@@ -90,9 +90,11 @@ def resolve_or_create_item(
     db: Session,
     raw_name: str,
     normalizer_version: int = NORMALIZER_VERSION,
-) -> uuid.UUID:
+) -> Optional[uuid.UUID]:
     """
     Resolve a raw activity name to an active Item.id, creating one if unseen.
+
+    Returns None when raw_name normalises to an empty string (e.g. whitespace-only).
 
     Algorithm:
       1. Normalise the name
@@ -105,7 +107,7 @@ def resolve_or_create_item(
     """
     normalised = normalize_activity_name(raw_name)
     if not normalised:
-        return None  # type: ignore[return-value]
+        return None
 
     alias = (
         db.query(ItemAlias)
@@ -186,11 +188,19 @@ def merge_items(
     if source_item_id == target_item_id:
         raise MergeError("Cannot merge an item into itself")
 
-    source = db.get(Item, source_item_id)
+    # Lock both rows in a single query so concurrent merges cannot race.
+    rows = (
+        db.query(Item)
+        .filter(Item.id.in_([source_item_id, target_item_id]))
+        .with_for_update()
+        .all()
+    )
+    row_map = {r.id: r for r in rows}
+    source = row_map.get(source_item_id)
+    target = row_map.get(target_item_id)
+
     if source is None:
         raise MergeError(f"Source item {source_item_id} not found")
-
-    target = db.get(Item, target_item_id)
     if target is None:
         raise MergeError(f"Target item {target_item_id} not found")
 

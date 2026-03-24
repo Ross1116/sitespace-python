@@ -130,6 +130,30 @@ class TestResolveOrCreateItem:
         assert result is None
         db.query.assert_not_called()
 
+    def test_integrity_error_retries_lookup(self):
+        """Savepoint rollback path: IntegrityError on alias flush → retry lookup → returns existing item."""
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+        existing_item = _make_item(status="active")
+        existing_alias = _make_alias(existing_item)
+
+        # First query (pre-insert lookup) returns None — alias not yet found.
+        # Second query (post-rollback retry) returns the alias created by a concurrent writer.
+        db = _make_db()
+        db.query.return_value.filter_by.return_value.first.side_effect = [None, existing_alias]
+
+        # Second db.flush() (alias insert) raises IntegrityError; savepoint mock just tracks calls.
+        sp = MagicMock()
+        db.begin_nested.return_value = sp
+        db.flush.side_effect = [None, SAIntegrityError("duplicate", {}, Exception())]
+
+        with patch("app.services.identity_service.Item"), \
+             patch("app.services.identity_service.ItemAlias"):
+            result = resolve_or_create_item(db, "Install formwork")
+
+        assert result == existing_item.id
+        sp.rollback.assert_called_once()
+
 
 # ─── follow_item_redirect ─────────────────────────────────────────────────────
 
@@ -161,9 +185,9 @@ class TestFollowItemRedirect:
 
         db.get.return_value = item_b
 
-        # Should not loop infinitely — cycle guard breaks it
+        # Cycle: a → b → a. Guard detects it and stops at item_b.
         result = follow_item_redirect(db, item_a)
-        assert result is not None
+        assert result is item_b
 
 
 # ─── merge_items ─────────────────────────────────────────────────────────────
@@ -171,10 +195,19 @@ class TestFollowItemRedirect:
 class TestMergeItems:
 
     def _setup_db(self, source, target):
+        """Mock db.query(...).filter(...).with_for_update().all() → [source, target]."""
         db = _make_db()
-        db.get.side_effect = lambda model, item_id: (
-            source if item_id == source.id else target
-        )
+        db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [
+            source, target
+        ]
+        return db
+
+    def _setup_db_missing(self, found_item):
+        """Only one item returned — simulates a missing source or target."""
+        db = _make_db()
+        db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [
+            found_item
+        ]
         return db
 
     def test_successful_merge(self):
@@ -198,10 +231,11 @@ class TestMergeItems:
             merge_items(db, item_id, item_id)
 
     def test_raises_on_source_not_found(self):
-        db = _make_db()
-        db.get.return_value = None
+        target_id = uuid.uuid4()
+        target = _make_item(item_id=target_id, status="active")
+        db = self._setup_db_missing(target)
         with pytest.raises(MergeError, match="not found"):
-            merge_items(db, uuid.uuid4(), uuid.uuid4())
+            merge_items(db, uuid.uuid4(), target_id)
 
     def test_raises_if_source_already_merged(self):
         source_id = uuid.uuid4()
