@@ -111,6 +111,41 @@ def score_row_confidence(
 
 
 # ---------------------------------------------------------------------------
+# Shared pct_complete parser
+# ---------------------------------------------------------------------------
+
+def parse_pct_raw(raw: object) -> int | None:
+    """
+    Parse a raw pct_complete value to an integer in 0–100.
+
+    Detection rules (in order):
+      - Token ends with '%'     → treat the numeric part as a percentage directly
+      - Parsed float ≤ 1.0      → decimal fraction; multiply by 100 (e.g. 0.75 → 75)
+      - Otherwise               → treat as a percentage already (e.g. 75 → 75)
+
+    Returns None when the value is absent or cannot be parsed.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    has_pct_sign = s.endswith("%")
+    s_clean = s.rstrip("%").strip()
+    if not s_clean:
+        return None
+    try:
+        val = float(s_clean)
+    except (ValueError, TypeError):
+        return None
+    if has_pct_sign:
+        pct = val
+    elif val <= 1.0:
+        pct = val * 100
+    else:
+        pct = val
+    return max(0, min(100, int(round(pct))))
+
+
+# ---------------------------------------------------------------------------
 # Canonical asset type normalizer.
 # Maps raw asset.type strings entered in the UI (mixed-case, varied phrasing)
 # to the canonical ALLOWED_ASSET_TYPES values.  Used in two places:
@@ -602,14 +637,7 @@ def _build_activities_from_rows(
         start_str = str(start_raw).strip() if start_raw is not None else None
         finish_str = str(end_raw).strip() if end_raw is not None else None
 
-        pct_complete: int | None = None
-        if pct_col:
-            pct_raw = row.get(pct_col)
-            if pct_raw is not None:
-                try:
-                    pct_complete = max(0, min(100, int(float(str(pct_raw).rstrip("%").strip()))))
-                except (ValueError, TypeError):
-                    pass
+        pct_complete = parse_pct_raw(row.get(pct_col) if pct_col else None)
 
         activity_kind = classify_row_kind(
             is_summary=is_summary,
@@ -1310,8 +1338,29 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         penalty = -1 if any(x in lower for x in ("id", "%", "complete", "duration", "code")) else 0
         return (preference + penalty, _unique_count(col))
 
+    def _looks_like_pct(col: str) -> bool:
+        """True when the header name suggests a % complete field and sample values are numeric."""
+        lower = col.lower()
+        if not any(k in lower for k in ("pct", "percent", "complete", "%")):
+            return False
+        samples = [str(r[col]).rstrip("%").strip() for r in rows[:10] if col in r and r[col] is not None]
+        return any(_float_ok(s) for s in samples)
+
+    def _float_ok(s: str) -> bool:
+        try:
+            float(s)
+            return True
+        except (ValueError, TypeError):
+            return False
+
     string_cols = [h for h in headers if not _looks_like_date(h)]
     name_col = max(string_cols, key=_name_col_score) if string_cols else (headers[0] if headers else None)
+
+    # Detect pct_complete column (exclude whatever was chosen as name_col).
+    pct_col = next(
+        (h for h in string_cols if h != name_col and _looks_like_pct(h)),
+        None,
+    )
 
     column_mapping: dict[str, str] = {}
     missing: list[str] = []
@@ -1320,6 +1369,9 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         column_mapping["name"] = name_col
     else:
         missing.append("name")
+
+    if pct_col:
+        column_mapping["pct_complete"] = pct_col
 
     if len(date_cols) >= 2:
         column_mapping["start_date"] = date_cols[0]
@@ -1351,6 +1403,9 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
         start = _parse_date(row.get(column_mapping.get("start_date", ""), ""))
         finish = _parse_date(row.get(column_mapping.get("end_date", ""), ""))
+
+        pct_complete = parse_pct_raw(row.get(pct_col) if pct_col else None)
+
         activity_kind = classify_row_kind(is_summary=False, start=start, finish=finish)
         row_confidence = score_row_confidence(
             name=name, start=start, finish=finish, activity_kind=activity_kind
@@ -1364,6 +1419,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
             is_summary=False,
             level_name=None,
             zone_name=None,
+            pct_complete=pct_complete,
             activity_kind=activity_kind,
             row_confidence=row_confidence,
         ))

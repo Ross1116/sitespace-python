@@ -88,6 +88,8 @@ class ProgrammeActivityItem(BaseSchema):
     pct_complete: int | None = None
     activity_kind: str | None = None   # 'summary' | 'task' | 'milestone'
     row_confidence: str | None = None  # 'high' | 'medium' | 'low'
+    # Stage 2 identity fields
+    item_id: UUID | None = None
 
 
 class ActivityMappingResponse(BaseSchema):

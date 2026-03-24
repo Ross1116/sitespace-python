@@ -397,6 +397,7 @@ def get_activities(
             pct_complete=a.pct_complete,
             activity_kind=a.activity_kind,
             row_confidence=a.row_confidence,
+            item_id=a.item_id,
         )
         for a in activities
     ]
