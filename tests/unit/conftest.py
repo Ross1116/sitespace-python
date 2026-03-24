@@ -32,3 +32,9 @@ import app.models.stored_file  # noqa: F401, E402
 import app.models.asset  # noqa: F401, E402
 import app.models.lookahead  # noqa: F401, E402
 import app.models.programme  # noqa: F401, E402
+import app.models.user  # noqa: F401, E402
+import app.models.site_project  # noqa: F401, E402
+import app.models.subcontractor  # noqa: F401, E402
+import app.models.slot_booking  # noqa: F401, E402
+import app.models.booking_audit  # noqa: F401, E402
+import app.models.file_upload  # noqa: F401, E402

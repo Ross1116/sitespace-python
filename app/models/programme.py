@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import backref, relationship
 from sqlalchemy.sql import func
@@ -11,6 +11,7 @@ class ProgrammeUpload(Base):
     __tablename__ = "programme_uploads"
     __table_args__ = (
         UniqueConstraint("project_id", "version_number", name="uq_programme_upload_project_version"),
+        CheckConstraint("work_days_per_week BETWEEN 1 AND 7", name="ck_programme_uploads_work_days"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -95,6 +96,9 @@ class ProgrammeActivity(Base):
             deferrable=True,
             initially="DEFERRED",
         ),
+        CheckConstraint("pct_complete BETWEEN 0 AND 100", name="ck_programme_activities_pct_complete"),
+        CheckConstraint("row_confidence IN ('high', 'medium', 'low')", name="ck_programme_activities_row_confidence"),
+        CheckConstraint("activity_kind IN ('summary', 'task', 'milestone')", name="ck_programme_activities_activity_kind"),
     )
 
     # Relationships

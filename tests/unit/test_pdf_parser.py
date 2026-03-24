@@ -47,19 +47,23 @@ class FakePDF:
         pass
 
 
-def _parse_pdf_lines(lines: list[str], monkeypatch) -> list[dict]:
-    """Helper: run _parse_file with mocked pdfplumber returning the given lines."""
-    import importlib
-    import app.services.process_programme as pp
+def _parse_pdf_lines(lines: list[str], monkeypatch, *, assert_no_error: bool = True) -> list[dict]:
+    """Helper: run _parse_file with mocked pdfplumber returning the given lines.
+
+    assert_no_error=True (default): asserts err is None so parsing failures
+    surface immediately. Pass False when testing intentionally empty inputs
+    (e.g. noise-only lines) where an "no activities found" error is expected.
+    """
+    import sys
 
     fake_pdf = FakePDF(["\n".join(lines)])
-
-    import sys
     fake_module = type(sys)("pdfplumber")
     fake_module.open = lambda *a, **kw: fake_pdf
     monkeypatch.setitem(sys.modules, "pdfplumber", fake_module)
 
     rows, err = _parse_file(b"fake", "programme.pdf")
+    if assert_no_error:
+        assert not err, f"_parse_file returned unexpected error: {err}"
     return rows
 
 
@@ -114,7 +118,7 @@ class TestPDFParser:
         "   ",
     ])
     def test_noise_suppressed(self, noise_line, monkeypatch):
-        rows = _parse_pdf_lines([noise_line], monkeypatch)
+        rows = _parse_pdf_lines([noise_line], monkeypatch, assert_no_error=False)
         assert rows == [], f"Expected noise line to be suppressed: {noise_line!r}"
 
     def test_noise_does_not_block_valid_row(self, monkeypatch):

@@ -231,16 +231,16 @@ def _compute_demand_by_week_asset(
             activity.start_date, activity.end_date, work_days
         ):
             demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
-            if activity.row_confidence:
-                bucket_confidences[(week, mapping.asset_type)].add(activity.row_confidence)
+            bucket_confidences[(week, mapping.asset_type)].add(activity.row_confidence)
 
         current_mapping_set.add((str(activity.id), mapping.asset_type))
 
-    # A bucket is low-confidence only when every contributing activity is 'low'.
+    # A bucket is low-confidence only when every contributing activity is 'low'
+    # and none are None (unknown confidence makes the verdict uncertain).
     low_confidence_buckets: set[tuple[date, str]] = {
         key
         for key, confidences in bucket_confidences.items()
-        if confidences and all(c == "low" for c in confidences)
+        if confidences and None not in confidences and all(c == "low" for c in confidences)
     }
 
     return demand_by_week_asset, current_mapping_set, low_confidence_buckets
