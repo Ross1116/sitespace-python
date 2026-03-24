@@ -85,10 +85,9 @@ def score_row_confidence(
     Return 'high', 'medium', or 'low' based on data completeness.
 
     Rules:
-      - 'high':   name non-empty + both dates present
-      - 'medium': name non-empty + only one date, OR name is very short (<3 chars)
-                  after stripping, OR is a milestone (single-date rows are valid)
-      - 'low':    name missing / whitespace-only, OR both dates absent on a task row
+      - 'high':   name non-empty + both dates present (or milestone with at least one date)
+      - 'medium': name non-empty + exactly one date present
+      - 'low':    name missing/whitespace-only, OR both dates absent on a task/summary row
     """
     clean_name = name.strip()
     has_start = bool(start)

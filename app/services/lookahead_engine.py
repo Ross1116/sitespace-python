@@ -217,7 +217,16 @@ def _compute_demand_by_week_asset(
         if not activity.start_date or not activity.end_date:
             continue
 
-        work_days = max(1, min(7, upload.work_days_per_week or 5))
+        raw_wdpw = upload.work_days_per_week
+        if raw_wdpw and 1 <= raw_wdpw <= 7:
+            work_days = raw_wdpw
+        else:
+            if raw_wdpw is not None:
+                logger.warning(
+                    "upload %s has invalid work_days_per_week=%s; defaulting to 5",
+                    upload.id, raw_wdpw,
+                )
+            work_days = 5
         for week, demand_hours in _iter_weekly_activity_hours(
             activity.start_date, activity.end_date, work_days
         ):

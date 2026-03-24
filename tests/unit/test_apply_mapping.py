@@ -122,6 +122,11 @@ class TestPctComplete:
         items = _apply_mapping(rows, _BASE_MAPPING, start_index=0)
         assert items[0].pct_complete == 100
 
+    def test_clamped_below_zero(self):
+        rows = [_row(PctComplete="-10")]
+        items = _apply_mapping(rows, _BASE_MAPPING, start_index=0)
+        assert items[0].pct_complete == 0
+
     def test_no_pct_col_in_mapping(self):
         mapping = {k: v for k, v in _BASE_MAPPING.items() if k != "pct_complete"}
         rows = [_row()]
