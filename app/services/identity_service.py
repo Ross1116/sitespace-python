@@ -192,6 +192,7 @@ def merge_items(
     rows = (
         db.query(Item)
         .filter(Item.id.in_([source_item_id, target_item_id]))
+        .order_by(Item.id)
         .with_for_update()
         .all()
     )

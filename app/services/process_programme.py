@@ -52,7 +52,7 @@ from .ai_service import (
     score_row_confidence,
     suggest_subcontractor_asset_types,
 )
-from .identity_service import resolve_or_create_item
+from .identity_service import normalize_activity_name, resolve_or_create_item
 from .lookahead_engine import calculate_lookahead_for_project
 
 logger = logging.getLogger(__name__)
@@ -433,9 +433,10 @@ def _insert_activities(
         if not start or not end:
             flags.append("dates_missing")
 
-        if item.name not in item_id_cache:
-            item_id_cache[item.name] = resolve_or_create_item(db, item.name)
-        item_id = item_id_cache[item.name]
+        cache_key = normalize_activity_name(item.name)
+        if cache_key not in item_id_cache:
+            item_id_cache[cache_key] = resolve_or_create_item(db, item.name)
+        item_id = item_id_cache[cache_key]
 
         db_rows.append(ProgrammeActivity(
             id=real_id,

@@ -1343,7 +1343,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         lower = col.lower()
         if not any(k in lower for k in ("pct", "percent", "complete", "%")):
             return False
-        samples = [str(r.get(col, "")).rstrip("%").strip() for r in rows[:10] if r.get(col)]
+        samples = [str(r[col]).rstrip("%").strip() for r in rows[:10] if col in r and r[col] is not None]
         return any(_float_ok(s) for s in samples)
 
     def _float_ok(s: str) -> bool:

@@ -195,9 +195,9 @@ class TestFollowItemRedirect:
 class TestMergeItems:
 
     def _setup_db(self, source, target):
-        """Mock db.query(...).filter(...).with_for_update().all() → [source, target]."""
+        """Mock db.query(...).filter(...).order_by(...).with_for_update().all() → [source, target]."""
         db = _make_db()
-        db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [
+        db.query.return_value.filter.return_value.order_by.return_value.with_for_update.return_value.all.return_value = [
             source, target
         ]
         return db
@@ -205,7 +205,7 @@ class TestMergeItems:
     def _setup_db_missing(self, found_item):
         """Only one item returned — simulates a missing source or target."""
         db = _make_db()
-        db.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = [
+        db.query.return_value.filter.return_value.order_by.return_value.with_for_update.return_value.all.return_value = [
             found_item
         ]
         return db
