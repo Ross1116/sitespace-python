@@ -33,6 +33,7 @@ class LookaheadRow:
     booked_hours: float
     demand_level: str
     gap_hours: float
+    low_confidence_flag: bool = False
 
 
 def _week_start(d: date) -> date:
@@ -58,8 +59,36 @@ def _demand_level(hours: float) -> str:
     return "critical"
 
 
-def _iter_weekly_activity_hours(start_date: date, end_date: date) -> list[tuple[date, float]]:
-    """Split an activity span into per-week demand buckets at 8h/day."""
+def _working_days_in_range(start: date, end: date, work_days_per_week: int) -> int:
+    """Count working days (inclusive) in [start, end] for a given work_days_per_week.
+
+    work_days_per_week=5 → Mon–Fri
+    work_days_per_week=6 → Mon–Sat
+    work_days_per_week=7 → all days
+    """
+    count = 0
+    current = start
+    while current <= end:
+        if current.weekday() < work_days_per_week:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _iter_weekly_activity_hours(
+    start_date: date,
+    end_date: date,
+    work_days_per_week: int = 5,
+) -> list[tuple[date, float]]:
+    """Split an activity span into per-week demand buckets at 8h/working-day.
+
+    work_days_per_week controls which days count:
+      5 → Mon–Fri (default, Australian standard)
+      6 → Mon–Sat (common in construction)
+      7 → all days
+
+    Weeks with zero working days within the span are omitted.
+    """
     span_start = min(start_date, end_date)
     span_end = max(start_date, end_date)
 
@@ -72,8 +101,9 @@ def _iter_weekly_activity_hours(start_date: date, end_date: date) -> list[tuple[
         overlap_start = max(span_start, week)
         overlap_end = min(span_end, week_end)
         if overlap_end >= overlap_start:
-            overlap_days = (overlap_end - overlap_start).days + 1
-            buckets.append((week, float(overlap_days * 8)))
+            working_days = _working_days_in_range(overlap_start, overlap_end, work_days_per_week)
+            if working_days > 0:
+                buckets.append((week, float(working_days * 8)))
         week += timedelta(days=7)
 
     return buckets
@@ -135,14 +165,22 @@ def _compute_anomaly_flags(
 def _compute_demand_by_week_asset(
     db: Session,
     upload_id: uuid.UUID,
-) -> tuple[dict[tuple[date, str], float], set[tuple[str, str]]]:
+) -> tuple[dict[tuple[date, str], float], set[tuple[str, str]], set[tuple[date, str]]]:
     """Query committed activity-asset mappings and bucket demand hours by (week, asset_type).
 
-    Returns (demand_by_week_asset, current_mapping_set).
+    Returns (demand_by_week_asset, current_mapping_set, low_confidence_buckets).
+
+    Stage 1 rules applied here:
+      - Activities with pct_complete = 100 are excluded (no remaining work).
+      - work_days_per_week from the upload drives the hours-per-day calculation.
+      - low_confidence_buckets: (week, asset_type) keys where ALL contributing
+        activities have row_confidence = 'low'. Downstream alerts should not
+        depend solely on these buckets (plan §20.8).
     """
     mapping_rows = (
-        db.query(ActivityAssetMapping, ProgrammeActivity)
+        db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             or_(
@@ -158,26 +196,45 @@ def _compute_demand_by_week_asset(
                 ActivityAssetMapping.confidence.in_(["high", "medium"]),
                 ActivityAssetMapping.manually_corrected.is_(True),
             ),
+            # Skip fully-complete activities — no remaining work to forecast.
+            or_(
+                ProgrammeActivity.pct_complete.is_(None),
+                ProgrammeActivity.pct_complete < 100,
+            ),
         )
         .all()
     )
 
     demand_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     current_mapping_set: set[tuple[str, str]] = set()
+    # Track confidence values per bucket to compute low_confidence_flag.
+    bucket_confidences: dict[tuple[date, str], set[str]] = defaultdict(set)
 
-    for mapping, activity in mapping_rows:
+    for mapping, activity, upload in mapping_rows:
         if mapping.asset_type not in ALLOWED_ASSET_TYPES:
             logger.warning("Invalid mapping asset_type=%s for activity=%s; skipping", mapping.asset_type, activity.id)
             continue
         if not activity.start_date or not activity.end_date:
             continue
 
-        for week, demand_hours in _iter_weekly_activity_hours(activity.start_date, activity.end_date):
+        work_days = max(1, min(7, upload.work_days_per_week or 5))
+        for week, demand_hours in _iter_weekly_activity_hours(
+            activity.start_date, activity.end_date, work_days
+        ):
             demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
+            if activity.row_confidence:
+                bucket_confidences[(week, mapping.asset_type)].add(activity.row_confidence)
 
         current_mapping_set.add((str(activity.id), mapping.asset_type))
 
-    return demand_by_week_asset, current_mapping_set
+    # A bucket is low-confidence only when every contributing activity is 'low'.
+    low_confidence_buckets: set[tuple[date, str]] = {
+        key
+        for key, confidences in bucket_confidences.items()
+        if confidences and all(c == "low" for c in confidences)
+    }
+
+    return demand_by_week_asset, current_mapping_set, low_confidence_buckets
 
 
 def _compute_booked_by_week_asset(
@@ -326,7 +383,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         timezone_name = "Australia/Adelaide"
         tz = ZoneInfo("Australia/Adelaide")
 
-    demand_by_week_asset, current_mapping_set = _compute_demand_by_week_asset(db, latest_upload.id)
+    demand_by_week_asset, current_mapping_set, low_confidence_buckets = _compute_demand_by_week_asset(db, latest_upload.id)
     booked_by_week_asset = _compute_booked_by_week_asset(db, project_id, tz)
 
     all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
@@ -338,6 +395,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
             booked_hours=round(booked_by_week_asset.get((week, asset_type), 0.0), 2),
             demand_level=_demand_level(demand_by_week_asset.get((week, asset_type), 0.0)),
             gap_hours=round(max(demand_by_week_asset.get((week, asset_type), 0.0) - booked_by_week_asset.get((week, asset_type), 0.0), 0.0), 2),
+            low_confidence_flag=(week, asset_type) in low_confidence_buckets,
         )
         for week, asset_type in all_keys
     ]
@@ -365,6 +423,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
             "booked_hours": r.booked_hours,
             "demand_level": r.demand_level,
             "gap_hours": r.gap_hours,
+            "low_confidence_flag": r.low_confidence_flag,
         }
         for r in rows
     ]

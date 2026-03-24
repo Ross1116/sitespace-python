@@ -2,24 +2,17 @@
 Unit tests for the lookahead demand engine.
 
 Covers:
+  - _working_days_in_range: counts Mon-Fri / Mon-Sat / all-days within a range.
   - _iter_weekly_activity_hours: splits an activity date range into per-week
-    demand buckets at 8 hours per calendar day.
+    demand buckets at 8h/working-day, respecting work_days_per_week.
   - _compute_anomaly_flags: compares two snapshots and raises threshold flags.
-
-NOTE -- known limitation in _iter_weekly_activity_hours:
-  The current implementation counts ALL calendar days (including Saturday and
-  Sunday) at 8 h/day.  A 5-day Mon-Fri activity produces 40 h, which is correct,
-  but a 7-day Mon-Sun activity produces 56 h rather than 40 h.
-
-  Stage 1 will add `work_days_per_week` to projects/uploads so the demand
-  engine can exclude non-working days.  Tests that document this behaviour are
-  marked with a comment: "documents current (pre-Stage-1) behaviour".
 """
 
 import pytest
 from datetime import date, time
 from app.services.lookahead_engine import (
     _iter_weekly_activity_hours,
+    _working_days_in_range,
     _compute_anomaly_flags,
     _week_start,
     _hours_between,
@@ -41,6 +34,42 @@ WED2 = date(2026, 3, 25)
 MON3 = date(2026, 3, 30)
 
 
+# ---------------------------------------------------------------------------
+# _working_days_in_range
+# ---------------------------------------------------------------------------
+
+class TestWorkingDaysInRange:
+    def test_full_week_five_days(self):
+        # Mon-Sun: 5 working days (Mon-Fri)
+        assert _working_days_in_range(MON, SUN, 5) == 5
+
+    def test_full_week_six_days(self):
+        # Mon-Sun: 6 working days (Mon-Sat)
+        assert _working_days_in_range(MON, SUN, 6) == 6
+
+    def test_full_week_seven_days(self):
+        assert _working_days_in_range(MON, SUN, 7) == 7
+
+    def test_weekend_only_five_days(self):
+        assert _working_days_in_range(SAT, SUN, 5) == 0
+
+    def test_saturday_included_in_six_days(self):
+        assert _working_days_in_range(SAT, SAT, 6) == 1
+
+    def test_saturday_excluded_in_five_days(self):
+        assert _working_days_in_range(SAT, SAT, 5) == 0
+
+    def test_single_monday(self):
+        assert _working_days_in_range(MON, MON, 5) == 1
+
+    def test_mon_to_fri(self):
+        assert _working_days_in_range(MON, FRI, 5) == 5
+
+
+# ---------------------------------------------------------------------------
+# _iter_weekly_activity_hours
+# ---------------------------------------------------------------------------
+
 class TestWeeklyBuckets:
     def test_single_day_activity(self):
         result = _iter_weekly_activity_hours(MON, MON)
@@ -54,70 +83,81 @@ class TestWeeklyBuckets:
         result = _iter_weekly_activity_hours(MON, FRI)
         assert result == [(MON, 40.0)]
 
-    def test_full_calendar_week_mon_to_sun(self):
-        # Documents current (pre-Stage-1) behaviour:
-        # weekends are counted at 8h/day.  After Stage 1 adds
-        # work_days_per_week, a 5d/week project would return 40h here.
-        result = _iter_weekly_activity_hours(MON, SUN)
+    def test_full_calendar_week_five_day(self):
+        # Mon-Sun with 5d/week: only Mon-Fri = 40h, weekend skipped
+        result = _iter_weekly_activity_hours(MON, SUN, work_days_per_week=5)
+        assert result == [(MON, 40.0)]
+
+    def test_full_calendar_week_six_day(self):
+        # Mon-Sun with 6d/week: Mon-Sat = 48h
+        result = _iter_weekly_activity_hours(MON, SUN, work_days_per_week=6)
+        assert result == [(MON, 48.0)]
+
+    def test_full_calendar_week_seven_day(self):
+        # Mon-Sun with 7d/week: all 7 days = 56h
+        result = _iter_weekly_activity_hours(MON, SUN, work_days_per_week=7)
         assert result == [(MON, 56.0)]
 
-    def test_activity_spans_two_weeks(self):
-        # Mon-Wed of next week: 7 days in week 1, 3 days in week 2
+    def test_activity_spans_two_weeks_five_day(self):
+        # MON to WED2 (MON + full week + Mon/Tue/Wed)
         result = _iter_weekly_activity_hours(MON, WED2)
         assert len(result) == 2
-        assert result[0] == (MON, 56.0)   # Mon-Sun = 7 days
-        assert result[1] == (MON2, 24.0)  # Mon-Wed = 3 days
+        assert result[0] == (MON, 40.0)   # Mon-Fri = 5 working days
+        assert result[1] == (MON2, 24.0)  # Mon-Wed = 3 working days
 
     def test_activity_mid_week_start_spans_two_partial_weeks(self):
-        # FRI -> WED2 (6 calendar days): 3 tail days in week 1, 3 head days in week 2
+        # FRI to WED2 with 5d/week
         result = _iter_weekly_activity_hours(FRI, WED2)
         assert len(result) == 2
-        # Week 1: Fri + Sat + Sun = 3 days
-        assert result[0] == (MON, 24.0)
-        # Week 2: Mon + Tue + Wed = 3 days
-        assert result[1] == (MON2, 24.0)
+        assert result[0] == (MON, 8.0)    # only Friday is a working day in week 1
+        assert result[1] == (MON2, 24.0)  # Mon-Wed = 3 working days
 
-    def test_cross_week_start_saturday(self):
-        # Activity starting Sat -- falls in week starting Mon before it
+    def test_cross_week_start_saturday_five_day(self):
+        # SAT to MON2 with 5d/week: Sat+Sun are not working, only MON2 counts
         result = _iter_weekly_activity_hours(SAT, MON2)
+        assert len(result) == 1
+        assert result[0] == (MON2, 8.0)
+
+    def test_cross_week_start_saturday_six_day(self):
+        # SAT to MON2 with 6d/week: Sat counts, Sun doesn't, MON2 counts
+        result = _iter_weekly_activity_hours(SAT, MON2, work_days_per_week=6)
         assert len(result) == 2
-        assert result[0][0] == MON        # week containing Sat
-        assert result[0][1] == 16.0       # Sat + Sun = 2 days
-        assert result[1][0] == MON2
-        assert result[1][1] == 8.0        # just Mon
+        assert result[0] == (MON, 8.0)    # Sat = 1 working day in week 1
+        assert result[1] == (MON2, 8.0)
+
+    def test_weekend_only_span_produces_no_buckets(self):
+        # Sat-Sun with 5d/week: no working days -> empty result
+        result = _iter_weekly_activity_hours(SAT, SUN, work_days_per_week=5)
+        assert result == []
 
     def test_reversed_dates_handled(self):
-        # The function normalises min/max, so reversed dates work identically
         forward = _iter_weekly_activity_hours(MON, FRI)
         reversed_ = _iter_weekly_activity_hours(FRI, MON)
         assert forward == reversed_
 
-    def test_total_hours_preserved_across_weeks(self):
-        # Sum of all bucket hours must equal total_days * 8
-        start, end = MON, WED2   # 10 calendar days
-        buckets = _iter_weekly_activity_hours(start, end)
-        total = sum(h for _, h in buckets)
-        days = (end - start).days + 1
-        assert total == days * 8.0
+    def test_total_hours_five_day_week(self):
+        # MON to WED2 = 5 + 3 working days = 64h total
+        buckets = _iter_weekly_activity_hours(MON, WED2)
+        assert sum(h for _, h in buckets) == 64.0
 
     def test_week_starts_are_mondays(self):
-        # All returned week-start dates must be Mondays (weekday() == 0)
-        buckets = _iter_weekly_activity_hours(SAT, WED2)
+        buckets = _iter_weekly_activity_hours(SAT, WED2, work_days_per_week=6)
         for week_start, _ in buckets:
             assert week_start.weekday() == 0, f"{week_start} is not a Monday"
 
-    def test_empty_result_impossible(self):
-        # Any valid date range produces at least one bucket
+    def test_weekday_produces_at_least_one_bucket(self):
+        # A Tuesday always gives at least one bucket with default 5d/week
         result = _iter_weekly_activity_hours(TUE, TUE)
         assert len(result) >= 1
 
-    def test_long_activity_ten_weeks(self):
-        end = date(2026, 5, 25)  # ~10 weeks after MON
+    def test_long_activity_ten_weeks_working_hours(self):
+        # MON 2026-03-16 to MON 2026-05-25 = 11 weeks
+        end = date(2026, 5, 25)
         buckets = _iter_weekly_activity_hours(MON, end)
         assert len(buckets) == 11
+        # Each full week has 5 working days; last week has 1 day (Mon only)
         total = sum(h for _, h in buckets)
-        days = (end - MON).days + 1
-        assert total == days * 8.0
+        assert total == (10 * 5 + 1) * 8.0  # 51 working days * 8h
 
 
 # ---------------------------------------------------------------------------
