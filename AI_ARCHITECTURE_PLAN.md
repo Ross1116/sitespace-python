@@ -4457,12 +4457,12 @@ Because:
 - [x] Enrich existing Sentry integration in FastAPI and background jobs
 - [x] Tag Sentry events with project/upload/stage context
 - [x] Expand `ai_suggestion_logs` for full AI auditability
-- [ ] Harden parser row typing and noise suppression
+- [x] Harden parser row typing and noise suppression
 - [x] Add PDF support to programme upload validation and parsing
-- [ ] Add `programme_uploads.work_days_per_week`
-- [ ] Add `programme_activities.pct_complete`
-- [ ] Add `programme_activities.activity_kind`
-- [ ] Add `programme_activities.row_confidence`
+- [x] Add `programme_uploads.work_days_per_week`
+- [x] Add `programme_activities.pct_complete`
+- [x] Add `programme_activities.activity_kind`
+- [x] Add `programme_activities.row_confidence`
 - [ ] Add `items`
 - [ ] Add `item_aliases`
 - [ ] Add `item_identity_events`
