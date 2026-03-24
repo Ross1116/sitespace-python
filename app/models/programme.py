@@ -86,6 +86,13 @@ class ProgrammeActivity(Base):
     pct_complete = Column(SmallInteger, nullable=True)          # 0–100 extracted from file
     activity_kind = Column(String(20), nullable=True)           # 'summary' | 'task' | 'milestone'
     row_confidence = Column(String(10), nullable=True)          # 'high' | 'medium' | 'low'
+    # Stage 2 identity columns
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(

@@ -40,11 +40,11 @@ from slowapi.errors import RateLimitExceeded
 from .core.config import settings
 from .core.database import engine, Base
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
-from .api.v1 import auth, assets, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
+from .api.v1 import auth, assets, items, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
 from .services.lookahead_engine import nightly_lookahead_job
 
 # Import all models so SQLAlchemy knows about them
-from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models
+from .models import user, asset, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models, item_identity
 
 try:
     _aps_scheduler_module = importlib.import_module("apscheduler.schedulers.asyncio")
@@ -175,6 +175,7 @@ app.include_router(booking_audit.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(site_plans.router, prefix="/api")
 app.include_router(programmes.router, prefix="/api")
+app.include_router(items.router, prefix="/api")
 app.include_router(lookahead.router, prefix="/api")
 
 # Root endpoint

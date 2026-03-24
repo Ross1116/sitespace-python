@@ -4074,7 +4074,7 @@ Only if earned.
 2. enrich existing Sentry + background job reporting
 3. parser hardening
 4. PDF programme ingestion support
-5. `work_days_per_week`, `pct_complete`, `activity_kind`, `row_confidence`
+5. `work_days_per_week`, `pct_complete`, `activity_kind`, `row_confidence`z
 6. identity layer with aliases
 7. asset taxonomy table
 8. classification layer with persistent `item_classifications`
@@ -4463,12 +4463,12 @@ Because:
 - [x] Add `programme_activities.pct_complete`
 - [x] Add `programme_activities.activity_kind`
 - [x] Add `programme_activities.row_confidence`
-- [ ] Add `items`
-- [ ] Add `item_aliases`
-- [ ] Add `item_identity_events`
-- [ ] Add `programme_activities.item_id`
-- [ ] Implement normalization + alias resolution
-- [ ] Implement active-item redirect logic for merged items
+- [x] Add `items`
+- [x] Add `item_aliases`
+- [x] Add `item_identity_events`
+- [x] Add `programme_activities.item_id`
+- [x] Implement normalization + alias resolution
+- [x] Implement active-item redirect logic for merged items
 - [ ] Add `asset_types`
 - [ ] Add `assets.canonical_type`
 - [ ] Seed initial taxonomy including `none`
@@ -4533,7 +4533,7 @@ Because:
 ## Next
 
 - [ ] Implement correction propagation flow
-- [ ] Implement manual merge operations for items
+- [x] Implement manual merge operations for items
 
 ## Later
 

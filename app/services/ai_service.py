@@ -1310,8 +1310,22 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         penalty = -1 if any(x in lower for x in ("id", "%", "complete", "duration", "code")) else 0
         return (preference + penalty, _unique_count(col))
 
+    def _looks_like_pct(col: str) -> bool:
+        """True when the header name suggests a % complete field and sample values are numeric."""
+        lower = col.lower()
+        if not any(k in lower for k in ("pct", "percent", "complete", "%")):
+            return False
+        samples = [str(r.get(col, "")).rstrip("%").strip() for r in rows[:10] if r.get(col)]
+        return any(s.isdigit() for s in samples)
+
     string_cols = [h for h in headers if not _looks_like_date(h)]
     name_col = max(string_cols, key=_name_col_score) if string_cols else (headers[0] if headers else None)
+
+    # Detect pct_complete column (exclude whatever was chosen as name_col).
+    pct_col = next(
+        (h for h in string_cols if h != name_col and _looks_like_pct(h)),
+        None,
+    )
 
     column_mapping: dict[str, str] = {}
     missing: list[str] = []
@@ -1320,6 +1334,9 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
         column_mapping["name"] = name_col
     else:
         missing.append("name")
+
+    if pct_col:
+        column_mapping["pct_complete"] = pct_col
 
     if len(date_cols) >= 2:
         column_mapping["start_date"] = date_cols[0]
@@ -1351,6 +1368,16 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
 
         start = _parse_date(row.get(column_mapping.get("start_date", ""), ""))
         finish = _parse_date(row.get(column_mapping.get("end_date", ""), ""))
+
+        pct_complete: int | None = None
+        if pct_col:
+            pct_raw = row.get(pct_col)
+            if pct_raw is not None:
+                try:
+                    pct_complete = max(0, min(100, int(float(str(pct_raw).rstrip("%").strip()))))
+                except (ValueError, TypeError):
+                    pass
+
         activity_kind = classify_row_kind(is_summary=False, start=start, finish=finish)
         row_confidence = score_row_confidence(
             name=name, start=start, finish=finish, activity_kind=activity_kind
@@ -1364,6 +1391,7 @@ def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
             is_summary=False,
             level_name=None,
             zone_name=None,
+            pct_complete=pct_complete,
             activity_kind=activity_kind,
             row_confidence=row_confidence,
         ))

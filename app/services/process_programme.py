@@ -51,6 +51,7 @@ from .ai_service import (
     score_row_confidence,
     suggest_subcontractor_asset_types,
 )
+from .identity_service import resolve_or_create_item
 from .lookahead_engine import calculate_lookahead_for_project
 
 logger = logging.getLogger(__name__)
@@ -429,6 +430,8 @@ def _insert_activities(
         if not start or not end:
             flags.append("dates_missing")
 
+        item_id = resolve_or_create_item(db, item.name)
+
         db_rows.append(ProgrammeActivity(
             id=real_id,
             programme_upload_id=upload_id,
@@ -446,6 +449,7 @@ def _insert_activities(
             pct_complete=item.pct_complete,
             activity_kind=item.activity_kind,
             row_confidence=item.row_confidence,
+            item_id=item_id,
         ))
 
     db.bulk_save_objects(db_rows)
