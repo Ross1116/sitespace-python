@@ -20,7 +20,8 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from .ai_service import ALLOWED_ASSET_TYPES, normalize_asset_type, suggest_subcontractor_asset_types
+from ..core.constants import get_active_asset_types
+from .ai_service import normalize_asset_type, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +211,9 @@ def _compute_demand_by_week_asset(
     # Track confidence values per bucket to compute low_confidence_flag.
     bucket_confidences: dict[tuple[date, str], set[str]] = defaultdict(set)
 
+    active_types = get_active_asset_types(db)
     for mapping, activity, upload in mapping_rows:
-        if mapping.asset_type not in ALLOWED_ASSET_TYPES:
+        if mapping.asset_type not in active_types:
             logger.warning("Invalid mapping asset_type=%s for activity=%s; skipping", mapping.asset_type, activity.id)
             continue
         if not activity.start_date or not activity.end_date:
@@ -264,16 +266,17 @@ def _compute_booked_by_week_asset(
 
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     _warned_unknown_types: set[str] = set()
+    active_types = get_active_asset_types(db)
 
     for booking, asset in booking_rows:
-        # Normalize asset.type to a canonical type — handles UI-entered values
-        # like "Tower Crane" → "crane", "EWP" → "ewp", etc.
-        # Falls back to asset.name when type is generic (e.g. "EQUIPMENT").
-        raw_asset_type = asset.type or ""
-        asset_type = normalize_asset_type(raw_asset_type)
+        # Prefer canonical_type (Stage 3) → normalize raw type → normalize name.
+        asset_type = asset.canonical_type
         if asset_type is None:
-            asset_type = normalize_asset_type(asset.name or "")
-        if asset_type is None or asset_type not in ALLOWED_ASSET_TYPES:
+            raw_asset_type = asset.type or ""
+            asset_type = normalize_asset_type(raw_asset_type)
+            if asset_type is None:
+                asset_type = normalize_asset_type(asset.name or "")
+        if asset_type is None or asset_type not in active_types:
             raw_attempted = raw_asset_type or (asset.name or "")
             if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
                 logger.warning(

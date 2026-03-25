@@ -39,3 +39,4 @@ import app.models.slot_booking  # noqa: F401, E402
 import app.models.booking_audit  # noqa: F401, E402
 import app.models.file_upload  # noqa: F401, E402
 import app.models.item_identity  # noqa: F401, E402
+import app.models.asset_type  # noqa: F401, E402

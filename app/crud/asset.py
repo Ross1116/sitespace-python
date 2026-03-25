@@ -18,6 +18,7 @@ from ..schemas.asset import (
     ImpactedBookingSummary
 )
 from .booking_audit import log_booking_audit
+from ..services.ai_service import normalize_asset_type
 
 # Precompiled pattern for HH:MM validation — used by _parse_time_string
 _TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -386,11 +387,15 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
     if asset.status == AssetStatus.RETIRED and (asset.maintenance_start_date or asset.maintenance_end_date):
         raise ValueError("Cannot set maintenance dates on a retired asset")
 
+    # Stage 3 — derive canonical_type from the raw type field
+    canonical = normalize_asset_type(asset.type or "") if asset.type else None
+
     db_asset = Asset(
         project_id=asset.project_id,
         asset_code=asset.asset_code,
         name=asset.name,
         type=asset.type,
+        canonical_type=canonical,
         description=asset.description,
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,
@@ -637,6 +642,11 @@ def update_asset(
             actor_id=user_id,
             actor_role=actor_role,
         )
+
+    # Stage 3 — re-derive canonical_type when type changes
+    if "type" in update_data:
+        new_type = update_data["type"]
+        update_data["canonical_type"] = normalize_asset_type(new_type or "") if new_type else None
 
     for field, value in update_data.items():
         setattr(db_asset, field, value)
