@@ -98,7 +98,7 @@ def create_asset_type(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Asset type '{body.code}' already exists",
+            detail=f"Conflict creating asset type '{body.code}'",
         ) from exc
     except Exception as exc:
         db.rollback()
