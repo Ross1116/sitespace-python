@@ -28,6 +28,10 @@ try:
     import app.models.subcontractor
     import app.models.stored_file
     import app.models.site_plan
+    import app.models.programme
+    import app.models.lookahead
+    import app.models.item_identity
+    import app.models.booking_audit
 
     print("Alembic: Successfully imported all models.")
 except ImportError as e:
