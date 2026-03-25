@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from pydantic import Field, field_validator
@@ -35,7 +35,10 @@ class AssetTypeCreate(BaseSchema):
     @field_validator("max_hours_per_day", mode="before")
     @classmethod
     def round_hours(cls, v: object) -> Decimal:
-        return round(Decimal(str(v)), 1)
+        try:
+            return round(Decimal(str(v)), 1)
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValueError("max_hours_per_day must be a numeric value")
 
 
 class AssetTypeUpdate(BaseSchema):
@@ -51,7 +54,10 @@ class AssetTypeUpdate(BaseSchema):
     @classmethod
     def round_hours(cls, v: object) -> Decimal | None:
         if v is not None:
-            return round(Decimal(str(v)), 1)
+            try:
+                return round(Decimal(str(v)), 1)
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValueError("max_hours_per_day must be a numeric value")
         return v
 
 

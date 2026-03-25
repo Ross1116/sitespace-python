@@ -115,6 +115,11 @@ def update_asset_type(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Asset type '{code}' not found",
         )
+    if body.parent_code and body.parent_code == code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Asset type cannot be its own parent",
+        )
     if body.parent_code and not crud.get_by_code(db, body.parent_code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -1,3 +1,7 @@
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Bootstrap set — used as fallback when no DB session is available.
 # The canonical source of truth is the asset_types table (Stage 3).
@@ -49,7 +53,8 @@ def get_active_asset_types(db: object) -> frozenset[str]:
     try:
         from ..crud.asset_type import get_active_codes
         return get_active_codes(db)  # type: ignore[arg-type]
-    except Exception:
+    except Exception as exc:
+        _logger.warning("Falling back to bootstrap ALLOWED_ASSET_TYPES: %s", exc)
         return ALLOWED_ASSET_TYPES
 
 
@@ -63,6 +68,8 @@ def get_max_hours_for_type(db: object, code: str) -> float:
         val = get_max_hours(db, code)  # type: ignore[arg-type]
         if val is not None:
             return val
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning(
+            "Falling back to DEFAULT_MAX_HOURS_PER_DAY for '%s': %s", code, exc,
+        )
     return DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0)

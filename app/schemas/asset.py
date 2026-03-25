@@ -69,6 +69,10 @@ class AssetUpdate(BaseSchema):
 
     Uses ``model_dump(exclude_unset=True)`` in the CRUD layer so only
     fields explicitly provided by the caller are written to the database.
+
+    ``canonical_type`` is auto-derived from ``type`` when ``type`` is
+    provided and ``canonical_type`` is not explicitly set.  An explicit
+    ``canonical_type`` in the same request takes precedence.
     """
     asset_code: Optional[str] = Field(None, min_length=1, max_length=50)
     name: Optional[str] = Field(None, min_length=1, max_length=255)

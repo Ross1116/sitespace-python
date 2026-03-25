@@ -16,6 +16,7 @@ Tests:
 import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
@@ -75,19 +76,19 @@ class TestFallbacks:
 
     def test_get_active_asset_types_fallback_on_import_error(self):
         db = MagicMock(spec=Session)
-        with patch("app.core.constants.get_active_codes", side_effect=Exception("no DB")):
+        with patch("app.crud.asset_type.get_active_codes", side_effect=Exception("no DB")):
             result = get_active_asset_types(db)
         assert result == ALLOWED_ASSET_TYPES
 
     def test_get_max_hours_fallback_on_error(self):
         db = MagicMock(spec=Session)
-        with patch("app.core.constants.get_max_hours", side_effect=Exception("no DB")):
+        with patch("app.crud.asset_type.get_max_hours", side_effect=Exception("no DB")):
             result = get_max_hours_for_type(db, "crane")
         assert result == 10.0
 
     def test_get_max_hours_fallback_unknown_code(self):
         db = MagicMock(spec=Session)
-        with patch("app.core.constants.get_max_hours", return_value=None):
+        with patch("app.crud.asset_type.get_max_hours", return_value=None):
             result = get_max_hours_for_type(db, "unknown_type")
         # Unknown type falls back to 16.0 default
         assert result == 16.0
@@ -107,7 +108,7 @@ class TestAssetTypeSchemas:
         assert obj.max_hours_per_day == Decimal("12.0")
 
     def test_create_code_rejects_uppercase(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             AssetTypeCreate(
                 code="Scaffold",
                 display_name="Scaffolding",
@@ -115,7 +116,7 @@ class TestAssetTypeSchemas:
             )
 
     def test_create_code_rejects_spaces(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             AssetTypeCreate(
                 code="loading bay",
                 display_name="Loading Bay",
@@ -131,7 +132,7 @@ class TestAssetTypeSchemas:
         assert obj.max_hours_per_day == Decimal("10.6")
 
     def test_create_max_hours_rejects_negative(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             AssetTypeCreate(
                 code="test_type",
                 display_name="Test",
@@ -139,7 +140,7 @@ class TestAssetTypeSchemas:
             )
 
     def test_create_max_hours_rejects_over_24(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             AssetTypeCreate(
                 code="test_type",
                 display_name="Test",

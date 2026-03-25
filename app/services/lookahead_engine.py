@@ -270,9 +270,9 @@ def _compute_booked_by_week_asset(
 
     for booking, asset in booking_rows:
         # Prefer canonical_type (Stage 3) → normalize raw type → normalize name.
+        raw_asset_type = asset.type or ""
         asset_type = asset.canonical_type
         if asset_type is None:
-            raw_asset_type = asset.type or ""
             asset_type = normalize_asset_type(raw_asset_type)
             if asset_type is None:
                 asset_type = normalize_asset_type(asset.name or "")

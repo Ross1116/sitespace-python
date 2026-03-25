@@ -51,7 +51,7 @@ def upgrade() -> None:
         sa.Column("is_user_selectable", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("max_hours_per_day", sa.NUMERIC(4, 1), nullable=False),
         sa.Column("taxonomy_version", sa.Integer, nullable=False, server_default="1"),
-        sa.Column("introduced_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("introduced_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("retired_at", sa.DateTime(timezone=True), nullable=True),
     )
 

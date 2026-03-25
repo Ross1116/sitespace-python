@@ -643,8 +643,9 @@ def update_asset(
             actor_role=actor_role,
         )
 
-    # Stage 3 — re-derive canonical_type when type changes
-    if "type" in update_data:
+    # Stage 3 — re-derive canonical_type when type changes, unless
+    # the caller explicitly provided canonical_type in the same request.
+    if "type" in update_data and "canonical_type" not in update_data:
         new_type = update_data["type"]
         update_data["canonical_type"] = normalize_asset_type(new_type or "") if new_type else None
 

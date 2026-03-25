@@ -53,6 +53,8 @@ def create(db: Session, obj_in: AssetTypeCreate) -> AssetType:
 def update(db: Session, db_obj: AssetType, obj_in: AssetTypeUpdate) -> AssetType:
     """Partial update of an existing asset type."""
     update_data = obj_in.model_dump(exclude_unset=True)
+    if update_data.get("parent_code") == db_obj.code:
+        raise ValueError("Asset type cannot be its own parent")
     for field, value in update_data.items():
         setattr(db_obj, field, value)
     db.commit()
