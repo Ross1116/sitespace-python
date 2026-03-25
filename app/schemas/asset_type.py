@@ -36,9 +36,12 @@ class AssetTypeCreate(BaseSchema):
     @classmethod
     def round_hours(cls, v: object) -> Decimal:
         try:
-            return round(Decimal(str(v)), 1)
-        except (InvalidOperation, TypeError, ValueError):
-            raise ValueError("max_hours_per_day must be a numeric value")
+            d = Decimal(str(v))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("max_hours_per_day must be a numeric value") from exc
+        if not (Decimal(0) <= d <= Decimal(24)):
+            raise ValueError("max_hours_per_day must be between 0 and 24")
+        return round(d, 1)
 
 
 class AssetTypeUpdate(BaseSchema):
@@ -55,9 +58,12 @@ class AssetTypeUpdate(BaseSchema):
     def round_hours(cls, v: object) -> Decimal | None:
         if v is not None:
             try:
-                return round(Decimal(str(v)), 1)
-            except (InvalidOperation, TypeError, ValueError):
-                raise ValueError("max_hours_per_day must be a numeric value")
+                d = Decimal(str(v))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError("max_hours_per_day must be a numeric value") from exc
+            if not (Decimal(0) <= d <= Decimal(24)):
+                raise ValueError("max_hours_per_day must be between 0 and 24")
+            return round(d, 1)
         return v
 
 

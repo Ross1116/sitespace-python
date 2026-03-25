@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
@@ -93,7 +94,14 @@ def create_asset_type(
     try:
         db_obj = crud.create(db, body)
         return AssetTypeResponse.model_validate(db_obj)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Asset type '{body.code}' already exists",
+        ) from exc
     except Exception as exc:
+        db.rollback()
         logger.exception("Failed to create asset type '%s'", body.code)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -128,7 +136,20 @@ def update_asset_type(
     try:
         updated = crud.update(db, db_obj, body)
         return AssetTypeResponse.model_validate(updated)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Asset type '{code}' conflicts with an existing type",
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except Exception as exc:
+        db.rollback()
         logger.exception("Failed to update asset type '%s'", code)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
