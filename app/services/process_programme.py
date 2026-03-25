@@ -267,7 +267,7 @@ async def _run(upload_id: str, db: Session) -> None:
             .all()
         )
         project_assets = [
-            {"name": a.name, "type": a.type or "", "code": a.asset_code}
+            {"name": a.name, "type": a.type or "", "code": a.asset_code, "canonical_type": a.canonical_type or ""}
             for a in db_assets
         ]
         logger.info(

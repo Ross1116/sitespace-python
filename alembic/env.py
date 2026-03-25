@@ -32,6 +32,7 @@ try:
     import app.models.lookahead
     import app.models.item_identity
     import app.models.booking_audit
+    import app.models.asset_type
 
     print("Alembic: Successfully imported all models.")
 except ImportError as e:

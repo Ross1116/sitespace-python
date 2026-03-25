@@ -21,6 +21,13 @@ class Asset(Base):
     status = Column(SQLEnum(AssetStatus), default=AssetStatus.AVAILABLE)
     maintenance_start_date = Column(Date, nullable=True)
     maintenance_end_date = Column(Date, nullable=True)
+    # Stage 3 — canonical asset type from taxonomy
+    canonical_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     pending_booking_capacity = Column(Integer, nullable=False, default=5, server_default="5")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -32,3 +39,4 @@ class Asset(Base):
     # Relationships
     project = relationship("SiteProject", back_populates="assets")
     bookings = relationship("SlotBooking", back_populates="asset")
+    asset_type_rel = relationship("AssetType", back_populates="assets", foreign_keys=[canonical_type])

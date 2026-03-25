@@ -1,5 +1,6 @@
 from .user import User
 from .asset import Asset
+from .asset_type import AssetType
 from .slot_booking import SlotBooking
 from .site_project import SiteProject
 from .subcontractor import Subcontractor
@@ -14,6 +15,7 @@ from .site_plan import SitePlan
 __all__ = [
     "User",
     "Asset",
+    "AssetType",
     "SlotBooking",
     "SiteProject",
     "Subcontractor",

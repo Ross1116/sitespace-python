@@ -849,7 +849,10 @@ def _build_classification_prompt(
             continue
         seen.add(key)
 
-        canonical = normalize_asset_type(raw_type)
+        # Prefer pre-computed canonical_type (Stage 3) when available.
+        canonical = str(a.get("canonical_type") or "").strip() or None
+        if not canonical or canonical not in ALLOWED_ASSET_TYPES:
+            canonical = normalize_asset_type(raw_type)
         if canonical is None:
             # Type is generic (e.g. "EQUIPMENT") — fall back to the asset name.
             # Covers cases like Forklift/EQUIPMENT or Excavator/EQUIPMENT.

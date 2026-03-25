@@ -69,6 +69,10 @@ class AssetUpdate(BaseSchema):
 
     Uses ``model_dump(exclude_unset=True)`` in the CRUD layer so only
     fields explicitly provided by the caller are written to the database.
+
+    ``canonical_type`` is auto-derived from ``type`` when ``type`` is
+    provided and ``canonical_type`` is not explicitly set.  An explicit
+    ``canonical_type`` in the same request takes precedence.
     """
     asset_code: Optional[str] = Field(None, min_length=1, max_length=50)
     name: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -80,6 +84,7 @@ class AssetUpdate(BaseSchema):
     current_value: Optional[Decimal] = Field(None, ge=0)
     pending_booking_capacity: Optional[int] = Field(None, ge=1, le=20)
     status: Optional[AssetStatus] = None
+    canonical_type: Optional[str] = Field(None, max_length=50)
     project_id: Optional[UUID] = None
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
@@ -142,6 +147,7 @@ class AssetResponse(AssetBase, TimestampSchema):
     id: UUID
     project_id: UUID
     status: AssetStatus
+    canonical_type: Optional[str] = None
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
     pending_booking_capacity: int = 5
@@ -153,6 +159,7 @@ class AssetBriefResponse(BaseSchema):
     asset_code: str
     name: str
     type: Optional[str] = None
+    canonical_type: Optional[str] = None
     status: AssetStatus
     pending_booking_capacity: int = 5
 
