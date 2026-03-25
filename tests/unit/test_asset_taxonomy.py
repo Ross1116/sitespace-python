@@ -48,13 +48,13 @@ class TestSeedData:
     @pytest.mark.parametrize("code,expected", [
         ("crane",         10.0),
         ("hoist",         10.0),
-        ("loading_bay",   10.0),
+        ("loading_bay",   12.0),
         ("concrete_pump", 10.0),
-        ("ewp",           16.0),
+        ("ewp",           12.0),
         ("excavator",     16.0),
         ("forklift",      16.0),
         ("telehandler",   16.0),
-        ("compactor",     16.0),
+        ("compactor",     10.0),
         ("other",         16.0),
         ("none",           0.0),
     ])
@@ -194,20 +194,28 @@ class TestAssetTypeCRUD:
 class TestTaxonomyGrouping:
     """Verify the plan's grouping of asset types by max_hours_per_day."""
 
-    EXCLUSIVE_TYPES = {"crane", "hoist", "loading_bay", "concrete_pump"}
-    FUNGIBLE_TYPES = {"ewp", "excavator", "forklift", "telehandler", "compactor", "other"}
+    # Operator-intensive or noise-restricted: capped at 10 h
+    TEN_HOUR_TYPES = {"crane", "hoist", "concrete_pump", "compactor"}
+    # Zone/facility or double-shift capable: 12 h
+    TWELVE_HOUR_TYPES = {"loading_bay", "ewp"}
+    # Freely fungible, hot-seat capable: 16 h
+    SIXTEEN_HOUR_TYPES = {"excavator", "forklift", "telehandler", "other"}
 
-    def test_exclusive_group_all_10h(self):
-        for code in self.EXCLUSIVE_TYPES:
+    def test_ten_hour_group(self):
+        for code in self.TEN_HOUR_TYPES:
             assert DEFAULT_MAX_HOURS_PER_DAY[code] == 10.0, f"{code} should be 10h"
 
-    def test_fungible_group_all_16h(self):
-        for code in self.FUNGIBLE_TYPES:
+    def test_twelve_hour_group(self):
+        for code in self.TWELVE_HOUR_TYPES:
+            assert DEFAULT_MAX_HOURS_PER_DAY[code] == 12.0, f"{code} should be 12h"
+
+    def test_sixteen_hour_group(self):
+        for code in self.SIXTEEN_HOUR_TYPES:
             assert DEFAULT_MAX_HOURS_PER_DAY[code] == 16.0, f"{code} should be 16h"
 
     def test_none_group_zero(self):
         assert DEFAULT_MAX_HOURS_PER_DAY["none"] == 0.0
 
     def test_groups_cover_all_types(self):
-        covered = self.EXCLUSIVE_TYPES | self.FUNGIBLE_TYPES | {"none"}
+        covered = self.TEN_HOUR_TYPES | self.TWELVE_HOUR_TYPES | self.SIXTEEN_HOUR_TYPES | {"none"}
         assert covered == ALLOWED_ASSET_TYPES

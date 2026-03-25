@@ -27,16 +27,49 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
 DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
     "crane":         10.0,
     "hoist":         10.0,
-    "loading_bay":   10.0,
-    "ewp":           16.0,
+    "loading_bay":   12.0,
+    "ewp":           12.0,
     "concrete_pump": 10.0,
     "excavator":     16.0,
     "forklift":      16.0,
     "telehandler":   16.0,
-    "compactor":     16.0,
+    "compactor":     10.0,
     "other":         16.0,
     "none":           0.0,
 }
+
+
+# ---------------------------------------------------------------------------
+# Lookahead / demand-engine thresholds
+# ---------------------------------------------------------------------------
+
+# Hours per working day used when spreading activity demand across weeks.
+# Aligns with the standard 8-hour day under most Australian construction EBAs.
+DEMAND_HOURS_PER_DAY: int = 8
+
+# Weekly demand-level bucket boundaries (hours per asset type per week).
+# Demand is computed as working_days × DEMAND_HOURS_PER_DAY, so a single
+# asset running a full 5-day week contributes 40 h.  Thresholds are set so
+# that normal full-week single-asset utilisation lands in "high", not
+# "critical".  "Critical" implies multi-asset demand or a scheduling conflict.
+DEMAND_LEVEL_LOW_MAX: int = 16     # < 16 h  → low   (≤ 2 standard days)
+DEMAND_LEVEL_MEDIUM_MAX: int = 32  # < 32 h  → medium (2–4 days)
+DEMAND_LEVEL_HIGH_MAX: int = 48    # < 48 h  → high   (4–6 days, 1 asset limit)
+                                   # ≥ 48 h  → critical (multi-asset territory)
+
+# Anomaly-detection thresholds used in _compute_anomaly_flags().
+# Demand spike: flag when week-over-week change for a bucket exceeds this
+# fraction.  1.5 = 150% change (2.5× demand); doubling alone is common on
+# pour weeks and should not trigger an alert.
+ANOMALY_DEMAND_SPIKE_THRESHOLD: float = 1.5
+
+# Mapping-change ratio: flag when this fraction of activity-asset mappings
+# differ between consecutive uploads.  0.5 = half the schedule rewired.
+ANOMALY_MAPPING_CHANGE_THRESHOLD: float = 0.5
+
+# Activity-count delta ratio: flag when the programme changes in size by more
+# than this fraction.  0.3 = 30% addition or removal of activities.
+ANOMALY_ACTIVITY_DELTA_THRESHOLD: float = 0.3
 
 
 def get_active_asset_types(db: object) -> frozenset[str]:

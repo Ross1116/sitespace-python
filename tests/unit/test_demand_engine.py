@@ -166,9 +166,9 @@ class TestWeeklyBuckets:
 
 class TestAnomalyFlags:
     """
-    Thresholds from the architecture plan:
-      demand_spike_over_100pct       : pct_change > 1.0  (strictly greater)
-      mapping_changes_over_40pct     : ratio >= 0.4       (greater-or-equal)
+    Thresholds (sourced from core.constants):
+      demand_spike_over_100pct       : pct_change > 1.5  (strictly greater — 2.5× demand)
+      mapping_changes_over_40pct     : ratio >= 0.5       (greater-or-equal — half rewired)
       activity_count_delta_over_30pct: delta_ratio > 0.3  (strictly greater)
     """
 
@@ -180,20 +180,22 @@ class TestAnomalyFlags:
 
     # ---- demand spike ----
 
-    def test_demand_spike_triggers_above_100pct(self):
+    def test_demand_spike_triggers_above_150pct(self):
+        # pct_change = (251 - 100) / 100 = 1.51 > 1.5 -> True
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
-        curr = [self._make_row("crane", "2026-03-16", 201.0)]
+        curr = [self._make_row("crane", "2026-03-16", 251.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
         assert flags["demand_spike_over_100pct"] is True
 
-    def test_demand_spike_exact_100pct_does_not_trigger(self):
-        # pct_change = 1.0, test is > 1.0 -> should NOT fire
+    def test_demand_spike_exact_150pct_does_not_trigger(self):
+        # pct_change = 1.5, threshold is > 1.5 -> should NOT fire
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
-        curr = [self._make_row("crane", "2026-03-16", 200.0)]
+        curr = [self._make_row("crane", "2026-03-16", 250.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
         assert flags["demand_spike_over_100pct"] is False
 
-    def test_demand_spike_below_100pct_no_flag(self):
+    def test_demand_spike_below_150pct_no_flag(self):
+        # pct_change = 0.5 -> well below threshold
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
         curr = [self._make_row("crane", "2026-03-16", 150.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
@@ -208,7 +210,7 @@ class TestAnomalyFlags:
         prev = [self._make_row("crane", "2026-03-16", 200.0)]
         curr = [self._make_row("crane", "2026-03-16", 50.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
-        # pct_change = |50-200|/200 = 0.75, not > 1.0
+        # pct_change = |50-200|/200 = 0.75, not > 1.5
         assert flags["demand_spike_over_100pct"] is False
 
     def test_demand_spike_multiple_asset_types_one_triggers(self):
@@ -218,24 +220,24 @@ class TestAnomalyFlags:
         ]
         curr = [
             self._make_row("crane", "2026-03-16", 100.0),   # no change
-            self._make_row("forklift", "2026-03-16", 50.0),  # 150% spike
+            self._make_row("forklift", "2026-03-16", 51.0),  # 155% spike > 150% threshold
         ]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
         assert flags["demand_spike_over_100pct"] is True
 
     # ---- mapping changes ----
 
-    def test_mapping_changes_exact_40pct_triggers(self):
-        # 4 activities changed out of 10 total = 0.4 >= 0.4 -> True
+    def test_mapping_changes_exact_50pct_triggers(self):
+        # 5 activities changed out of 10 total = 0.5 >= 0.5 -> True
         prev_set = {(f"act{i}", "crane") for i in range(10)}
-        curr_set = {(f"act{i}", "forklift" if i < 4 else "crane") for i in range(10)}
+        curr_set = {(f"act{i}", "forklift" if i < 5 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
         assert flags["mapping_changes_over_40pct"] is True
 
-    def test_mapping_changes_below_40pct_no_flag(self):
-        # 3 of 10 changed = 0.3 < 0.4 -> False
+    def test_mapping_changes_below_50pct_no_flag(self):
+        # 4 of 10 changed = 0.4 < 0.5 -> False
         prev_set = {(f"act{i}", "crane") for i in range(10)}
-        curr_set = {(f"act{i}", "forklift" if i < 3 else "crane") for i in range(10)}
+        curr_set = {(f"act{i}", "forklift" if i < 4 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
         assert flags["mapping_changes_over_40pct"] is False
 
@@ -354,35 +356,39 @@ class TestDemandLevel:
     def test_zero_hours_is_low(self):
         assert _demand_level(0.0) == "low"
 
-    def test_below_8_is_low(self):
-        assert _demand_level(7.9) == "low"
+    def test_below_16_is_low(self):
+        assert _demand_level(15.9) == "low"
 
-    def test_exactly_8_is_medium(self):
-        assert _demand_level(8.0) == "medium"
-
-    def test_between_8_and_20_is_medium(self):
+    def test_exactly_16_is_medium(self):
+        # low/medium boundary: < 16 h = low, ≥ 16 h = medium
         assert _demand_level(16.0) == "medium"
 
-    def test_below_20_is_medium(self):
-        assert _demand_level(19.9) == "medium"
+    def test_between_16_and_32_is_medium(self):
+        assert _demand_level(24.0) == "medium"
 
-    def test_exactly_20_is_high(self):
-        assert _demand_level(20.0) == "high"
+    def test_below_32_is_medium(self):
+        assert _demand_level(31.9) == "medium"
 
-    def test_between_20_and_40_is_high(self):
-        assert _demand_level(30.0) == "high"
+    def test_exactly_32_is_high(self):
+        # medium/high boundary: < 32 h = medium, ≥ 32 h = high
+        assert _demand_level(32.0) == "high"
 
-    def test_below_40_is_high(self):
-        assert _demand_level(39.9) == "high"
+    def test_between_32_and_48_is_high(self):
+        assert _demand_level(40.0) == "high"
 
-    def test_exactly_40_is_critical(self):
-        assert _demand_level(40.0) == "critical"
+    def test_below_48_is_high(self):
+        assert _demand_level(47.9) == "high"
 
-    def test_above_40_is_critical(self):
+    def test_exactly_48_is_critical(self):
+        # high/critical boundary: < 48 h = high, ≥ 48 h = critical
+        # 48 h = 6 standard days; implies multi-asset demand
+        assert _demand_level(48.0) == "critical"
+
+    def test_above_48_is_critical(self):
         assert _demand_level(80.0) == "critical"
 
     def test_boundary_coverage(self):
         # Confirm the four tiers are the only possible values
         valid = {"low", "medium", "high", "critical"}
-        for hours in [0, 4, 8, 12, 20, 32, 40, 56, 100]:
+        for hours in [0, 8, 16, 24, 32, 40, 48, 56, 100]:
             assert _demand_level(float(hours)) in valid

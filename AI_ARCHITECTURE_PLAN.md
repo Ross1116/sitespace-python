@@ -4469,9 +4469,9 @@ Because:
 - [x] Add `programme_activities.item_id`
 - [x] Implement normalization + alias resolution
 - [x] Implement active-item redirect logic for merged items
-- [ ] Add `asset_types`
-- [ ] Add `assets.canonical_type`
-- [ ] Seed initial taxonomy including `none`
+- [x] Add `asset_types`
+- [x] Add `assets.canonical_type`
+- [x] Seed initial taxonomy including `none`
 - [ ] Add `item_classifications`
 - [ ] Implement classification resolution order
 - [ ] Implement standalone AI classification
@@ -4518,7 +4518,7 @@ Because:
 - [x] Implement safe degraded mode behavior
 - [ ] Surface system health state
 - [ ] Introduce explicit upload-status migration plan from current `degraded` semantics
-- [ ] Add `max_hours_per_day` to `asset_types` table with seed values
+- [x] Add `max_hours_per_day` to `asset_types` table with seed values
 - [ ] Implement per-day distribution bucket cap in work-profile Stage B validation
 - [ ] Implement per-day demand cap check in demand engine (second enforcement point)
 - [ ] Add `confirmation_count` and `correction_count` to `item_classifications`
