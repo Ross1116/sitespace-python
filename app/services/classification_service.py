@@ -23,6 +23,10 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..core.constants import (
+    CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS,
+    CLASSIFICATION_STABLE_MIN_CONFIRMATIONS,
+)
 from ..crud import asset_type as asset_type_crud
 from ..models.item_identity import ItemClassification, ItemClassificationEvent
 
@@ -39,13 +43,13 @@ TIER_PERMANENT = "permanent"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _maturity_tier(c: ItemClassification) -> str:
+def maturity_tier(c: ItemClassification) -> str:
     """Return the maturity tier for a classification row."""
     if c.source == "manual":
         return TIER_PERMANENT
-    if c.confirmation_count >= 5 and c.correction_count == 0:
+    if c.confirmation_count >= CLASSIFICATION_STABLE_MIN_CONFIRMATIONS and c.correction_count == 0:
         return TIER_STABLE
-    if c.confirmation_count >= 2 and c.correction_count == 0:
+    if c.confirmation_count >= CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS and c.correction_count == 0:
         return TIER_CONFIRMED
     return TIER_TENTATIVE
 
@@ -181,7 +185,7 @@ def resolve_item_classification(
         # Step 1 — existing active classification
         existing = get_active_classification(db, item_id)
         if existing is not None:
-            tier = _maturity_tier(existing)
+            tier = maturity_tier(existing)
 
             if tier in (TIER_PERMANENT, TIER_STABLE, TIER_CONFIRMED):
                 # Stable — increment confirmation count and return.
@@ -206,7 +210,8 @@ def resolve_item_classification(
             )
 
             # Run AI re-check (import inside function to avoid circular imports).
-            ai_type = _run_standalone_ai(activity_name, db)
+            ai_result = _run_standalone_ai(activity_name, db)
+            ai_type = ai_result[0] if ai_result else None
             if ai_type and ai_type != tentative_type:
                 # AI disagrees — flag for human review, do NOT auto-promote.
                 db.add(ItemClassificationEvent(
@@ -217,7 +222,11 @@ def resolve_item_classification(
                     old_asset_type=tentative_type,
                     new_asset_type=ai_type,
                     triggered_by_upload_id=upload_id,
-                    details_json={"ai_suggestion": ai_type, "reason": "ai_disagrees_tentative"},
+                    details_json={
+                        "ai_suggestion": ai_type,
+                        "ai_confidence": ai_result[1] if ai_result else None,
+                        "reason": "ai_disagrees_tentative",
+                    },
                 ))
                 db.flush()
             else:
@@ -246,13 +255,13 @@ def resolve_item_classification(
             return new_cls.asset_type
 
         # Step 3 — standalone AI
-        ai_type = _run_standalone_ai(activity_name, db)
-        if ai_type:
-            confidence = "medium"  # standalone AI always starts as medium
+        ai_result = _run_standalone_ai(activity_name, db)
+        if ai_result:
+            ai_type, ai_confidence = ai_result
             new_cls = _persist_classification(
-                db, item_id, ai_type, confidence, "ai", upload_id=upload_id,
+                db, item_id, ai_type, ai_confidence, "ai", upload_id=upload_id,
             )
-            logger.debug("Item %s classified via standalone AI → %s", item_id, ai_type)
+            logger.debug("Item %s classified via standalone AI → %s (%s)", item_id, ai_type, ai_confidence)
             return new_cls.asset_type
 
         logger.debug("Item %s: no classification resolved for '%s'", item_id, activity_name)
@@ -266,8 +275,8 @@ def resolve_item_classification(
         return None
 
 
-def _run_standalone_ai(activity_name: str, db: Session) -> str | None:
-    """Run standalone AI classification; return the asset_type string or None."""
+def _run_standalone_ai(activity_name: str, db: Session) -> tuple[str, str] | None:
+    """Run standalone AI classification; return (asset_type, confidence) or None."""
     try:
         from .ai_service import classify_item_standalone  # type: ignore[attr-defined]
         from ..core.constants import get_active_asset_types

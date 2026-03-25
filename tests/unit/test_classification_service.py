@@ -2,7 +2,7 @@
 Unit tests for the Stage 4 classification service.
 
 Tests:
-  - _maturity_tier: PERMANENT / STABLE / CONFIRMED / TENTATIVE
+  - maturity_tier: PERMANENT / STABLE / CONFIRMED / TENTATIVE
   - get_active_classification: returns active row or None
   - _persist_classification: inserts new row, deactivates old, writes audit events
   - resolve_item_classification: resolution order (active→keyword→AI→None)
@@ -19,7 +19,7 @@ from app.services.classification_service import (
     TIER_PERMANENT,
     TIER_STABLE,
     TIER_TENTATIVE,
-    _maturity_tier,
+    maturity_tier,
     _keyword_scan,
     apply_manual_classification,
     get_active_classification,
@@ -63,7 +63,7 @@ def _make_db() -> MagicMock:
     return db
 
 
-# ─── _maturity_tier ───────────────────────────────────────────────────────────
+# ─── maturity_tier ────────────────────────────────────────────────────────────
 
 class TestMaturityTier:
 
@@ -81,15 +81,15 @@ class TestMaturityTier:
     ])
     def test_tier(self, source, conf, corr, expected):
         cls = _make_cls(source=source, confirmation_count=conf, correction_count=corr)
-        assert _maturity_tier(cls) == expected
+        assert maturity_tier(cls) == expected
 
     def test_confirmed_exactly_at_2(self):
         cls = _make_cls(source="ai", confirmation_count=2, correction_count=0)
-        assert _maturity_tier(cls) == TIER_CONFIRMED
+        assert maturity_tier(cls) == TIER_CONFIRMED
 
     def test_stable_exactly_at_5(self):
         cls = _make_cls(source="ai", confirmation_count=5, correction_count=0)
-        assert _maturity_tier(cls) == TIER_STABLE
+        assert maturity_tier(cls) == TIER_STABLE
 
 
 # ─── _keyword_scan ────────────────────────────────────────────────────────────
@@ -164,14 +164,14 @@ class TestResolveItemClassificationActive:
     def test_tentative_returns_current_type_and_runs_ai(self):
         cls = _make_cls(source="ai", confirmation_count=0, asset_type="crane")
         db = self._setup_db(cls)
-        with patch("app.services.classification_service._run_standalone_ai", return_value="crane"):
+        with patch("app.services.classification_service._run_standalone_ai", return_value=("crane", "high")):
             result = resolve_item_classification(db, cls.item_id, "Lift column formwork")
         assert result == "crane"
 
     def test_tentative_ai_agrees_increments_confirmation(self):
         cls = _make_cls(source="ai", confirmation_count=1, correction_count=0, asset_type="crane")
         db = self._setup_db(cls)
-        with patch("app.services.classification_service._run_standalone_ai", return_value="crane"):
+        with patch("app.services.classification_service._run_standalone_ai", return_value=("crane", "high")):
             resolve_item_classification(db, cls.item_id, "Lift column formwork")
         assert cls.confirmation_count == 2
 
@@ -180,7 +180,7 @@ class TestResolveItemClassificationActive:
         db = self._setup_db(cls)
         added_events = []
         db.add.side_effect = lambda obj: added_events.append(obj)
-        with patch("app.services.classification_service._run_standalone_ai", return_value="forklift"):
+        with patch("app.services.classification_service._run_standalone_ai", return_value=("forklift", "medium")):
             resolve_item_classification(db, cls.item_id, "Lift column formwork")
         event_types = [e.event_type for e in added_events if isinstance(e, ItemClassificationEvent)]
         assert "correction_flagged" in event_types
@@ -213,7 +213,7 @@ class TestResolveItemClassificationNoActive:
         db = self._setup_db_no_active()
         new_cls = _make_cls(asset_type="forklift", item_id=item_id)
         with patch("app.services.classification_service._persist_classification", return_value=new_cls):
-            with patch("app.services.classification_service._run_standalone_ai", return_value="forklift"):
+            with patch("app.services.classification_service._run_standalone_ai", return_value=("forklift", "medium")):
                 result = resolve_item_classification(db, item_id, "Unload site materials")
         assert result == "forklift"
 
@@ -281,14 +281,14 @@ class TestReconcileClassificationsOnMerge:
 
     def _setup_db(self, source_cls, target_cls):
         db = MagicMock()
-        call_count = {"n": 0}
+        # reconcile_classifications_on_merge calls filter_by twice in order:
+        # first for source_item_id, second for target_item_id.
+        results = [source_cls, target_cls]
+        iter_results = iter(results)
 
         def filter_by_side(**kwargs):
             m = MagicMock()
-            m.with_for_update.return_value.first.return_value = (
-                source_cls if call_count["n"] == 0 else target_cls
-            )
-            call_count["n"] += 1
+            m.with_for_update.return_value.first.return_value = next(iter_results, None)
             return m
 
         db.query.return_value.filter_by.side_effect = filter_by_side

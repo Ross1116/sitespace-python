@@ -72,6 +72,22 @@ ANOMALY_MAPPING_CHANGE_THRESHOLD: float = 0.5
 ANOMALY_ACTIVITY_DELTA_THRESHOLD: float = 0.3
 
 
+# ---------------------------------------------------------------------------
+# Classification maturity thresholds (Stage 4)
+# ---------------------------------------------------------------------------
+
+# Minimum number of upload confirmations (with zero corrections) before a
+# classification graduates from TENTATIVE to CONFIRMED.  At this tier the AI
+# re-check is skipped — the classification is considered reliable enough to
+# use without validation.  2 = seen on two separate uploads with no disagreement.
+CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS: int = 2
+
+# Minimum confirmations for the STABLE tier.  At STABLE the classification is
+# treated as a trusted baseline — AI never re-checks it.  5 = seen on five
+# separate uploads with no corrections.
+CLASSIFICATION_STABLE_MIN_CONFIRMATIONS: int = 5
+
+
 def get_active_asset_types(db: object) -> frozenset[str]:
     """Load active asset type codes from the DB taxonomy.
 

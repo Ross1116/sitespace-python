@@ -396,16 +396,17 @@ async def classify_assets(
 def classify_item_standalone(
     activity_name: str,
     valid_types: frozenset[str],
-) -> str | None:
+) -> tuple[str, str] | None:
     """
     Classify a single activity name against the active asset type taxonomy.
 
     Used by the classification service when neither an active classification nor
     a keyword match exists for an item.  Runs _classify_batch with a synthetic
-    single-item list via asyncio.run() so it works from sync callers.
+    single-item list in a dedicated thread so it is safe to call from within a
+    running async context (asyncio.run() cannot be used there).
 
-    Returns the resolved asset_type string, or None on failure / low-confidence
-    / AI disabled.  Never raises.
+    Returns (asset_type, confidence) for high/medium results, or None on
+    failure / low-confidence / AI disabled.  Never raises.
     """
     if not settings.AI_ENABLED:
         return None
@@ -414,7 +415,7 @@ def classify_item_standalone(
     batch = [{"id": fake_id, "name": activity_name}]
     system_prompt, _ = _build_classification_prompt(None)
 
-    async def _run() -> str | None:
+    async def _run() -> tuple[str, str] | None:
         client = _get_async_client()
         try:
             raw = await _classify_batch(batch, system_prompt, client)
@@ -427,11 +428,28 @@ def classify_item_standalone(
                 asset_type = str(item.get("asset_type") or "").strip().lower()
                 confidence = str(item.get("confidence") or "").strip().lower()
                 if asset_type in valid_types and confidence in {"high", "medium"}:
-                    return asset_type
+                    return asset_type, confidence
         return None
 
+    # Run the async helper in a dedicated thread with its own event loop so this
+    # sync function is safe to call from within a running async context (e.g. the
+    # process_programme pipeline).  asyncio.run() cannot be called when a loop is
+    # already running, so we isolate it completely.
+    import concurrent.futures
+
+    def _run_in_thread() -> tuple[str, str] | None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
     try:
-        return asyncio.run(_run())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_run_in_thread).result(
+                timeout=float(settings.AI_TIMEOUT_CLASSIFY) + 2
+            )
     except Exception as exc:
         logger.warning("classify_item_standalone failed: %s", exc)
         return None
