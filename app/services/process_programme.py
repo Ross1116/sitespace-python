@@ -52,6 +52,7 @@ from .ai_service import (
     score_row_confidence,
     suggest_subcontractor_asset_types,
 )
+from .classification_service import resolve_item_classification
 from .identity_service import normalize_activity_name, resolve_or_create_item
 from .lookahead_engine import calculate_lookahead_for_project
 
@@ -243,7 +244,7 @@ async def _run(upload_id: str, db: Session) -> None:
     #    Insert parents before children to satisfy the deferred FK constraint.
     #    The deferred FK means the constraint is checked at commit time, not per-row,
     #    but ordering is still safer for large batches.
-    inserted_rows, id_map = _insert_activities(upload_id, all_activity_items, db)
+    inserted_rows, id_map, resolved_cls_map = _insert_activities(upload_id, all_activity_items, db)
 
     # 8. Classify assets — only task rows generate demand; summary and milestone
     #    rows are excluded so they don't pollute asset-type suggestions.
@@ -325,6 +326,7 @@ async def _run(upload_id: str, db: Session) -> None:
                     upload_id=upload_id,
                     model_name=settings.AI_MODEL,
                     fallback_used=classification.fallback_used,
+                    resolved_classifications=resolved_cls_map,
                 )
         except Exception as exc:
             logger.warning(
@@ -398,10 +400,16 @@ def _insert_activities(
     upload_id: str,
     items: list[ActivityItem],
     db: Session,
-) -> tuple[int, dict[str, uuid.UUID]]:
+) -> tuple[int, dict[str, uuid.UUID], dict[str, str]]:
     """
-    Insert all activities. Returns (count, temp_id → real_uuid mapping).
-    The id_map is used by the classification step to pass real UUIDs to classify_assets().
+    Insert all activities.
+
+    Returns:
+        count               — number of rows inserted
+        id_map              — temp_id → real_uuid (for classify_assets call)
+        resolved_cls_map    — activity_id (str) → resolved asset_type (str)
+                              populated by Stage 4 classification resolution;
+                              used by _write_classifications to enforce consistency.
     """
     # Pass 1: allocate a per-row identity and a separate token lookup.
     # row_id_map prevents duplicate source tokens from overwriting earlier UUIDs.
@@ -414,8 +422,12 @@ def _insert_activities(
         token_map.setdefault(source_id, []).append(row_id_map[idx])
 
     # Pass 2: build rows with resolved parent links.
-    # Cache item-id resolution per upload so repeated activity names don't hit the DB twice.
+    # item_id_cache: normalised_name → item UUID (avoids duplicate DB hits per upload)
+    # classification_cache: item_id → resolved asset_type (persists classification once per item)
+    # resolved_cls_map: activity_id (str) → asset_type — returned to caller for _write_classifications
     item_id_cache: dict[str, uuid.UUID | None] = {}
+    classification_cache: dict[uuid.UUID, str | None] = {}
+    resolved_cls_map: dict[str, str] = {}
     db_rows: list[ProgrammeActivity] = []
     for sort_order, item in enumerate(items):
         source_id = _normalize_parent_token(item.id) or f"__idx_{sort_order}"
@@ -437,6 +449,17 @@ def _insert_activities(
         if cache_key not in item_id_cache:
             item_id_cache[cache_key] = resolve_or_create_item(db, item.name)
         item_id = item_id_cache[cache_key]
+
+        # Resolve and persist item-level classification (Stage 4).
+        # classification_cache ensures we only call resolve_item_classification once
+        # per unique item per upload, even when the same item appears many times.
+        if item_id is not None and item_id not in classification_cache:
+            classification_cache[item_id] = resolve_item_classification(
+                db, item_id, item.name, upload_id=uuid.UUID(str(upload_id)),
+            )
+        resolved_type = classification_cache.get(item_id) if item_id is not None else None
+        if resolved_type is not None:
+            resolved_cls_map[str(real_id)] = resolved_type
 
         db_rows.append(ProgrammeActivity(
             id=real_id,
@@ -464,7 +487,7 @@ def _insert_activities(
     for token, uuids in token_map.items():
         if uuids:
             id_map[token] = uuids[0]
-    return len(db_rows), id_map
+    return len(db_rows), id_map, resolved_cls_map
 
 
 def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
@@ -816,6 +839,7 @@ def _write_classifications(
     upload_id: str | None = None,
     model_name: str | None = None,
     fallback_used: bool | None = None,
+    resolved_classifications: dict[str, str] | None = None,
 ) -> None:
     """
     Persist classification output.
@@ -854,11 +878,26 @@ def _write_classifications(
 
         auto_commit = confidence in {"high", "medium"}
 
+        # If the item-level classification resolved to a specific type, it wins
+        # over the raw AI output for the mapping row (consistency rule §17.13).
+        # The AISuggestionLog always records the raw AI output for audit purposes.
+        act_id_str = str(item.activity_id)
+        resolved_type = (resolved_classifications or {}).get(act_id_str)
+        if resolved_type and auto_commit:
+            if resolved_type != normalised_type:
+                logger.debug(
+                    "Classification override for activity=%s: AI=%s → resolved=%s",
+                    item.activity_id, normalised_type, resolved_type,
+                )
+            mapping_asset_type = resolved_type
+        else:
+            mapping_asset_type = item.asset_type if auto_commit else None
+
         mapping_rows.append(
             ActivityAssetMapping(
                 id=uuid.uuid4(),
                 programme_activity_id=item.activity_id,
-                asset_type=item.asset_type if auto_commit else None,
+                asset_type=mapping_asset_type,
                 confidence=confidence,
                 source=_normalize_mapping_source(item.source),
                 auto_committed=auto_commit,

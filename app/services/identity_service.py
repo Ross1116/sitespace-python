@@ -227,6 +227,16 @@ def merge_items(
     db.add(event)
     db.flush()
 
+    # Reconcile classification memory — runs inside the same transaction.
+    try:
+        from .classification_service import reconcile_classifications_on_merge
+        reconcile_classifications_on_merge(db, source_item_id, target_item_id)
+    except Exception as exc:
+        logger.warning(
+            "Classification reconciliation failed for merge %s→%s: %s — merge itself succeeded",
+            source_item_id, target_item_id, exc,
+        )
+
     logger.info(
         "Merged item %s ('%s') into %s ('%s') by user %s",
         source_item_id, source.display_name,

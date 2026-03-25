@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -390,6 +391,50 @@ async def classify_assets(
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
         return _classify_assets_fallback(activities, project_assets=project_assets)
+
+
+def classify_item_standalone(
+    activity_name: str,
+    valid_types: frozenset[str],
+) -> str | None:
+    """
+    Classify a single activity name against the active asset type taxonomy.
+
+    Used by the classification service when neither an active classification nor
+    a keyword match exists for an item.  Runs _classify_batch with a synthetic
+    single-item list via asyncio.run() so it works from sync callers.
+
+    Returns the resolved asset_type string, or None on failure / low-confidence
+    / AI disabled.  Never raises.
+    """
+    if not settings.AI_ENABLED:
+        return None
+
+    fake_id = str(uuid.uuid4())
+    batch = [{"id": fake_id, "name": activity_name}]
+    system_prompt, _ = _build_classification_prompt(None)
+
+    async def _run() -> str | None:
+        client = _get_async_client()
+        try:
+            raw = await _classify_batch(batch, system_prompt, client)
+        except Exception as exc:
+            logger.warning("classify_item_standalone AI call failed: %s", exc)
+            return None
+
+        for item in raw.get("classifications") or []:
+            if str(item.get("id")) == fake_id:
+                asset_type = str(item.get("asset_type") or "").strip().lower()
+                confidence = str(item.get("confidence") or "").strip().lower()
+                if asset_type in valid_types and confidence in {"high", "medium"}:
+                    return asset_type
+        return None
+
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:
+        logger.warning("classify_item_standalone failed: %s", exc)
+        return None
 
 
 def suggest_subcontractor_asset_types(
