@@ -18,9 +18,6 @@ class AssetBase(BaseSchema):
         validation_alias=AliasChoices('type', 'asset_type')
     )
     description: Optional[str] = None
-    location: Optional[str] = Field(None, max_length=255)
-    poc: Optional[str] = Field(None, max_length=255)
-    usage_instructions: Optional[str] = None
     purchase_date: Optional[date] = None
     purchase_value: Optional[Decimal] = Field(None, ge=0)
     current_value: Optional[Decimal] = Field(None, ge=0)
@@ -80,9 +77,6 @@ class AssetUpdate(BaseSchema):
         validation_alias=AliasChoices('type', 'asset_type')
     )
     description: Optional[str] = None
-    location: Optional[str] = Field(None, max_length=255)
-    poc: Optional[str] = Field(None, max_length=255)
-    usage_instructions: Optional[str] = None
     current_value: Optional[Decimal] = Field(None, ge=0)
     pending_booking_capacity: Optional[int] = Field(None, ge=1, le=20)
     status: Optional[AssetStatus] = None
