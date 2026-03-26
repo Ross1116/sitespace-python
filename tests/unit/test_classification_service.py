@@ -19,6 +19,7 @@ from app.services.classification_service import (
     TIER_PERMANENT,
     TIER_STABLE,
     TIER_TENTATIVE,
+    ClassificationConflictError,
     maturity_tier,
     _keyword_scan,
     apply_manual_classification,
@@ -253,6 +254,30 @@ class TestResolveItemClassificationNoActive:
         result = resolve_item_classification(db, uuid.uuid4(), "Install crane")
         assert result is None
 
+    def test_merged_item_returns_none(self):
+        # Regression: Step 0 guard — merged items must not have classifications
+        # created on them; resolve should return None immediately.
+        db = _make_db()
+        merged_item = MagicMock()
+        merged_item.identity_status = "merged"
+        db.get.return_value = merged_item
+        with patch("app.services.classification_service._run_standalone_ai") as mock_ai:
+            result = resolve_item_classification(db, uuid.uuid4(), "Install crane panels")
+        assert result is None
+        mock_ai.assert_not_called()
+
+    def test_classification_conflict_returns_winner_type(self):
+        # When _persist_classification loses a concurrent race and returns the
+        # winner (raise_on_conflict=False default), the pipeline should transparently
+        # return the winner's asset_type — no exception, no None.
+        item_id = uuid.uuid4()
+        db = self._setup_db_no_active()
+        winner = _make_cls(asset_type="hoist", item_id=item_id)
+        with patch("app.services.classification_service._persist_classification", return_value=winner), \
+             patch("app.core.constants.get_active_asset_types", return_value=frozenset({"crane", "hoist"})):
+            result = resolve_item_classification(db, item_id, "Install hoist")
+        assert result == "hoist"
+
 
 # ─── apply_manual_classification ──────────────────────────────────────────────
 
@@ -271,6 +296,14 @@ class TestApplyManualClassification:
     def test_raises_lookup_error_when_item_missing(self):
         db, _ = self._setup_db(item_exists=False)
         with pytest.raises(LookupError, match="not found"):
+            apply_manual_classification(db, uuid.uuid4(), "crane", uuid.uuid4())
+
+    def test_raises_lookup_error_when_item_merged(self):
+        # Regression: merged items must be rejected so classifications are never
+        # created on non-canonical item IDs.
+        db, _ = self._setup_db(item_exists=True)
+        db.get.return_value.identity_status = "merged"
+        with pytest.raises(LookupError, match="merged"):
             apply_manual_classification(db, uuid.uuid4(), "crane", uuid.uuid4())
 
     def test_raises_value_error_when_type_not_in_taxonomy(self):
@@ -296,6 +329,34 @@ class TestApplyManualClassification:
             with patch("app.services.classification_service._persist_classification", return_value=new_cls):
                 result = apply_manual_classification(db, item_id, "crane", user_id)
         assert result is new_cls
+
+    def test_conflict_retries_and_succeeds(self):
+        # First _persist_classification call loses the concurrent race.
+        # apply_manual_classification retries; the second call succeeds and
+        # the manual classification is returned — no error surfaced to the caller.
+        db, type_mock = self._setup_db()
+        item_id = uuid.uuid4()
+        manual_cls = _make_cls(source="manual", confidence="high", asset_type="crane", item_id=item_id)
+        concurrent_winner = _make_cls(source="ai", asset_type="hoist", item_id=item_id)
+        side_effects = [ClassificationConflictError(concurrent_winner), manual_cls]
+        db.query.return_value.filter_by.return_value.first.return_value = None  # no event to patch
+        with patch("app.services.classification_service.asset_type_crud.get_by_code", return_value=type_mock):
+            with patch("app.services.classification_service._persist_classification",
+                       side_effect=side_effects) as mock_persist:
+                result = apply_manual_classification(db, item_id, "crane", uuid.uuid4())
+        assert result is manual_cls
+        assert mock_persist.call_count == 2
+
+    def test_conflict_error_propagates_on_double_race(self):
+        # If both retry attempts race (extreme edge case: three concurrent writes),
+        # ClassificationConflictError propagates so the API layer returns a 500.
+        db, type_mock = self._setup_db()
+        winner = _make_cls(source="keyword", asset_type="hoist")
+        with patch("app.services.classification_service.asset_type_crud.get_by_code", return_value=type_mock):
+            with patch("app.services.classification_service._persist_classification",
+                       side_effect=ClassificationConflictError(winner)):
+                with pytest.raises(ClassificationConflictError):
+                    apply_manual_classification(db, uuid.uuid4(), "crane", uuid.uuid4())
 
 
 # ─── reconcile_classifications_on_merge ───────────────────────────────────────

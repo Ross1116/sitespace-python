@@ -32,6 +32,24 @@ from ..models.item_identity import Item, ItemClassification, ItemClassificationE
 
 logger = logging.getLogger(__name__)
 
+
+class ClassificationConflictError(Exception):
+    """
+    Raised by _persist_classification when a concurrent insert wins the race
+    on the unique active-row constraint.
+
+    Carries the winning row so callers can decide whether to surface the
+    concurrent result (pipeline path) or propagate the conflict as an error
+    (manual-override path where two concurrent writes indicate a client bug).
+    """
+    def __init__(self, winner: "ItemClassification") -> None:
+        super().__init__(
+            f"Concurrent classification insert for item {winner.item_id}: "
+            f"winner is {winner.asset_type!r} (source={winner.source!r})"
+        )
+        self.winner = winner
+
+
 # Maturity tiers (from least to most stable).
 TIER_TENTATIVE = "tentative"
 TIER_CONFIRMED = "confirmed"
@@ -96,13 +114,20 @@ def _persist_classification(
     source: str,
     upload_id: Optional[uuid.UUID] = None,
     performed_by_user_id: Optional[uuid.UUID] = None,
+    raise_on_conflict: bool = False,
 ) -> ItemClassification:
     """
     Deactivate any existing active classification for *item_id*, then insert a
     new active row.  All writes are inside a savepoint so the outer transaction
     is not poisoned on IntegrityError.
 
-    Returns the newly-inserted ItemClassification.
+    Returns the newly-inserted ItemClassification, or the concurrent winner when
+    a race is lost and raise_on_conflict=False (the default for pipeline callers).
+
+    raise_on_conflict=True:
+        Raises ClassificationConflictError(winner) instead of returning the
+        winner.  Use this for interactive callers (apply_manual_classification)
+        where silently returning someone else's row would be wrong.
     """
     sp = db.begin_nested()
     try:
@@ -162,14 +187,15 @@ def _persist_classification(
     except IntegrityError:
         sp.rollback()
         # A concurrent insert won the unique-active-row constraint race.
-        # Re-query to return whichever row was committed so the caller
-        # receives the actual persisted classification instead of an error.
+        # Re-query to find whichever row the winner committed.
         winner = (
             db.query(ItemClassification)
             .filter_by(item_id=item_id, is_active=True)
             .first()
         )
         if winner is not None:
+            if raise_on_conflict:
+                raise ClassificationConflictError(winner)
             return winner
         raise
 
@@ -381,14 +407,35 @@ def apply_manual_classification(
     if db_type is None or not db_type.is_active:
         raise ValueError(f"Asset type '{asset_type}' is not in the active taxonomy")
 
-    new_cls = _persist_classification(
-        db,
-        item_id,
-        asset_type,
-        confidence="high",
-        source="manual",
-        performed_by_user_id=performed_by_user_id,
-    )
+    try:
+        new_cls = _persist_classification(
+            db,
+            item_id,
+            asset_type,
+            confidence="high",
+            source="manual",
+            raise_on_conflict=True,
+            performed_by_user_id=performed_by_user_id,
+        )
+    except ClassificationConflictError:
+        # A concurrent pipeline insert won the race on the unique-active-row
+        # constraint.  That row is now the active classification, so a second
+        # attempt will find it, lock it, deactivate it, and install the manual
+        # override correctly.  Manual overrides must always win.
+        logger.debug(
+            "Item %s: concurrent classification race on manual override — retrying",
+            item_id,
+        )
+        new_cls = _persist_classification(
+            db,
+            item_id,
+            asset_type,
+            confidence="high",
+            source="manual",
+            raise_on_conflict=True,
+            performed_by_user_id=performed_by_user_id,
+        )
+
     # Replace the 'created' event with a 'manual_override' event for clarity.
     # The deactivation event for the previous row was already written by
     # _persist_classification; we just need to fix the event_type of the new row's event.
