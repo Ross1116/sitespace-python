@@ -32,7 +32,7 @@ from ...core.constants import (
     UPCOMING_BOOKINGS_MAX_DAYS_AHEAD,
 )
 from ...schemas.base import MessageResponse
-from ...schemas.enums import BookingStatus, TradeResolutionStatus, UserRole
+from ...schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
@@ -365,10 +365,10 @@ def get_subcontractor(
             project_location=project.location,
             assigned_date=project.created_at.date(),
             hourly_rate=None,
-            is_active=project.status == "active" or project.status is None,
+            is_active=project.status == ProjectStatus.ACTIVE.value or project.status is None,
         )
         for project in subcontractor.assigned_projects
-        if project.status == "active" or project.status is None
+        if project.status == ProjectStatus.ACTIVE.value or project.status is None
     ]
     
     return SubcontractorDetailResponse(

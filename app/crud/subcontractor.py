@@ -185,8 +185,9 @@ def update_subcontractor(
     # Update only provided fields
     update_data = subcontractor_update.dict(exclude_unset=True)
     
-    if "email" in update_data and update_data["email"]:
-        update_data["email"] = _normalize_email(update_data["email"])
+    email = update_data.get("email")
+    if email:
+        update_data["email"] = _normalize_email(email)
 
     normalized_email = update_data.get("email", db_subcontractor.email)
 

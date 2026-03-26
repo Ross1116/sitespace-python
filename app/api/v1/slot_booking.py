@@ -286,8 +286,8 @@ def create_booking(
     except ValueError as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create booking"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         ) from e
     except Exception as e:
         db.rollback()
@@ -805,12 +805,12 @@ def update_booking(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.details if e.details is not None else str(e)
         ) from e
-    except Exception:
+    except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update booking"
-        )
+        ) from e
 
 
 @router.patch("/{booking_id}/status", response_model=BookingDetailResponse)
@@ -1099,8 +1099,8 @@ def duplicate_booking(
     except ValueError as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to duplicate booking"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         ) from e
     except Exception as e:
         db.rollback()

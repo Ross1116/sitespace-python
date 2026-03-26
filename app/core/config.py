@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     export_files_server_path: str = Field("getFile", validation_alias="EXPORT_FILES_SERVER_PATH")
 
     # Server
-    host: str = Field("0.0.0.0", validation_alias="HOST")
+    # Bind locally by default; container/prod deployments should set HOST=0.0.0.0 explicitly.
+    host: str = Field("127.0.0.1", validation_alias="HOST")
     port: int = Field(8080, validation_alias="PORT")
     debug: bool = Field(False, validation_alias="DEBUG")
 

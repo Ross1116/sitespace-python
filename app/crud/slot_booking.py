@@ -394,7 +394,7 @@ def create_bulk_bookings(
     # Validate base entities exist
     project = db.query(SiteProject).filter(SiteProject.id == bulk_data.project_id).first()
     if not project:
-        raise ValueError(f"Project with id {bulk_data.project_id} not found")
+        raise BookingValidationError(f"Project with id {bulk_data.project_id} not found")
     
     # Determine manager_id, subcontractor_id, and status based on role
     manager_id, subcontractor_id, booking_status = _resolve_booking_actor(
