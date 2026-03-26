@@ -286,15 +286,19 @@ def upgrade() -> None:
 
     op.execute(
         """
-        DELETE FROM activity_work_profiles awp
-        USING (
-            SELECT activity_id, MIN(id) AS keep_id
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY activity_id
+                    ORDER BY created_at DESC NULLS LAST, id ASC
+                ) AS rn
             FROM activity_work_profiles
-            GROUP BY activity_id
-            HAVING COUNT(*) > 1
-        ) duplicates
-        WHERE awp.activity_id = duplicates.activity_id
-          AND awp.id <> duplicates.keep_id
+        )
+        DELETE FROM activity_work_profiles awp
+        USING ranked
+        WHERE awp.id = ranked.id
+          AND ranked.rn > 1
         """
     )
     op.create_unique_constraint(
