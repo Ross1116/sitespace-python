@@ -19,7 +19,6 @@ from ..models.lookahead import (
     LookaheadRow as LookaheadRowModel,
     LookaheadSnapshot,
     Notification,
-    ProjectAlertPolicy,
     SubcontractorAssetTypeAssignment,
 )
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
@@ -39,7 +38,8 @@ from ..core.constants import (
     get_max_hours_for_type,
 )
 from .ai_service import normalize_asset_type, suggest_subcontractor_asset_types
-from .work_profile_service import build_default_profile, derive_distribution, _uniform_normalized
+from .lookahead_policy_service import ensure_project_alert_policy
+from .work_profile_service import build_compressed_context, build_default_profile, derive_distribution
 
 logger = logging.getLogger(__name__)
 
@@ -291,24 +291,26 @@ def _compute_demand_by_week_asset(
         low_confidence = bool(activity.row_confidence == "low")
         repaired = False
         missing_profile = profile is None
+        compressed_context = build_compressed_context(
+            activity.name,
+            level_name=activity.level_name,
+            zone_name=activity.zone_name,
+        )
+        _fallback_total, fallback_distribution, fallback_norm = build_default_profile(
+            mapping.asset_type,
+            len(work_dates),
+            max_hours_per_day,
+            compressed_context=compressed_context,
+        )
 
         if profile is None:
-            fallback_total, _, _ = build_default_profile(
-                mapping.asset_type,
-                len(work_dates),
-                max_hours_per_day,
-            )
-            distribution = derive_distribution(
-                _uniform_normalized(len(work_dates)),
-                fallback_total,
-                max_hours_per_day=max_hours_per_day,
-            )
+            distribution = fallback_distribution
             low_confidence = True
         else:
             profile_distribution = [float(value) for value in list(profile.distribution_json)]
             if len(profile_distribution) != len(work_dates):
                 distribution = derive_distribution(
-                    _uniform_normalized(len(work_dates)),
+                    fallback_norm,
                     float(profile.total_hours),
                     max_hours_per_day=max_hours_per_day,
                 )
@@ -316,7 +318,7 @@ def _compute_demand_by_week_asset(
                 repaired = True
             elif any(value > max_hours_per_day for value in profile_distribution):
                 distribution = derive_distribution(
-                    _uniform_normalized(len(work_dates)),
+                    fallback_norm,
                     float(profile.total_hours),
                     max_hours_per_day=max_hours_per_day,
                 )
@@ -418,19 +420,6 @@ def _compute_booked_by_week_asset(
     return booked_by_week_asset
 
 
-def _ensure_project_alert_policy(db: Session, project_id: uuid.UUID) -> ProjectAlertPolicy:
-    policy = (
-        db.query(ProjectAlertPolicy)
-        .filter(ProjectAlertPolicy.project_id == project_id)
-        .one_or_none()
-    )
-    if policy is None:
-        policy = ProjectAlertPolicy(project_id=project_id)
-        db.add(policy)
-        db.flush()
-    return policy
-
-
 def _severity_score(demand_hours: float, gap_hours: float) -> float:
     gap_ratio = (gap_hours / demand_hours) if demand_hours > 0 else 0.0
     return round((1.0 * gap_hours) + (16.0 * gap_ratio) + (0.25 * demand_hours), 4)
@@ -477,19 +466,24 @@ def _upsert_snapshot_with_rows(
         .filter(LookaheadRowModel.snapshot_id == snapshot.id)
         .delete(synchronize_session=False)
     )
-    for row in row_payloads:
-        db.add(
-            LookaheadRowModel(
-                snapshot_id=snapshot.id,
-                project_id=project_id,
-                week_start=row["week_start"],
-                asset_type=row["asset_type"],
-                demand_hours=row["demand_hours"],
-                booked_hours=row["booked_hours"],
-                gap_hours=row["gap_hours"],
-                is_anomalous=row["is_anomalous"],
-                anomaly_flags_json=row["anomaly_flags_json"],
-            )
+    if row_payloads:
+        db.bulk_insert_mappings(
+            LookaheadRowModel,
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "snapshot_id": snapshot.id,
+                    "project_id": project_id,
+                    "week_start": row["week_start"],
+                    "asset_type": row["asset_type"],
+                    "demand_hours": row["demand_hours"],
+                    "booked_hours": row["booked_hours"],
+                    "gap_hours": row["gap_hours"],
+                    "is_anomalous": row["is_anomalous"],
+                    "anomaly_flags_json": row["anomaly_flags_json"],
+                }
+                for row in row_payloads
+            ],
         )
     db.flush()
     return snapshot
@@ -503,7 +497,7 @@ def _sync_thresholded_notifications(
     row_payloads: list[dict[str, object]],
     suppress_external: bool,
 ) -> None:
-    policy = _ensure_project_alert_policy(db, project_id)
+    policy = ensure_project_alert_policy(db, project_id)
     assignments = (
         db.query(SubcontractorAssetTypeAssignment)
         .filter(
@@ -592,7 +586,6 @@ def _sync_thresholded_notifications(
         existing_row = existing_by_key.get(row["key"])
         if existing_row is not None:
             existing_row.severity_score = row["severity_score"]
-            existing_row.week_start = row["week_start"]
             continue
         db.add(
             Notification(

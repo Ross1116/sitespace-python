@@ -69,6 +69,13 @@ def upgrade() -> None:
         "notifications",
         sa.Column("severity_score", sa.Numeric(10, 4), nullable=True),
     )
+    op.execute(
+        """
+        ALTER TABLE notifications
+        ADD CONSTRAINT ck_notifications_status_stage5
+        CHECK (status IN ('pending', 'sent', 'acted', 'cancelled', 'failed'))
+        """
+    )
     op.create_index(
         "ix_notifications_project_week_asset",
         "notifications",
@@ -277,6 +284,19 @@ def upgrade() -> None:
     op.create_index("ix_lookahead_rows_project_id", "lookahead_rows", ["project_id"])
     op.create_index("ix_lookahead_rows_week_start", "lookahead_rows", ["week_start"])
 
+    op.execute(
+        """
+        DELETE FROM activity_work_profiles awp
+        USING (
+            SELECT activity_id, MIN(id) AS keep_id
+            FROM activity_work_profiles
+            GROUP BY activity_id
+            HAVING COUNT(*) > 1
+        ) duplicates
+        WHERE awp.activity_id = duplicates.activity_id
+          AND awp.id <> duplicates.keep_id
+        """
+    )
     op.create_unique_constraint(
         "uq_activity_work_profiles_activity_id",
         "activity_work_profiles",
@@ -319,6 +339,7 @@ def downgrade() -> None:
 
     op.drop_index("ix_notifications_active_lookahead", table_name="notifications")
     op.drop_index("ix_notifications_project_week_asset", table_name="notifications")
+    op.execute("ALTER TABLE notifications DROP CONSTRAINT IF EXISTS ck_notifications_status_stage5")
     op.drop_column("notifications", "severity_score")
     op.drop_column("notifications", "week_start")
 

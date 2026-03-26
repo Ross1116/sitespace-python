@@ -1,24 +1,9 @@
 """
 Work profile service — Stage 5.
 
-Manages the work profile cache for construction programme activities.
-
-Architecture:
-  1. Context builder      — fixed-schema semantic context extraction from hierarchy
-  2. Context key          — deterministic SHA-256 cache key per (item, asset, duration, context)
-  3. Cache lookup         — project-local item_context_profiles (global tier deferred to Stage 10)
-  4. Maturity evaluation  — TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL
-  5. Bayesian update      — Normal-Normal conjugate posterior update on each cache encounter
-  6. Hours finalization   — manual > trusted baseline > bounded AI proposal
-  7. Hours quantization   — round to 0.5-hour operational unit
-  8. Stage B validation   — per-day distribution bucket cap (must not exceed max_hours_per_day)
-  9. Stage D validation   — final profile invariants
-  10. Cache write          — persist / update item_context_profiles with full evidence tracking
-  11. Profile write        — persist activity_work_profiles
-
-The timeout-aware AI helper is available via generate_work_profile_ai(), but
-resolve_work_profile() still uses the conservative cache/baseline/default path
-until the second-half AI flow is enabled.
+Manages deterministic work-profile context extraction, cache maturity,
+fallback/default estimation, AI proposal validation, and activity-level
+materialization for construction programme activities.
 """
 
 from __future__ import annotations
@@ -810,42 +795,288 @@ def redistribute_capped_distribution(
 # 9. Default / fallback profile builder
 # ---------------------------------------------------------------------------
 
-_FRONT_LOADED_WEIGHTS: dict[int, list[float]] = {
-    1: [1.0],
-    2: [0.6, 0.4],
-    3: [0.4, 0.35, 0.25],
-    4: [0.35, 0.30, 0.20, 0.15],
-    5: [0.30, 0.25, 0.20, 0.15, 0.10],
+_FALLBACK_FAMILY_SHORT_WEIGHTS: dict[str, dict[int, list[float]]] = {
+    "steady": {
+        1: [1.0],
+        2: [0.50, 0.50],
+        3: [0.34, 0.33, 0.33],
+        4: [0.26, 0.25, 0.25, 0.24],
+        5: [0.21, 0.20, 0.20, 0.20, 0.19],
+    },
+    "steady_front": {
+        1: [1.0],
+        2: [0.53, 0.47],
+        3: [0.38, 0.33, 0.29],
+        4: [0.30, 0.27, 0.23, 0.20],
+        5: [0.25, 0.22, 0.20, 0.18, 0.15],
+    },
+    "front_loaded": {
+        1: [1.0],
+        2: [0.60, 0.40],
+        3: [0.45, 0.35, 0.20],
+        4: [0.35, 0.30, 0.20, 0.15],
+        5: [0.30, 0.25, 0.20, 0.15, 0.10],
+    },
+    "center_peak": {
+        1: [1.0],
+        2: [0.45, 0.55],
+        3: [0.25, 0.50, 0.25],
+        4: [0.18, 0.32, 0.30, 0.20],
+        5: [0.12, 0.22, 0.34, 0.20, 0.12],
+    },
+    "event_peak": {
+        1: [1.0],
+        2: [0.35, 0.65],
+        3: [0.15, 0.70, 0.15],
+        4: [0.10, 0.30, 0.45, 0.15],
+        5: [0.08, 0.17, 0.45, 0.20, 0.10],
+    },
+    "back_loaded": {
+        1: [1.0],
+        2: [0.40, 0.60],
+        3: [0.20, 0.35, 0.45],
+        4: [0.15, 0.20, 0.30, 0.35],
+        5: [0.10, 0.15, 0.20, 0.25, 0.30],
+    },
 }
+
+_ASSET_FALLBACK_PRIORS: dict[str, dict[str, object]] = {
+    "crane": {
+        "utilisation_fraction": 0.50,
+        "shape_family": "front_loaded",
+        "guidance": "Crane demand is usually lift-intensive and concentrated around install windows.",
+    },
+    "hoist": {
+        "utilisation_fraction": 0.50,
+        "shape_family": "steady",
+        "guidance": "Hoist demand behaves like steady logistics support over active days.",
+    },
+    "loading_bay": {
+        "utilisation_fraction": 0.60,
+        "shape_family": "steady",
+        "guidance": "Loading-bay demand is logistics-led and typically spread across the active window.",
+    },
+    "ewp": {
+        "utilisation_fraction": 0.45,
+        "shape_family": "center_peak",
+        "guidance": "EWP demand usually builds into the main access and installation window.",
+    },
+    "concrete_pump": {
+        "utilisation_fraction": 0.25,
+        "shape_family": "event_peak",
+        "guidance": "Concrete-pump demand should cluster around pour days rather than remain uniform.",
+    },
+    "excavator": {
+        "utilisation_fraction": 0.65,
+        "shape_family": "steady_front",
+        "guidance": "Excavator demand is typically continuous while the workfront is open.",
+    },
+    "forklift": {
+        "utilisation_fraction": 0.45,
+        "shape_family": "steady",
+        "guidance": "Forklift demand is moderate, logistics-driven, and usually fairly even.",
+    },
+    "telehandler": {
+        "utilisation_fraction": 0.45,
+        "shape_family": "steady_front",
+        "guidance": "Telehandler demand is moderate and often slightly front-loaded during lift windows.",
+    },
+    "compactor": {
+        "utilisation_fraction": 0.40,
+        "shape_family": "back_loaded",
+        "guidance": "Compactor demand often lands later after preparation or placement is complete.",
+    },
+    "other": {
+        "utilisation_fraction": 0.35,
+        "shape_family": "steady",
+        "guidance": "Unknown plant should default to a conservative, moderately even profile.",
+    },
+}
+
+
+def _linear_weight_profile(duration_days: int, start: float, end: float) -> list[float]:
+    if duration_days <= 0:
+        return []
+    if duration_days == 1:
+        return [1.0]
+    step = (end - start) / (duration_days - 1)
+    raw = [start + (step * i) for i in range(duration_days)]
+    return derive_normalized_distribution(raw)
+
+
+def _peaked_weight_profile(
+    duration_days: int,
+    *,
+    base: float,
+    amplitude: float,
+) -> list[float]:
+    if duration_days <= 0:
+        return []
+    if duration_days == 1:
+        return [1.0]
+    peak_idx = duration_days // 2
+    sigma = max(duration_days / 5.0, 0.9)
+    raw = []
+    for idx in range(duration_days):
+        distance = (idx - peak_idx) / sigma
+        raw.append(base + amplitude * math.exp(-0.5 * distance * distance))
+    return derive_normalized_distribution(raw)
+
+
+def _fallback_shape_weights(shape_family: str, duration_days: int) -> list[float]:
+    short = _FALLBACK_FAMILY_SHORT_WEIGHTS.get(shape_family, {})
+    if duration_days in short:
+        return derive_normalized_distribution(short[duration_days])
+
+    if shape_family == "steady":
+        return _uniform_normalized(duration_days)
+    if shape_family == "steady_front":
+        return _linear_weight_profile(duration_days, 1.15, 0.85)
+    if shape_family == "front_loaded":
+        return _linear_weight_profile(duration_days, 1.55, 0.45)
+    if shape_family == "back_loaded":
+        return _linear_weight_profile(duration_days, 0.45, 1.55)
+    if shape_family == "center_peak":
+        return _peaked_weight_profile(duration_days, base=0.75, amplitude=1.15)
+    if shape_family == "event_peak":
+        return _peaked_weight_profile(duration_days, base=0.25, amplitude=2.00)
+    return _uniform_normalized(duration_days)
+
+
+def _build_default_profile_prior(
+    asset_type: str,
+    duration_days: int,
+    max_hours_per_day: float,
+    compressed_context: Optional[dict] = None,
+) -> dict[str, object]:
+    duration_days = max(int(duration_days or 0), 1)
+    compressed_context = compressed_context or {}
+    phase = str(compressed_context.get("phase") or "unknown")
+    spatial_type = str(compressed_context.get("spatial_type") or "unknown")
+    area_type = str(compressed_context.get("area_type") or "unknown")
+    work_type = str(compressed_context.get("work_type") or "unknown")
+
+    if asset_type == "none":
+        zeros = [0.0] * duration_days
+        return {
+            "asset_type": asset_type,
+            "shape_family": "zero",
+            "utilisation_fraction": 0.0,
+            "default_total_hours": 0.0,
+            "normalized_distribution": zeros,
+            "guidance": "Milestone and non-productive rows carry no bookable asset demand.",
+        }
+
+    base_prior = dict(_ASSET_FALLBACK_PRIORS.get(asset_type, _ASSET_FALLBACK_PRIORS["other"]))
+    utilisation = float(base_prior["utilisation_fraction"])
+    shape_family = str(base_prior["shape_family"])
+    guidance_parts = [str(base_prior["guidance"])]
+    inspection_like = work_type == "inspection"
+
+    if inspection_like:
+        utilisation = min(utilisation, 0.15)
+        shape_family = "steady"
+        guidance_parts.append("Inspection and test rows usually consume only light plant time.")
+
+    if not inspection_like:
+        if asset_type == "crane":
+            if phase == "structure":
+                utilisation += 0.10
+                shape_family = "front_loaded"
+                guidance_parts.append("Structural crane work usually peaks during heavy lift and install windows.")
+            elif phase == "facade":
+                utilisation += 0.05
+                shape_family = "center_peak"
+                guidance_parts.append("Facade lift work usually ramps into the main install window.")
+            if work_type in {"slab", "column", "wall", "core", "facade"}:
+                utilisation += 0.05
+        elif asset_type == "hoist":
+            if phase in {"fitout", "services"}:
+                utilisation += 0.05
+                guidance_parts.append("Fitout and services hoist demand is usually steady day-to-day logistics.")
+            elif phase == "structure":
+                utilisation -= 0.05
+        elif asset_type == "loading_bay":
+            if phase in {"fitout", "services", "external", "prelims"}:
+                utilisation += 0.05
+        elif asset_type == "ewp":
+            if phase in {"facade", "services", "external"} or work_type in {"facade", "services"}:
+                utilisation += 0.05
+                shape_family = "center_peak"
+        elif asset_type == "concrete_pump":
+            shape_family = "event_peak"
+            if phase == "structure":
+                utilisation += 0.05
+            if work_type in {"slab", "column", "wall", "core"}:
+                utilisation += 0.05
+            guidance_parts.append("Pump work should stay concentrated around pour days, not spread evenly.")
+        elif asset_type == "excavator":
+            if phase in {"external", "prelims"} or area_type == "external":
+                utilisation += 0.05
+                shape_family = "steady_front"
+        elif asset_type == "forklift":
+            if phase in {"fitout", "services", "prelims"}:
+                utilisation += 0.05
+        elif asset_type == "telehandler":
+            if phase in {"structure", "external"}:
+                utilisation += 0.05
+                shape_family = "steady_front"
+        elif asset_type == "compactor":
+            shape_family = "back_loaded"
+            if phase == "external" or area_type == "external":
+                utilisation += 0.10
+                guidance_parts.append("Compaction usually lands later in the activity once material is placed.")
+        elif asset_type == "other":
+            if phase in {"structure", "services", "external"}:
+                utilisation += 0.05
+
+        if area_type == "roof" and asset_type in {"crane", "ewp"}:
+            utilisation += 0.05
+    if spatial_type == "room" and asset_type in {"loading_bay", "hoist"}:
+        utilisation -= 0.05
+        guidance_parts.append("Room-scale work usually uses logistics assets less continuously.")
+
+    utilisation = max(0.15, min(utilisation, 0.75))
+    total_hours = quantize_hours(utilisation * max_hours_per_day * duration_days)
+    if total_hours <= 0:
+        total_hours = WORK_PROFILE_MIN_HOURS
+    normalized_distribution = _fallback_shape_weights(shape_family, duration_days)
+    guidance = " ".join(dict.fromkeys(guidance_parts))
+
+    return {
+        "asset_type": asset_type,
+        "shape_family": shape_family,
+        "utilisation_fraction": round(utilisation, 2),
+        "default_total_hours": total_hours,
+        "normalized_distribution": normalized_distribution,
+        "guidance": guidance,
+    }
 
 
 def build_default_profile(
     asset_type: str,
     duration_days: int,
     max_hours_per_day: float,
+    compressed_context: Optional[dict] = None,
 ) -> tuple[float, list[float], list[float]]:
     """
-    Build a minimal fallback work profile when AI is unavailable or disabled.
+    Build a conservative but construction-realistic fallback work profile.
 
     Returns (total_hours, distribution, normalized_distribution).
 
-    For 'none': all zeros.
-    For others: total_hours = 0.5 × max_hours_per_day × duration_days (half utilisation),
-    with a front-loaded normalized distribution for short tasks or uniform for longer ones.
+    The fallback is asset-specific and context-aware:
+      - logistics assets default to steadier spreads
+      - event assets (for example concrete pumps) cluster around peak days
+      - structural lift assets tend to front-load into install windows
     """
-    if asset_type == "none":
-        zeros = [0.0] * max(duration_days, 1)
-        return 0.0, zeros, zeros
-
-    # Half average utilisation as a conservative default
-    raw_total = 0.5 * max_hours_per_day * duration_days
-    total_hours = quantize_hours(raw_total)
-
-    if duration_days in _FRONT_LOADED_WEIGHTS:
-        norm_dist = _FRONT_LOADED_WEIGHTS[duration_days]
-    else:
-        norm_dist = _uniform_normalized(duration_days)
-
+    prior = _build_default_profile_prior(
+        asset_type,
+        duration_days,
+        max_hours_per_day,
+        compressed_context=compressed_context,
+    )
+    total_hours = float(prior["default_total_hours"])
+    norm_dist = list(prior["normalized_distribution"])
     distribution = derive_distribution(norm_dist, total_hours, max_hours_per_day=max_hours_per_day)
     return total_hours, distribution, norm_dist
 
@@ -1174,6 +1405,26 @@ def _posterior_hint_payload(profile: Optional[ItemContextProfile]) -> Optional[d
     }
 
 
+def _stabilize_ai_confidence(
+    raw_confidence: float,
+    *,
+    row_confidence: Optional[str],
+    compressed_context: dict,
+    posterior_hint: Optional[dict[str, float]],
+) -> float:
+    confidence = min(1.0, max(0.0, raw_confidence))
+    unknown_count = sum(1 for value in compressed_context.values() if value == "unknown")
+
+    if row_confidence == "low":
+        confidence = min(confidence, 0.55)
+    elif unknown_count >= 3 and posterior_hint is None:
+        confidence = min(confidence, 0.60)
+    elif unknown_count >= 2 and posterior_hint is None:
+        confidence = min(confidence, 0.70)
+
+    return round(confidence, 3)
+
+
 def _write_work_profile_ai_log(
     db: Session,
     *,
@@ -1218,11 +1469,39 @@ async def generate_work_profile_ai(
     level_name: Optional[str] = None,
     zone_name: Optional[str] = None,
     row_confidence: Optional[str] = None,
+    compressed_context: Optional[dict] = None,
     posterior_hint: Optional[dict[str, float]] = None,
     repair_errors: Optional[list[str]] = None,
 ) -> Optional[dict[str, object]]:
     if duration_days <= 0:
         duration_days = 1
+
+    compressed_context = compressed_context or build_compressed_context(
+        activity_name,
+        level_name=level_name,
+        zone_name=zone_name,
+    )
+    deterministic_prior = _build_default_profile_prior(
+        asset_type,
+        duration_days,
+        max_hours_per_day,
+        compressed_context=compressed_context,
+    )
+    request_payload: dict[str, object] = {
+        "activity_name": activity_name,
+        "asset_type": asset_type,
+        "duration_days": duration_days,
+        "max_hours_per_day": max_hours_per_day,
+        "level_name": level_name,
+        "zone_name": zone_name,
+        "row_confidence": row_confidence,
+        "compressed_context": compressed_context,
+        "deterministic_prior": deterministic_prior,
+    }
+    if posterior_hint is not None:
+        request_payload["posterior_hint"] = posterior_hint
+    if repair_errors:
+        request_payload["repair_errors"] = repair_errors
 
     if asset_type == "none":
         return {
@@ -1231,7 +1510,7 @@ async def generate_work_profile_ai(
             "confidence": 1.0,
             "tokens_used": 0,
             "latency_ms": 0,
-            "request_json": {},
+            "request_json": request_payload,
             "response_json": {
                 "total_hours": 0.0,
                 "normalized_distribution": [0.0] * duration_days,
@@ -1241,20 +1520,6 @@ async def generate_work_profile_ai(
 
     if not settings.AI_ENABLED or not settings.AI_API_KEY:
         return None
-
-    request_payload: dict[str, object] = {
-        "activity_name": activity_name,
-        "asset_type": asset_type,
-        "duration_days": duration_days,
-        "max_hours_per_day": max_hours_per_day,
-        "level_name": level_name,
-        "zone_name": zone_name,
-        "row_confidence": row_confidence,
-    }
-    if posterior_hint is not None:
-        request_payload["posterior_hint"] = posterior_hint
-    if repair_errors:
-        request_payload["repair_errors"] = repair_errors
 
     system_prompt = _work_profile_prompt_text()
     if repair_errors:
@@ -1294,7 +1559,12 @@ async def generate_work_profile_ai(
             if sum(weights) > 0
             else [0.0] * duration_days
         )
-        confidence = min(1.0, max(0.0, float(data.get("confidence", 0.5))))
+        confidence = _stabilize_ai_confidence(
+            float(data.get("confidence", 0.5)),
+            row_confidence=row_confidence,
+            compressed_context=compressed_context,
+            posterior_hint=posterior_hint,
+        )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("Work-profile AI response was invalid: %s", exc)
         return None
@@ -1378,6 +1648,7 @@ async def _request_validated_ai_proposal(
     asset_type: str,
     duration_days: int,
     max_hours_per_day: float,
+    compressed_context: dict,
     level_name: Optional[str],
     zone_name: Optional[str],
     row_confidence: Optional[str],
@@ -1400,6 +1671,7 @@ async def _request_validated_ai_proposal(
             level_name=level_name,
             zone_name=zone_name,
             row_confidence=row_confidence,
+            compressed_context=compressed_context,
             posterior_hint=posterior_hint,
             repair_errors=last_errors or None,
         )
@@ -1499,8 +1771,21 @@ def _write_activity_profile(
         .one_or_none()
     )
     if awp is None:
-        awp = ActivityWorkProfile(activity_id=activity_id)
-        db.add(awp)
+        savepoint = db.begin_nested()
+        try:
+            awp = ActivityWorkProfile(activity_id=activity_id)
+            db.add(awp)
+            db.flush()
+            savepoint.commit()
+        except IntegrityError:
+            savepoint.rollback()
+            awp = (
+                db.query(ActivityWorkProfile)
+                .filter(ActivityWorkProfile.activity_id == activity_id)
+                .one_or_none()
+            )
+            if awp is None:
+                raise
 
     awp.item_id = item_id
     awp.asset_type = asset_type
@@ -1544,23 +1829,19 @@ def resolve_work_profile(
 
     Flow:
       1. Build compressed context and deterministic context key.
-      2. Look up item_context_profiles (exact cache key).
+      2. Look up item_context_profiles using exact, then reduced-context fallback.
       3. Cache HIT:
            - evaluate maturity tier
            - MANUAL / TRUSTED_BASELINE → use posterior_mean (or stored total_hours)
-           - CONFIRMED / TENTATIVE → use posterior_mean if available, else stored value
-             (AI generation is wired in Stage 5 second half; for now treat as trusted)
+           - CONFIRMED / TENTATIVE → call AI when allowed, otherwise reuse cache
            - update evidence counters on the cache entry
       4. Cache MISS:
            - check for trusted baseline across other contexts for same (item, asset, duration)
-           - if baseline: use it; write new cache entry with source='learned'
-           - else: build default profile; write cache entry with source='default'
+           - if baseline: use it with a deterministic prior shape; write source='learned'
+           - else: call AI when allowed, or fall back to an asset-specific default profile
       5. Apply low_confidence_flag if row_confidence='low'.
       6. Run Stage D validation; log any failures.
       7. Write activity_work_profiles.
-
-    AI generation (cache misses, TENTATIVE hits) is added in the second half
-    of Stage 5.  Until then, cache misses fall back to the default profile.
     """
     if duration_days <= 0:
         duration_days = 1
@@ -1598,7 +1879,7 @@ def resolve_work_profile(
                 else float(cached.total_hours)
             )
         else:
-            # CONFIRMED / TENTATIVE — AI will refine in second half; use best available
+            # CONFIRMED / TENTATIVE start from the best cached estimate, then AI may refine it.
             operative_hours = (
                 float(cached.posterior_mean)
                 if cached.posterior_mean is not None
@@ -1637,6 +1918,7 @@ def resolve_work_profile(
                     asset_type=asset_type,
                     duration_days=duration_days,
                     max_hours_per_day=preflight.max_hours_per_day,
+                    compressed_context=preflight.compressed_context,
                     level_name=level_name,
                     zone_name=zone_name,
                     row_confidence=row_confidence,
@@ -1680,7 +1962,12 @@ def resolve_work_profile(
 
         if baseline is not None:
             final_hours = quantize_hours(baseline)
-            norm_dist = _uniform_normalized(duration_days)  # shape: uniform (best we have)
+            _, _, norm_dist = build_default_profile(
+                asset_type,
+                duration_days,
+                preflight.max_hours_per_day,
+                compressed_context=preflight.compressed_context,
+            )
             distribution = derive_distribution(
                 norm_dist,
                 final_hours,
@@ -1707,7 +1994,7 @@ def resolve_work_profile(
                 item_id, asset_type, duration_days, final_hours,
             )
         else:
-            # Full cache miss — default profile (AI generation added in second half)
+            # Full cache miss — try AI first when allowed, otherwise fall back to a deterministic default.
             ai_payload = precomputed_ai_proposal
             if ai_payload is None and allow_ai and not degraded_mode:
                 ai_payload = _request_validated_ai_proposal_sync(
@@ -1719,6 +2006,7 @@ def resolve_work_profile(
                     asset_type=asset_type,
                     duration_days=duration_days,
                     max_hours_per_day=preflight.max_hours_per_day,
+                    compressed_context=preflight.compressed_context,
                     level_name=level_name,
                     zone_name=zone_name,
                     row_confidence=row_confidence,
@@ -1749,7 +2037,10 @@ def resolve_work_profile(
                 activity_source = "ai"
             else:
                 final_hours, distribution, norm_dist = build_default_profile(
-                    asset_type, duration_days, preflight.max_hours_per_day,
+                    asset_type,
+                    duration_days,
+                    preflight.max_hours_per_day,
+                    compressed_context=preflight.compressed_context,
                 )
                 confidence = 0.3
                 activity_source = "default"
@@ -1865,6 +2156,7 @@ async def materialize_work_profiles_for_upload(
                     asset_type=mapping.asset_type,
                     duration_days=max(int(activity.duration_days or 0), 1),
                     max_hours_per_day=preflight.max_hours_per_day,
+                    compressed_context=preflight.compressed_context,
                     level_name=activity.level_name,
                     zone_name=activity.zone_name,
                     row_confidence=activity.row_confidence,

@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session, joinedload
 from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models.asset import Asset
-from ..models.lookahead import ProjectAlertPolicy, SubcontractorAssetTypeAssignment
+from ..models.lookahead import SubcontractorAssetTypeAssignment
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..utils.storage import storage
@@ -57,6 +57,7 @@ from .ai_service import (
 from .classification_service import resolve_item_classification
 from .identity_service import normalize_activity_name, resolve_or_create_item
 from .lookahead_engine import calculate_lookahead_for_project
+from .lookahead_policy_service import ensure_project_alert_policy
 from .work_profile_service import materialize_work_profiles_for_upload
 
 logger = logging.getLogger(__name__)
@@ -458,7 +459,7 @@ async def _run(upload_id: str, db: Session) -> None:
         with db.begin_nested():
             runtime = await materialize_work_profiles_for_upload(db, upload)
             _sync_subcontractor_asset_type_assignments(upload.project_id, upload_id, db)
-            _ensure_project_alert_policy(upload.project_id, db)
+            ensure_project_alert_policy(db, upload.project_id)
             upload.ai_tokens_used = int(upload.ai_tokens_used or 0) + int(runtime.ai_tokens_used or 0)
             notes_dict = dict(upload.completeness_notes or {})
             if runtime.degraded_reasons:
@@ -470,6 +471,15 @@ async def _run(upload_id: str, db: Session) -> None:
             upload_id,
             exc,
         )
+        if not db.is_active:
+            try:
+                db.rollback()
+            except Exception as rb_exc:
+                logger.warning(
+                    "Rollback failed during degraded work-profile materialization cleanup for upload %s: %s",
+                    upload_id,
+                    rb_exc,
+                )
         notes_dict = dict(upload.completeness_notes or {})
         notes_dict["work_profile_degraded_reasons"] = ["materialization_failed"]
         upload.completeness_notes = notes_dict
@@ -1175,16 +1185,6 @@ def _sync_subcontractor_asset_type_assignments(
     for key, row in existing_by_key.items():
         if key not in desired:
             row.is_active = False
-
-
-def _ensure_project_alert_policy(project_id: uuid.UUID, db: Session) -> None:
-    existing = (
-        db.query(ProjectAlertPolicy)
-        .filter(ProjectAlertPolicy.project_id == project_id)
-        .first()
-    )
-    if existing is None:
-        db.add(ProjectAlertPolicy(project_id=project_id))
 
 
 def _commit_degraded(
