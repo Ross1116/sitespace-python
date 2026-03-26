@@ -403,18 +403,24 @@ def create_bulk_bookings(
         
     except HTTPException:
         raise
-    except ValueError as e:
+    except booking_crud.BookingValidationError as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=e.details if e.details is not None else str(e)
         )
-    except Exception:
+    except ValueError as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create bulk bookings"
         )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create bulk bookings"
+        ) from e
 
 
 @router.get("/", response_model=BookingListResponse)
@@ -793,6 +799,12 @@ def update_booking(
         
     except HTTPException:
         raise
+    except booking_crud.BookingValidationError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.details if e.details is not None else str(e)
+        )
     except Exception:
         db.rollback()
         raise HTTPException(
@@ -1078,11 +1090,11 @@ def duplicate_booking(
         
     except HTTPException:
         raise
-    except booking_crud.BookingValidationError:
+    except booking_crud.BookingValidationError as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid duplicate booking request"
+            detail=e.details if e.details is not None else str(e)
         )
     except ValueError as e:
         db.rollback()

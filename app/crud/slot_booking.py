@@ -38,7 +38,12 @@ from ..services.metadata_confidence_service import asset_is_planning_ready
 
 
 class BookingValidationError(ValueError):
-    """Domain validation error for booking create/duplicate flows."""
+    """Domain validation error for booking flows."""
+
+    def __init__(self, message: str, details: Optional[Any] = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details
 
 
 def _ensure_asset_planning_ready(asset: Asset) -> None:
@@ -383,6 +388,7 @@ def create_bulk_bookings(
     Create multiple bookings at once with role-based status.
     """
     bookings = []
+    booking_requests = []
     failed_bookings = []
     
     # Validate base entities exist
@@ -457,42 +463,52 @@ def create_bulk_bookings(
                     })
                     continue
 
-                db_booking = SlotBooking(
-                    project_id=bulk_data.project_id,
-                    manager_id=manager_id,
-                    subcontractor_id=subcontractor_id,
-                    asset_id=asset_id,
-                    booking_date=booking_date,
-                    start_time=bulk_data.start_time,
-                    end_time=bulk_data.end_time,
-                    purpose=bulk_data.purpose,
-                    notes=bulk_data.notes,
-                    status=booking_status
-                )
+                booking_requests.append((asset_id, booking_date))
 
-                db.add(db_booking)
-                db.flush()
+        if failed_bookings:
+            db.rollback()
+            raise BookingValidationError(
+                "Bulk booking validation failed",
+                details=failed_bookings,
+            )
 
-                log_booking_audit(
-                    db,
-                    actor_id=created_by_id,
-                    actor_role=created_by_role,
-                    action=BookingAuditAction.CREATED,
-                    booking_id=db_booking.id,
-                    to_status=db_booking.status,
-                    comment=comment
-                )
+        for asset_id, booking_date in booking_requests:
+            db_booking = SlotBooking(
+                project_id=bulk_data.project_id,
+                manager_id=manager_id,
+                subcontractor_id=subcontractor_id,
+                asset_id=asset_id,
+                booking_date=booking_date,
+                start_time=bulk_data.start_time,
+                end_time=bulk_data.end_time,
+                purpose=bulk_data.purpose,
+                notes=bulk_data.notes,
+                status=booking_status
+            )
 
-                # If this booking is confirmed on creation (manager/admin),
-                # auto-deny overlapping pending requests for the same slot.
-                _auto_deny_competing_pending_bookings(
-                    db,
-                    booking=db_booking,
-                    actor_id=created_by_id,
-                    actor_role=created_by_role,
-                )
+            db.add(db_booking)
+            db.flush()
 
-                bookings.append(db_booking)
+            log_booking_audit(
+                db,
+                actor_id=created_by_id,
+                actor_role=created_by_role,
+                action=BookingAuditAction.CREATED,
+                booking_id=db_booking.id,
+                to_status=db_booking.status,
+                comment=comment
+            )
+
+            # If this booking is confirmed on creation (manager/admin),
+            # auto-deny overlapping pending requests for the same slot.
+            _auto_deny_competing_pending_bookings(
+                db,
+                booking=db_booking,
+                actor_id=created_by_id,
+                actor_role=created_by_role,
+            )
+
+            bookings.append(db_booking)
 
         if bookings:
             db.commit()
@@ -641,18 +657,46 @@ def update_booking(
         if not subcontractor:
             raise ValueError(f"Subcontractor with id {update_data['subcontractor_id']} not found")
     
-    if 'asset_id' in update_data:
-        asset = db.query(Asset).filter(Asset.id == update_data['asset_id']).first()
-        if not asset:
-            raise ValueError(f"Asset with id {update_data['asset_id']} not found")
-        _ensure_asset_planning_ready(asset)
-            
     if 'status' in update_data and isinstance(update_data['status'], str):
         raw_status = update_data['status']
         try:
             update_data['status'] = BookingStatus(raw_status.lower())
         except ValueError as exc:
             raise ValueError(f"Invalid booking status: {raw_status}") from exc
+
+    if 'asset_id' in update_data:
+        asset = db.query(Asset).filter(Asset.id == update_data['asset_id']).first()
+        if not asset:
+            raise ValueError(f"Asset with id {update_data['asset_id']} not found")
+        sync_maintenance_status(db, asset)
+        _ensure_asset_planning_ready(asset)
+        if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
+            raise BookingValidationError(f"Asset is not available (status: {asset.status.value})")
+
+        target_date = update_data.get('booking_date', booking.booking_date)
+        if asset.maintenance_start_date and asset.maintenance_end_date:
+            if asset.maintenance_start_date <= target_date <= asset.maintenance_end_date:
+                raise BookingValidationError(
+                    f"Asset is under scheduled maintenance from "
+                    f"{asset.maintenance_start_date} to {asset.maintenance_end_date}"
+                )
+
+        conflict_check = BookingConflictCheck(
+            asset_id=asset.id,
+            booking_date=target_date,
+            start_time=update_data.get('start_time', booking.start_time),
+            end_time=update_data.get('end_time', booking.end_time),
+            exclude_booking_id=booking_id,
+        )
+        conflicts = check_booking_conflicts(db, conflict_check)
+        if conflicts.has_confirmed_conflict:
+            raise BookingValidationError("Updated booking would conflict with a confirmed reservation")
+
+        target_status = update_data.get('status', booking.status)
+        if target_status == BookingStatus.PENDING and not conflicts.can_request:
+            raise BookingValidationError(
+                "Limit reached for this time slot. Choose another slot or contact the manager."
+            )
     
     for field, value in update_data.items():
         setattr(booking, field, value)

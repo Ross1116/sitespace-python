@@ -4,7 +4,7 @@ import math
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.core.constants import AI_WORK_PROFILE_MAX_TOKENS
+from app.core.constants import AI_WORK_PROFILE_MAX_TOKENS, WORK_PROFILE_MAX_TOKENS_CAP
 from app.services.work_profile_service import (
     _work_profile_response_max_tokens,
     build_default_profile,
@@ -133,6 +133,10 @@ class TestWorkProfileAIHardening:
         assert result is not None
         assert call_api.await_args.kwargs["max_tokens"] == _work_profile_response_max_tokens(duration_days)
         assert call_api.await_args.kwargs["max_tokens"] > AI_WORK_PROFILE_MAX_TOKENS
+
+    def test_work_profile_response_max_tokens_respects_floor_and_cap(self):
+        assert _work_profile_response_max_tokens(1) == AI_WORK_PROFILE_MAX_TOKENS
+        assert _work_profile_response_max_tokens(500) == WORK_PROFILE_MAX_TOKENS_CAP
 
     def test_trusted_baseline_uses_asset_shaped_distribution(self):
         db = MagicMock()

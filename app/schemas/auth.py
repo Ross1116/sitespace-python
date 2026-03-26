@@ -1,5 +1,5 @@
-from pydantic import EmailStr, Field, field_validator, model_validator
-from typing import Optional, Literal
+from pydantic import EmailStr, Field, field_serializer, field_validator, model_validator
+from typing import Annotated, Optional, Literal
 from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
@@ -153,9 +153,13 @@ class CurrentSubcontractorResponse(BaseSchema):
     suggested_trade_specialty: Optional[str] = None
     trade_resolution_status: TradeResolutionStatus = TradeResolutionStatus.UNKNOWN
     trade_inference_source: Optional[str] = None
-    trade_inference_confidence: Optional[Decimal] = None
+    trade_inference_confidence: Optional[Annotated[Decimal, Field(ge=0, le=1)]] = None
     planning_ready: bool = False
     phone: Optional[str] = None
     is_active: bool
     role: Literal["subcontractor"] = "subcontractor"
     user_type: Literal["subcontractor"] = "subcontractor"
+
+    @field_serializer("trade_inference_confidence")
+    def serialize_trade_inference_confidence(self, value: Optional[Decimal]) -> Optional[float]:
+        return float(value) if value is not None else None

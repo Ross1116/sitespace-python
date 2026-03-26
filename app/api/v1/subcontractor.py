@@ -347,6 +347,7 @@ def get_subcontractor(
             is_active=project.status == "active" or project.status is None,
         )
         for project in subcontractor.assigned_projects
+        if project.status == "active" or project.status is None
     ]
     
     return SubcontractorDetailResponse(
@@ -365,10 +366,7 @@ def get_subcontractor(
         is_active=subcontractor.is_active,
         created_at=subcontractor.created_at,
         updated_at=subcontractor.updated_at,
-        active_projects_count=sum(
-            1 for p in subcontractor.assigned_projects
-            if p.status == "active" or p.status is None
-        ),
+        active_projects_count=len(current_assignments),
         total_bookings=len(subcontractor.bookings),
         current_assignments=current_assignments,
     )

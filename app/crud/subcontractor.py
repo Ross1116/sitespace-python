@@ -33,6 +33,7 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
     """Create a new subcontractor"""
     # Hash the password
     hashed_password = get_password_hash(subcontractor_data.password)
+    normalized_email = _normalize_email(subcontractor_data.email)
     
     trade_value = _normalize_explicit_trade_value(subcontractor_data.trade_specialty)
     if trade_value:
@@ -40,12 +41,12 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
     else:
         resolution = infer_subcontractor_trade_resolution(
             company_name=subcontractor_data.company_name,
-            email=subcontractor_data.email,
+            email=normalized_email,
         )
 
     # Create subcontractor instance
     db_subcontractor = Subcontractor(
-        email=_normalize_email(subcontractor_data.email),
+        email=normalized_email,
         password_hash=hashed_password,
         first_name=subcontractor_data.first_name,
         last_name=subcontractor_data.last_name,
@@ -127,6 +128,7 @@ def get_all_subcontractors(
         query = query.filter(
             or_(
                 Subcontractor.trade_specialty.is_(None),
+                Subcontractor.trade_resolution_status.is_(None),
                 Subcontractor.trade_resolution_status != TradeResolutionStatus.CONFIRMED.value,
             )
         )
@@ -163,6 +165,8 @@ def update_subcontractor(
     if "email" in update_data and update_data["email"]:
         update_data["email"] = _normalize_email(update_data["email"])
 
+    normalized_email = update_data.get("email", db_subcontractor.email)
+
     if "trade_specialty" in update_data:
         trade_value = update_data["trade_specialty"]
         if trade_value:
@@ -173,12 +177,13 @@ def update_subcontractor(
             else:
                 resolution = infer_subcontractor_trade_resolution(
                     company_name=update_data.get("company_name", db_subcontractor.company_name),
-                    email=update_data.get("email", db_subcontractor.email),
+                    email=normalized_email,
                 )
+                update_data["trade_specialty"] = resolution.trade_specialty
         else:
             resolution = infer_subcontractor_trade_resolution(
                 company_name=update_data.get("company_name", db_subcontractor.company_name),
-                email=update_data.get("email", db_subcontractor.email),
+                email=normalized_email,
             )
             update_data["trade_specialty"] = resolution.trade_specialty
 
@@ -191,7 +196,7 @@ def update_subcontractor(
     ) != TradeResolutionStatus.CONFIRMED.value:
         resolution = infer_subcontractor_trade_resolution(
             company_name=update_data.get("company_name", db_subcontractor.company_name),
-            email=update_data.get("email", db_subcontractor.email),
+            email=normalized_email,
         )
         update_data["trade_specialty"] = resolution.trade_specialty
         update_data["suggested_trade_specialty"] = resolution.suggested_trade_specialty
@@ -302,6 +307,7 @@ def search_subcontractors(
         query = query.filter(
             or_(
                 Subcontractor.trade_specialty.is_(None),
+                Subcontractor.trade_resolution_status.is_(None),
                 Subcontractor.trade_resolution_status != TradeResolutionStatus.CONFIRMED.value,
             )
         )
@@ -764,6 +770,7 @@ def get_subcontractors_for_manager(
         query = query.filter(
             or_(
                 Subcontractor.trade_specialty.is_(None),
+                Subcontractor.trade_resolution_status.is_(None),
                 Subcontractor.trade_resolution_status != TradeResolutionStatus.CONFIRMED.value,
             )
         )

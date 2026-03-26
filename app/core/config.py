@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     debug: bool = Field(False, validation_alias="DEBUG")
 
     # CORS - production origins only; dev origins included when DEBUG=True
-    cors_origins: list[str] = Field(
+    cors_origins: str | list[str] = Field(
         default_factory=lambda: [
             "https://sitespace.vercel.app",
             "https://sitespace.com.au",
