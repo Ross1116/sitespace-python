@@ -29,6 +29,7 @@ class Item(Base):
     merged_into = relationship("Item", foreign_keys=[merged_into_item_id], remote_side="Item.id")
     aliases = relationship("ItemAlias", back_populates="item", cascade="all, delete-orphan")
     classifications = relationship("ItemClassification", back_populates="item", cascade="all, delete-orphan")
+    classification_events = relationship("ItemClassificationEvent", back_populates="item", foreign_keys="ItemClassificationEvent.item_id")
 
     def __repr__(self) -> str:
         return f"<Item(id={self.id}, name='{self.display_name}', status='{self.identity_status}')>"
@@ -142,6 +143,7 @@ class ItemClassification(Base):
     )
 
     item = relationship("Item", back_populates="classifications", foreign_keys=[item_id])
+    events = relationship("ItemClassificationEvent", back_populates="classification", foreign_keys="ItemClassificationEvent.classification_id")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
     def __repr__(self) -> str:
@@ -190,6 +192,11 @@ class ItemClassificationEvent(Base):
             name="ck_item_classification_events_type",
         ),
     )
+
+    item = relationship("Item", foreign_keys=[item_id], back_populates="classification_events")
+    classification = relationship("ItemClassification", foreign_keys=[classification_id], back_populates="events")
+    triggered_by_upload = relationship("ProgrammeUpload", foreign_keys=[triggered_by_upload_id])
+    performed_by_user = relationship("User", foreign_keys=[performed_by_user_id])
 
     def __repr__(self) -> str:
         return f"<ItemClassificationEvent(type='{self.event_type}', item={self.item_id})>"

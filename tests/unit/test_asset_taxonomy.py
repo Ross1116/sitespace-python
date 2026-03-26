@@ -195,11 +195,11 @@ class TestTaxonomyGrouping:
     """Verify the plan's grouping of asset types by max_hours_per_day."""
 
     # Operator-intensive or noise-restricted: capped at 10 h
-    TEN_HOUR_TYPES = {"crane", "hoist", "concrete_pump", "compactor"}
+    TEN_HOUR_TYPES = frozenset({"crane", "hoist", "concrete_pump", "compactor"})
     # Zone/facility or double-shift capable: 12 h
-    TWELVE_HOUR_TYPES = {"loading_bay", "ewp"}
+    TWELVE_HOUR_TYPES = frozenset({"loading_bay", "ewp"})
     # Freely fungible, hot-seat capable: 16 h
-    SIXTEEN_HOUR_TYPES = {"excavator", "forklift", "telehandler", "other"}
+    SIXTEEN_HOUR_TYPES = frozenset({"excavator", "forklift", "telehandler", "other"})
 
     def test_ten_hour_group(self):
         for code in self.TEN_HOUR_TYPES:

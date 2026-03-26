@@ -103,7 +103,9 @@ class TestKeywordScan:
         assert _keyword_scan("Builder's hoist installation") == "hoist"
 
     def test_longest_key_wins_over_shorter(self):
-        # "jump the hoist" → crane, NOT hoist (longer key wins)
+        # The key "jump the hoist" (crane) is longer than "hoist" (hoist) in
+        # _KEYWORD_MAP, so longest-key-first ordering means "Jump the Hoist"
+        # returns "crane" rather than "hoist".
         assert _keyword_scan("Jump the Hoist") == "crane"
 
     def test_no_match_returns_none(self):
@@ -281,14 +283,20 @@ class TestReconcileClassificationsOnMerge:
 
     def _setup_db(self, source_cls, target_cls):
         db = MagicMock()
-        # reconcile_classifications_on_merge calls filter_by twice in order:
-        # first for source_item_id, second for target_item_id.
-        results = [source_cls, target_cls]
-        iter_results = iter(results)
+        # Match filter_by calls by item_id kwarg so the mock is order-independent.
+        source_id = source_cls.item_id if source_cls is not None else None
+        target_id = target_cls.item_id if target_cls is not None else None
 
         def filter_by_side(**kwargs):
             m = MagicMock()
-            m.with_for_update.return_value.first.return_value = next(iter_results, None)
+            item_id = kwargs.get("item_id")
+            if source_id is not None and item_id == source_id:
+                result = source_cls
+            elif target_id is not None and item_id == target_id:
+                result = target_cls
+            else:
+                result = None
+            m.with_for_update.return_value.first.return_value = result
             return m
 
         db.query.return_value.filter_by.side_effect = filter_by_side

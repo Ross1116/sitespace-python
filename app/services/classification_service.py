@@ -211,8 +211,12 @@ def resolve_item_classification(
 
             # Run AI re-check (import inside function to avoid circular imports).
             ai_result = _run_standalone_ai(activity_name, db)
-            ai_type = ai_result[0] if ai_result else None
-            if ai_type and ai_type != tentative_type:
+            if ai_result is None:
+                # AI unavailable/timed out — leave tentative as-is, no count change.
+                return tentative_type
+
+            ai_type, ai_confidence = ai_result
+            if ai_type != tentative_type:
                 # AI disagrees — flag for human review, do NOT auto-promote.
                 db.add(ItemClassificationEvent(
                     id=uuid.uuid4(),
@@ -224,7 +228,7 @@ def resolve_item_classification(
                     triggered_by_upload_id=upload_id,
                     details_json={
                         "ai_suggestion": ai_type,
-                        "ai_confidence": ai_result[1] if ai_result else None,
+                        "ai_confidence": ai_confidence,
                         "reason": "ai_disagrees_tentative",
                     },
                 ))
@@ -267,10 +271,10 @@ def resolve_item_classification(
         logger.debug("Item %s: no classification resolved for '%s'", item_id, activity_name)
         return None
 
-    except Exception as exc:
-        logger.warning(
-            "resolve_item_classification failed for item=%s activity='%s': %s",
-            item_id, activity_name, exc,
+    except Exception:
+        logger.exception(
+            "resolve_item_classification failed for item=%s activity='%s'",
+            item_id, activity_name,
         )
         return None
 
@@ -417,6 +421,10 @@ def reconcile_classifications_on_merge(
     else:
         # target wins on tie (target is the canonical survivor)
         winner, loser = target_cls, source_cls
+
+    # Reassign winner to the canonical target item so get_active_classification
+    # on target_item_id returns the winner after the merge.
+    winner.item_id = target_item_id
 
     # Absorb confirmation count from loser into winner.
     combined_confirmations = winner.confirmation_count + loser.confirmation_count

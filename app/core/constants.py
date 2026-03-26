@@ -52,14 +52,14 @@ DEMAND_HOURS_PER_DAY: int = 8
 # asset running a full 5-day week contributes 40 h.  Thresholds are set so
 # that normal full-week single-asset utilisation lands in "high", not
 # "critical".  "Critical" implies multi-asset demand or a scheduling conflict.
-DEMAND_LEVEL_LOW_MAX: int = 16     # < 16 h  → low   (≤ 2 standard days)
-DEMAND_LEVEL_MEDIUM_MAX: int = 32  # < 32 h  → medium (2–4 days)
-DEMAND_LEVEL_HIGH_MAX: int = 48    # < 48 h  → high   (4–6 days, 1 asset limit)
-                                   # ≥ 48 h  → critical (multi-asset territory)
+DEMAND_LEVEL_LOW_MAX: int = 16     # < 16 h  -> low   (<= 2 standard days)
+DEMAND_LEVEL_MEDIUM_MAX: int = 32  # < 32 h  -> medium (2-4 days)
+DEMAND_LEVEL_HIGH_MAX: int = 48    # < 48 h  -> high   (4-6 days, 1 asset limit)
+                                   # >= 48 h  -> critical (multi-asset territory)
 
 # Anomaly-detection thresholds used in _compute_anomaly_flags().
 # Demand spike: flag when week-over-week change for a bucket exceeds this
-# fraction.  1.5 = 150% change (2.5× demand); doubling alone is common on
+# fraction.  1.5 = 150% change (2.5x demand); doubling alone is common on
 # pour weeks and should not trigger an alert.
 ANOMALY_DEMAND_SPIKE_THRESHOLD: float = 1.5
 

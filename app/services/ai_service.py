@@ -433,7 +433,7 @@ def classify_item_standalone(
             return None
 
         for item in raw.get("classifications") or []:
-            if str(item.get("id")) == fake_id:
+            if str(item.get("activity_id")) == fake_id:
                 asset_type = str(item.get("asset_type") or "").strip().lower()
                 confidence = str(item.get("confidence") or "").strip().lower()
                 if asset_type in valid_types and confidence in {"high", "medium"}:

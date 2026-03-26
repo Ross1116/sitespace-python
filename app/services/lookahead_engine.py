@@ -128,8 +128,8 @@ def _compute_anomaly_flags(
     current_mapping_set: set[tuple[str, str]],
 ) -> dict[str, bool | float]:
     flags: dict[str, bool | float] = {
-        "demand_spike_over_100pct": False,
-        "mapping_changes_over_40pct": False,
+        "demand_spike_over_150pct": False,
+        "mapping_changes_over_50pct": False,
         "activity_count_delta_over_30pct": False,
     }
 
@@ -144,7 +144,7 @@ def _compute_anomaly_flags(
         if prev is not None and prev > 0:
             pct_change = abs(curr - prev) / prev
             if pct_change > ANOMALY_DEMAND_SPIKE_THRESHOLD:
-                flags["demand_spike_over_100pct"] = True
+                flags["demand_spike_over_150pct"] = True
                 break
 
     if previous_mapping_set:
@@ -161,7 +161,7 @@ def _compute_anomaly_flags(
         ratio = changed / max(len(prev_by_activity), 1)
         flags["mapping_change_ratio"] = round(ratio, 4)
         if ratio >= ANOMALY_MAPPING_CHANGE_THRESHOLD:
-            flags["mapping_changes_over_40pct"] = True
+            flags["mapping_changes_over_50pct"] = True
 
     if previous_activity_count > 0:
         delta_ratio = abs(current_activity_count - previous_activity_count) / previous_activity_count

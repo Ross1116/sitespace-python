@@ -167,8 +167,8 @@ class TestWeeklyBuckets:
 class TestAnomalyFlags:
     """
     Thresholds (sourced from core.constants):
-      demand_spike_over_100pct       : pct_change > 1.5  (strictly greater — 2.5× demand)
-      mapping_changes_over_40pct     : ratio >= 0.5       (greater-or-equal — half rewired)
+      demand_spike_over_150pct       : pct_change > 1.5  (strictly greater - 2.5x demand)
+      mapping_changes_over_50pct     : ratio >= 0.5       (greater-or-equal - half rewired)
       activity_count_delta_over_30pct: delta_ratio > 0.3  (strictly greater)
     """
 
@@ -185,33 +185,33 @@ class TestAnomalyFlags:
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
         curr = [self._make_row("crane", "2026-03-16", 251.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
-        assert flags["demand_spike_over_100pct"] is True
+        assert flags["demand_spike_over_150pct"] is True
 
     def test_demand_spike_exact_150pct_does_not_trigger(self):
         # pct_change = 1.5, threshold is > 1.5 -> should NOT fire
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
         curr = [self._make_row("crane", "2026-03-16", 250.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
-        assert flags["demand_spike_over_100pct"] is False
+        assert flags["demand_spike_over_150pct"] is False
 
     def test_demand_spike_below_150pct_no_flag(self):
         # pct_change = 0.5 -> well below threshold
         prev = [self._make_row("crane", "2026-03-16", 100.0)]
         curr = [self._make_row("crane", "2026-03-16", 150.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
-        assert flags["demand_spike_over_100pct"] is False
+        assert flags["demand_spike_over_150pct"] is False
 
     def test_demand_spike_no_previous_data_no_flag(self):
         curr = [self._make_row("crane", "2026-03-16", 200.0)]
         flags = _compute_anomaly_flags([], curr, 0, 10, set(), set())
-        assert flags["demand_spike_over_100pct"] is False
+        assert flags["demand_spike_over_150pct"] is False
 
     def test_demand_spike_decrease_does_not_trigger(self):
         prev = [self._make_row("crane", "2026-03-16", 200.0)]
         curr = [self._make_row("crane", "2026-03-16", 50.0)]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
         # pct_change = |50-200|/200 = 0.75, not > 1.5
-        assert flags["demand_spike_over_100pct"] is False
+        assert flags["demand_spike_over_150pct"] is False
 
     def test_demand_spike_multiple_asset_types_one_triggers(self):
         prev = [
@@ -223,7 +223,7 @@ class TestAnomalyFlags:
             self._make_row("forklift", "2026-03-16", 51.0),  # 155% spike > 150% threshold
         ]
         flags = _compute_anomaly_flags(prev, curr, 10, 10, set(), set())
-        assert flags["demand_spike_over_100pct"] is True
+        assert flags["demand_spike_over_150pct"] is True
 
     # ---- mapping changes ----
 
@@ -232,18 +232,18 @@ class TestAnomalyFlags:
         prev_set = {(f"act{i}", "crane") for i in range(10)}
         curr_set = {(f"act{i}", "forklift" if i < 5 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
-        assert flags["mapping_changes_over_40pct"] is True
+        assert flags["mapping_changes_over_50pct"] is True
 
     def test_mapping_changes_below_50pct_no_flag(self):
         # 4 of 10 changed = 0.4 < 0.5 -> False
         prev_set = {(f"act{i}", "crane") for i in range(10)}
         curr_set = {(f"act{i}", "forklift" if i < 4 else "crane") for i in range(10)}
         flags = _compute_anomaly_flags([], [], 10, 10, prev_set, curr_set)
-        assert flags["mapping_changes_over_40pct"] is False
+        assert flags["mapping_changes_over_50pct"] is False
 
     def test_mapping_changes_zero_previous_no_flag(self):
         flags = _compute_anomaly_flags([], [], 10, 10, set(), set())
-        assert flags["mapping_changes_over_40pct"] is False
+        assert flags["mapping_changes_over_50pct"] is False
 
     def test_mapping_change_ratio_stored(self):
         prev_set = {(f"act{i}", "crane") for i in range(10)}
@@ -284,8 +284,8 @@ class TestAnomalyFlags:
 
     def test_all_flags_false_by_default(self):
         flags = _compute_anomaly_flags([], [], 50, 50, set(), set())
-        assert flags["demand_spike_over_100pct"] is False
-        assert flags["mapping_changes_over_40pct"] is False
+        assert flags["demand_spike_over_150pct"] is False
+        assert flags["mapping_changes_over_50pct"] is False
         assert flags["activity_count_delta_over_30pct"] is False
 
 
