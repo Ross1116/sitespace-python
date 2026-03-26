@@ -11,6 +11,7 @@ from .programme import ProgrammeUpload, ProgrammeActivity, ActivityAssetMapping,
 from .item_identity import Item, ItemAlias, ItemIdentityEvent, ItemClassification, ItemClassificationEvent
 from .stored_file import StoredFile
 from .site_plan import SitePlan
+from .work_profile import InferencePolicy, ItemContextProfile, ActivityWorkProfile
 
 __all__ = [
     "User",
@@ -34,4 +35,7 @@ __all__ = [
     "ItemClassificationEvent",
     "StoredFile",
     "SitePlan",
+    "InferencePolicy",
+    "ItemContextProfile",
+    "ActivityWorkProfile",
 ]

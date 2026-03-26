@@ -1822,7 +1822,7 @@ UNIQUE(item_id, asset_type, duration_days, context_version, inference_version, c
 - lower-priority truth may be superseded by higher-priority truth
 - for new non-default entries: initialize `observation_count = 1`, `evidence_weight = confidence`, `posterior_mean = total_hours`, `posterior_precision = 1 / (total_hours × (1 - confidence))²`, `sample_count = 1`
 - for new default entries: initialize all evidence fields to zero or null
-- on reuse of non-default entries: increment `observation_count` and `evidence_weight`; apply Bayesian update to `posterior_mean` and `posterior_precision` per Section 14.5
+- on reuse of non-default entries: increment `observation_count` only; do not apply a Bayesian posterior update to the cached value itself
 - on reuse of default entries: increment neither
 - `total_hours` must be representable in the operational scheduling unit
 - when `posterior_mean` exists and maturity tier is CONFIRMED or higher, use `posterior_mean` as operative `total_hours` for demand calculation (not the stored initial `total_hours`)
@@ -3949,7 +3949,7 @@ Add:
 - deterministic reduced-context fallback order
 - two-tier cache lookup (project-local then global)
 - profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)
-- Bayesian posterior update on each cache encounter
+- Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
 - cache override rules
 - confidence-weighted evidence
 - cache invalidation triggers
@@ -4475,26 +4475,26 @@ Because:
 - [x] Add `item_classifications`
 - [x] Implement classification resolution order
 - [x] Implement standalone AI classification
-- [ ] Add `inference_policies`
-- [ ] Add `item_context_profiles`
-- [ ] Add `activity_work_profiles`
-- [ ] Add `context_version`
-- [ ] Add `inference_version`
-- [ ] Implement context builder + fixed compressed-context schema
-- [ ] Implement bounded extension fields in compressed context
-- [ ] Implement deterministic context key including asset type
-- [ ] Implement deterministic reduced-context fallback order
+- [x] Add `inference_policies`
+- [x] Add `item_context_profiles`
+- [x] Add `activity_work_profiles`
+- [x] Add `context_version`
+- [x] Add `inference_version`
+- [x] Implement context builder + fixed compressed-context schema
+- [x] Implement bounded extension fields in compressed context
+- [x] Implement deterministic context key including asset type
+- [x] Implement deterministic reduced-context fallback order
 - [ ] Implement cache override rules
 - [ ] Implement confidence-weighted cache evidence
 - [ ] Implement cache invalidation triggers
 - [ ] Implement work-profile AI generation with asset type provided
-- [ ] Implement total-hours finalization policy
-- [ ] Implement concrete hours-bounds clamping
-- [ ] Implement operational total-hours unit normalization
-- [ ] Implement cold-start normalized pattern library
-- [ ] Implement cache lookup/reuse pipeline
-- [ ] Implement normalized distribution storage
-- [ ] Implement low-confidence flagging
+- [x] Implement total-hours finalization policy
+- [x] Implement concrete hours-bounds clamping
+- [x] Implement operational total-hours unit normalization
+- [x] Implement cold-start normalized pattern library
+- [x] Implement cache lookup/reuse pipeline
+- [x] Implement normalized distribution storage
+- [x] Implement low-confidence flagging
 - [ ] Implement confidence-aware alert suppression
 - [x] Implement fixed Monday-based workweek mapping
 - [ ] Implement exact unit apportionment for mapped daily demand
@@ -4519,16 +4519,16 @@ Because:
 - [ ] Surface system health state
 - [ ] Introduce explicit upload-status migration plan from current `degraded` semantics
 - [x] Add `max_hours_per_day` to `asset_types` table with seed values
-- [ ] Implement per-day distribution bucket cap in work-profile Stage B validation
+- [x] Implement per-day distribution bucket cap in work-profile Stage B validation
 - [ ] Implement per-day demand cap check in demand engine (second enforcement point)
 - [x] Add `confirmation_count` and `correction_count` to `item_classifications`
 - [x] Implement classification maturity tier evaluation (TENTATIVE / CONFIRMED / STABLE / PERMANENT)
 - [x] Implement re-query logic for TENTATIVE classifications; flag disagreement for review, never auto-change
 - [x] Increment `confirmation_count` on every classification reuse
-- [ ] Add Bayesian columns to `item_context_profiles` (`posterior_mean`, `posterior_precision`, `sample_count`, `correction_count`, `actuals_count`, `actuals_median`)
-- [ ] Implement Bayesian posterior update on each work-profile cache encounter
-- [ ] Implement work-profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)
-- [ ] Implement correction rate trigger (correction_count / sample_count > 0.20 → re-evaluate work profile)
+- [x] Add Bayesian columns to `item_context_profiles` (`posterior_mean`, `posterior_precision`, `sample_count`, `correction_count`, `actuals_count`, `actuals_median`)
+- [ ] Implement Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
+- [x] Implement work-profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)
+- [x] Implement correction rate trigger (correction_count / sample_count > 0.20 → re-evaluate work profile)
 
 ## Next
 
