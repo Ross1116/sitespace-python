@@ -373,22 +373,22 @@ class TestDemandLevel:
         # medium/high boundary: < 32 h = medium, ≥ 32 h = high
         assert _demand_level(32.0) == "high"
 
-    def test_between_32_and_48_is_high(self):
+    def test_between_32_and_64_is_high(self):
         assert _demand_level(40.0) == "high"
 
-    def test_below_48_is_high(self):
-        assert _demand_level(47.9) == "high"
+    def test_below_64_is_high(self):
+        assert _demand_level(63.9) == "high"
 
-    def test_exactly_48_is_critical(self):
-        # high/critical boundary: < 48 h = high, ≥ 48 h = critical
-        # 48 h = 6 standard days; implies multi-asset demand
-        assert _demand_level(48.0) == "critical"
+    def test_exactly_64_is_critical(self):
+        # high/critical boundary: < 64 h = high, ≥ 64 h = critical
+        # 64 h = one full single-asset week even on longer work-week calendars
+        assert _demand_level(64.0) == "critical"
 
-    def test_above_48_is_critical(self):
+    def test_above_64_is_critical(self):
         assert _demand_level(80.0) == "critical"
 
     def test_boundary_coverage(self):
         # Confirm the four tiers are the only possible values
         valid = {"low", "medium", "high", "critical"}
-        for hours in [0, 8, 16, 24, 32, 40, 48, 56, 100]:
+        for hours in [0, 8, 16, 24, 32, 40, 64, 72, 100]:
             assert _demand_level(float(hours)) in valid

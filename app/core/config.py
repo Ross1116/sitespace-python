@@ -65,20 +65,21 @@ class Settings(BaseSettings):
     # App settings
     APP_NAME: str = "Sitespace"
 
-    # AI / LLM
+    # AI provider and model selection
     AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic")
     AI_API_KEY: Optional[str] = os.getenv("AI_API_KEY")
     AI_MODEL: str = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_ENABLED: bool = os.getenv("AI_ENABLED", "True").strip().lower() in ("true", "1", "yes", "on")
-    AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "15"))
-    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "20"))
 
-    # Scheduler
-    # NIGHTLY_LOOKAHEAD_HOUR / MINUTE: 24-h local time for the nightly job.
-    # NIGHTLY_LOOKAHEAD_TIMEZONE: IANA timezone for the cron trigger (handles DST
-    #   and allows per-environment overrides, e.g. UTC for staging).
-    NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "17"))
-    NIGHTLY_LOOKAHEAD_MINUTE: int = int(os.getenv("NIGHTLY_LOOKAHEAD_MINUTE", "0"))
+    # AI timeout and budget defaults
+    AI_TIMEOUT_STRUCTURE: int = int(os.getenv("AI_TIMEOUT_STRUCTURE", "20"))
+    AI_TIMEOUT_CLASSIFY: int = int(os.getenv("AI_TIMEOUT_CLASSIFY", "30"))
+    AI_TIMEOUT_WORK_PROFILE: int = int(os.getenv("AI_TIMEOUT_WORK_PROFILE", "25"))
+    AI_UPLOAD_COST_BUDGET_USD: float = float(os.getenv("AI_UPLOAD_COST_BUDGET_USD", "5.0"))
+
+    # Nightly lookahead scheduler defaults
+    NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "18"))
+    NIGHTLY_LOOKAHEAD_MINUTE: int = int(os.getenv("NIGHTLY_LOOKAHEAD_MINUTE", "30"))
     NIGHTLY_LOOKAHEAD_TIMEZONE: str = os.getenv("NIGHTLY_LOOKAHEAD_TIMEZONE", "Australia/Adelaide")
 
     class Config:

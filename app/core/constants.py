@@ -2,11 +2,14 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# Bootstrap set — used as fallback when no DB session is available.
-# The canonical source of truth is the asset_types table (Stage 3).
-# Code that has a DB session should call get_active_asset_types(db) instead.
+# Asset type bootstrap fallbacks
 # ---------------------------------------------------------------------------
+
+# Used when the DB taxonomy cannot be read yet. Code with a DB session should
+# prefer get_active_asset_types(db) so runtime behavior follows the stored
+# taxonomy rather than this bootstrap fallback.
 ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
     "crane",
     "hoist",
@@ -18,12 +21,11 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
     "telehandler",
     "compactor",
     "other",
-    "none",  # milestone/summary rows — classifier returns this; merge logic treats it as skip
+    "none",  # milestone/summary rows intentionally produce no managed demand
 })
 
 
-# Default max_hours_per_day per asset type code (bootstrap fallback).
-# Canonical values live in the asset_types table.
+# Bootstrap max-hours values used only when the asset_types table is unavailable.
 DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
     "crane":         10.0,
     "hoist":         10.0,
@@ -40,119 +42,164 @@ DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
 
 
 # ---------------------------------------------------------------------------
-# Lookahead / demand-engine thresholds
+# Lookahead demand thresholds
 # ---------------------------------------------------------------------------
 
-# Hours per working day used when spreading activity demand across weeks.
-# Aligns with the standard 8-hour day under most Australian construction EBAs.
+# Standard working hours contributed by one asset across one working day.
 DEMAND_HOURS_PER_DAY: int = 8
 
-# Weekly demand-level bucket boundaries (hours per asset type per week).
-# Demand is computed as working_days x DEMAND_HOURS_PER_DAY, so a single
-# asset running a full 5-day week contributes 40 h.  Thresholds are set so
-# that normal full-week single-asset utilisation lands in "high", not
-# "critical".  "Critical" implies multi-asset demand or a scheduling conflict.
-DEMAND_LEVEL_LOW_MAX: int = 16     # < 16 h  -> low   (<= 2 standard days)
-DEMAND_LEVEL_MEDIUM_MAX: int = 32  # < 32 h  -> medium (2-4 days)
-DEMAND_LEVEL_HIGH_MAX: int = 48    # < 48 h  -> high   (4-6 days, 1 asset limit)
-                                   # >= 48 h  -> critical (multi-asset territory)
+# Weekly demand bands. These keep up to 2 standard days in "low", 2–4 days in
+# "medium", and one full single-asset week in "high" before "critical" starts.
+DEMAND_LEVEL_LOW_MAX: int = 16
+DEMAND_LEVEL_MEDIUM_MAX: int = 32
+DEMAND_LEVEL_HIGH_MAX: int = 64
 
-# Anomaly-detection thresholds used in _compute_anomaly_flags().
-# Demand spike: flag when week-over-week change for a bucket exceeds this
-# fraction.  1.5 = 150% change (2.5x demand); doubling alone is common on
-# pour weeks and should not trigger an alert.
+
+# ---------------------------------------------------------------------------
+# Lookahead anomaly thresholds
+# ---------------------------------------------------------------------------
+
+# Week-over-week demand must change by more than 150% before it is treated as
+# anomalous. Doubling alone is common on construction programmes.
 ANOMALY_DEMAND_SPIKE_THRESHOLD: float = 1.5
 
-# Mapping-change ratio: flag when this fraction of activity-asset mappings
-# differ between consecutive uploads.  0.5 = half the schedule rewired.
+# Flag when at least half of committed activity-to-asset mappings changed.
 ANOMALY_MAPPING_CHANGE_THRESHOLD: float = 0.5
 
-# Activity-count delta ratio: flag when the programme changes in size by more
-# than this fraction.  0.3 = 30% addition or removal of activities.
+# Flag when the programme activity count changes by more than 30%.
 ANOMALY_ACTIVITY_DELTA_THRESHOLD: float = 0.3
 
 
 # ---------------------------------------------------------------------------
-# Classification maturity thresholds (Stage 4)
+# Classification confidence thresholds
 # ---------------------------------------------------------------------------
 
-# Minimum number of upload confirmations (with zero corrections) before a
-# classification graduates from TENTATIVE to CONFIRMED.  At this tier the AI
-# re-check is skipped — the classification is considered reliable enough to
-# use without validation.  2 = seen on two separate uploads with no disagreement.
+# Reuse classification directly after two clean confirmations across uploads.
 CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS: int = 2
 
-# Minimum confirmations for the STABLE tier.  At STABLE the classification is
-# treated as a trusted baseline — AI never re-checks it.  5 = seen on five
-# separate uploads with no corrections.
+# Treat classification as a stable baseline after five clean confirmations.
 CLASSIFICATION_STABLE_MIN_CONFIRMATIONS: int = 5
 
 
 # ---------------------------------------------------------------------------
-# AI service — processing parameters
+# AI structure-detection limits
 # ---------------------------------------------------------------------------
 
-# Number of rows sampled from an uploaded file for structure detection.
-# 50 rows is sufficient to identify column headers and date patterns reliably.
+# Sample enough rows to identify headers, date columns, and row-shape patterns
+# without paying to send an entire upload.
 AI_STRUCTURE_DETECTION_SAMPLE_SIZE: int = 50
 
-# max_tokens budget for the structure detection API call.
+# Leave enough room for strict JSON plus header/date reasoning in a small model.
 AI_STRUCTURE_DETECTION_MAX_TOKENS: int = 2048
 
-# max_tokens budget for a single activity classification batch call.
-# 50 activities x ~30 output tokens = ~1,500 tokens + JSON overhead;
-# 8192 gives ~5x headroom.
-AI_CLASSIFICATION_BATCH_MAX_TOKENS: int = 8192
 
-# Number of activities sent to the AI in a single classification batch call.
-AI_CLASSIFICATION_BATCH_SIZE: int = 50
+# ---------------------------------------------------------------------------
+# AI classification limits
+# ---------------------------------------------------------------------------
 
-# Unique-candidate count above which classification batches are fanned out in
-# parallel rather than run sequentially.
-AI_CLASSIFICATION_PARALLEL_THRESHOLD: int = 100
+# Keep batch size modest so a single oddball activity cannot blow out the whole
+# request payload or make one retry too expensive.
+AI_CLASSIFICATION_BATCH_SIZE: int = 40
 
-# Maximum number of in-flight classification batch calls when running in parallel.
-AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES: int = 4
+# Sized for ~40 rows plus instructions and JSON output with comfortable headroom.
+AI_CLASSIFICATION_BATCH_MAX_TOKENS: int = 6144
 
-# Extra seconds added to AI_TIMEOUT_CLASSIFY for the ThreadPoolExecutor timeout
-# in classify_item_standalone, to allow the coroutine's own timeout to fire first.
-AI_STANDALONE_TIMEOUT_BUFFER_SECONDS: int = 2
+# Only parallelize once the upload is large enough to justify the extra cost and
+# concurrent rate-limit pressure.
+AI_CLASSIFICATION_PARALLEL_THRESHOLD: int = 80
+
+# Conservative launch default: enough parallelism to keep uploads moving without
+# spiking provider errors or spend.
+AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES: int = 3
+
+# Give the outer timeout a little headroom over the coroutine timeout so the
+# inner timeout is what usually fires first.
+AI_STANDALONE_TIMEOUT_BUFFER_SECONDS: int = 3
 
 
 # ---------------------------------------------------------------------------
-# Booking rules
+# Work-profile inference limits
 # ---------------------------------------------------------------------------
 
-# Minimum duration (minutes) for a gap to be reported as an available booking slot.
+# Bump when context extraction logic changes in a way that changes cache semantics.
+WORK_PROFILE_CONTEXT_VERSION: int = 1
+
+# Bump when prompt/model/policy behavior changes in a way that changes cache semantics.
+WORK_PROFILE_INFERENCE_VERSION: int = 1
+
+# Cap new unique contexts per upload so cold-start uploads do not explode cost
+# or fragment the cache too aggressively.
+WORK_PROFILE_MAX_NEW_CONTEXTS_PER_UPLOAD: int = 150
+
+# Conservative parallelism for work-profile AI calls during early production use.
+AI_WORK_PROFILE_MAX_CONCURRENT: int = 3
+
+# Enough room for bounded JSON output describing total hours and normalized shape.
+AI_WORK_PROFILE_MAX_TOKENS: int = 768
+
+
+# ---------------------------------------------------------------------------
+# Work-profile validation and maturity thresholds
+# ---------------------------------------------------------------------------
+
+# Final stored total_hours values must align to this scheduling unit.
+WORK_PROFILE_OPERATIONAL_UNIT: float = 0.5
+
+# Prevent tiny non-zero profiles that create phantom demand.
+WORK_PROFILE_MIN_HOURS: float = 0.5
+
+# Bayesian maturity thresholds. Lower coefficient of variation means the cache
+# estimate is trusted enough to reuse without another AI call.
+WORK_PROFILE_CV_CONFIRMED: float = 0.20
+WORK_PROFILE_CV_TRUSTED: float = 0.10
+
+# If corrections exceed 20% once enough evidence exists, treat the profile as
+# insufficiently reliable regardless of posterior precision.
+WORK_PROFILE_CORRECTION_RATE_THRESHOLD: float = 0.20
+WORK_PROFILE_CORRECTION_MIN_SAMPLES: int = 3
+
+# Observation uncertainty assumptions. Actuals remain much more trustworthy
+# than AI estimates, so they move the posterior far more aggressively.
+WORK_PROFILE_AI_ERROR_FRACTION: float = 0.20
+WORK_PROFILE_ACTUAL_ERROR_FRACTION: float = 0.05
+
+# Normalized distributions must be effectively exact before they are stored.
+WORK_PROFILE_NORM_DIST_SUM_TOLERANCE: float = 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Booking and calendar limits
+# ---------------------------------------------------------------------------
+
+# Ignore unusably short booking gaps when exposing available slots.
 BOOKING_MIN_SLOT_DURATION_MINUTES: int = 30
 
-# Maximum date-range span (days) accepted by calendar / report query endpoints.
+# Bound expensive date-range queries on booking and calendar endpoints.
 BOOKING_CALENDAR_MAX_DAYS: int = 90
 
+# Default forward window for upcoming-bookings style queries.
+UPCOMING_BOOKINGS_DEFAULT_DAYS_AHEAD: int = 7
+UPCOMING_BOOKINGS_MAX_DAYS_AHEAD: int = 90
+
 
 # ---------------------------------------------------------------------------
-# File handling
+# File and preview limits
 # ---------------------------------------------------------------------------
 
-# Maximum accepted upload size in bytes (20 MB).
+# Large enough for typical project uploads without inviting oversized binaries.
 MAX_FILE_UPLOAD_SIZE_BYTES: int = 20 * 1024 * 1024
 
-# HTTP Cache-Control max-age for served file previews and images (seconds).
+# Browser cache lifetime for served previews and derived images.
 FILE_CACHE_MAX_AGE_SECONDS: int = 3600
 
-# PDF → PNG render scale for the low-resolution preview endpoint.
+# Preview uses a lighter render; full image endpoint prefers readability.
 PDF_PREVIEW_SCALE: float = 1.5
-
-# PDF → PNG render scale for the full-resolution image endpoint.
 PDF_IMAGE_SCALE: float = 3.0
 
 
 # ---------------------------------------------------------------------------
 # API pagination defaults
 # ---------------------------------------------------------------------------
-
-# Default and maximum page sizes for list endpoints.
-# Naming: <RESOURCE>_PAGE_<DEFAULT|MAX>
 
 ASSET_PAGE_DEFAULT: int = 100
 ASSET_PAGE_MAX: int = 100
@@ -178,16 +225,12 @@ PROJECT_PAGE_MAX: int = 1000
 SUBCONTRACTOR_PAGE_DEFAULT: int = 100
 SUBCONTRACTOR_PAGE_MAX: int = 1000
 
-# Default look-ahead window (days) for upcoming-bookings queries.
-UPCOMING_BOOKINGS_DEFAULT_DAYS_AHEAD: int = 7
-UPCOMING_BOOKINGS_MAX_DAYS_AHEAD: int = 90
-
 
 def get_active_asset_types(db: object) -> frozenset[str]:
     """Load active asset type codes from the DB taxonomy.
 
     Falls back to the bootstrap ALLOWED_ASSET_TYPES if the asset_types
-    table doesn't exist yet (pre-migration) or the query fails.
+    table doesn't exist yet or the query fails.
 
     Parameters
     ----------
