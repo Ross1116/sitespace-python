@@ -19,7 +19,7 @@ from ...schemas.asset import (
     AssetStatusChangeImpactResponse
 )
 from ...schemas.base import MessageResponse
-from ...schemas.enums import AssetStatus, UserRole
+from ...schemas.enums import AssetStatus, AssetTypeResolutionStatus, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,8 @@ def list_assets(
     project_id: Optional[UUID] = Query(None, description="Filter by project ID"),
     asset_status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     asset_type: Optional[str] = Query(None, description="Filter by asset type"),
+    resolution_status: Optional[AssetTypeResolutionStatus] = Query(None, description="Filter by type resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(ASSET_PAGE_DEFAULT, ge=1, le=ASSET_PAGE_MAX, description="Number of items to return"),
     db: Session = Depends(get_db),
@@ -103,6 +105,8 @@ def list_assets(
             project_id=project_id,
             status=asset_status,
             asset_type=asset_type,
+            resolution_status=resolution_status.value if resolution_status else None,
+            planning_ready=planning_ready,
             skip=skip,
             limit=limit
         )

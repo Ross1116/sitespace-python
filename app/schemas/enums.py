@@ -38,6 +38,16 @@ class TradeSpecialty(str, Enum):
     GENERAL = "general"
     OTHER = "other"
 
+class AssetTypeResolutionStatus(str, Enum):
+    UNKNOWN = "unknown"
+    INFERRED = "inferred"
+    CONFIRMED = "confirmed"
+
+class TradeResolutionStatus(str, Enum):
+    UNKNOWN = "unknown"
+    SUGGESTED = "suggested"
+    CONFIRMED = "confirmed"
+
 class BookingAuditAction(str, Enum):
     CREATED = "created"
     APPROVED = "approved"

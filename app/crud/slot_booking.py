@@ -29,11 +29,18 @@ from ..schemas.slot_booking import (
 )
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
 from .asset import sync_maintenance_status
+from ..services.metadata_confidence_service import asset_is_planning_ready
 
 
 # ---------------------------------------------------------------------------
 # Helpers shared across conflict-checking, auto-deny, and competing count
 # ---------------------------------------------------------------------------
+
+def _ensure_asset_planning_ready(asset: Asset) -> None:
+    if not asset_is_planning_ready(asset):
+        raise ValueError(
+            f"Asset '{asset.name}' must have a confirmed or inferred canonical type before it can be booked."
+        )
 
 def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
     """Return an OR clause matching any time overlap with the given window."""
@@ -292,6 +299,7 @@ def create_booking(
     asset = db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
     if not asset:
         raise ValueError(f"Asset with id {booking_data.asset_id} not found")
+    _ensure_asset_planning_ready(asset)
 
     sync_maintenance_status(db, asset)
 
@@ -398,6 +406,12 @@ def create_bulk_bookings(
             asset = db.query(Asset).filter(Asset.id == asset_id).first()
             if not asset:
                 failed_bookings.append({"asset_id": asset_id, "reason": "Asset not found"})
+                continue
+            if not asset_is_planning_ready(asset):
+                failed_bookings.append({
+                    "asset_id": asset_id,
+                    "reason": f"Asset '{asset.name}' must have a confirmed or inferred canonical type before it can be booked",
+                })
                 continue
 
             if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
@@ -626,6 +640,7 @@ def update_booking(
         asset = db.query(Asset).filter(Asset.id == update_data['asset_id']).first()
         if not asset:
             raise ValueError(f"Asset with id {update_data['asset_id']} not found")
+        _ensure_asset_planning_ready(asset)
             
     if 'status' in update_data and isinstance(update_data['status'], str):
         raw_status = update_data['status']

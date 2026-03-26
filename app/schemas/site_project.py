@@ -125,3 +125,35 @@ class ProjectStatisticsResponse(BaseSchema):
     total_assets: int = 0
     total_bookings: int = 0
     status: Optional[str] = None
+
+
+class PlanningCompletenessCountsResponse(BaseSchema):
+    unknown_assets: int
+    inferred_assets: int
+    confirmed_assets: int
+    unknown_trades: int
+    suggested_trades: int
+    confirmed_trades: int
+    blocking_unknown_assets: int
+    blocking_unknown_trades: int
+
+
+class PlanningCompletenessTaskResponse(BaseSchema):
+    kind: str
+    severity: str
+    entity_type: str
+    entity_id: UUID
+    title: str
+    suggested_value: Optional[str] = None
+    blocking: bool
+    affects_next_6_weeks: bool
+
+
+class PlanningCompletenessResponse(BaseSchema):
+    project_id: UUID
+    score: int
+    status: str
+    window_start: date
+    window_end: date
+    counts: PlanningCompletenessCountsResponse
+    tasks: List[PlanningCompletenessTaskResponse]

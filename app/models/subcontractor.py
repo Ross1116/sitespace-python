@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime
+from sqlalchemy import Column, String, Boolean, DateTime, DECIMAL
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
@@ -16,6 +16,10 @@ class Subcontractor(Base):
     last_name = Column(String(100), nullable=False)
     company_name = Column(String(255))
     trade_specialty = Column(String(100))  # electrician, plumber, etc.
+    suggested_trade_specialty = Column(String(100), nullable=True)
+    trade_resolution_status = Column(String(20), nullable=False, default="unknown", server_default="unknown", index=True)
+    trade_inference_source = Column(String(50), nullable=True)
+    trade_inference_confidence = Column(DECIMAL(4, 3), nullable=True)
     phone = Column(String(20))
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -36,3 +40,7 @@ class Subcontractor(Base):
     @validates("email")
     def normalize_email(self, key, value):
         return value.strip().lower() if value else value
+
+    @property
+    def planning_ready(self) -> bool:
+        return bool(self.trade_specialty) and (self.trade_resolution_status or "unknown") == "confirmed"

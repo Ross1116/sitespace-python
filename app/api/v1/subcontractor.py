@@ -31,7 +31,7 @@ from ...core.constants import (
     UPCOMING_BOOKINGS_MAX_DAYS_AHEAD,
 )
 from ...schemas.base import MessageResponse
-from ...schemas.enums import BookingStatus, UserRole
+from ...schemas.enums import BookingStatus, TradeResolutionStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
@@ -46,6 +46,8 @@ def get_my_subcontractors(
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     project_id: Optional[UUID] = Query(None, description="Filter by specific project"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -62,7 +64,9 @@ def get_my_subcontractors(
             skip=skip,
             limit=limit,
             is_active=is_active,
-            trade_specialty=trade_specialty
+            trade_specialty=trade_specialty,
+            trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+            planning_ready=planning_ready,
         )
     elif user_role == UserRole.MANAGER:
         result = subcontractor_crud.get_subcontractors_for_manager(
@@ -72,6 +76,8 @@ def get_my_subcontractors(
             limit=limit,
             is_active=is_active,
             trade_specialty=trade_specialty,
+            trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+            planning_ready=planning_ready,
             project_id=project_id
         )
     else:
@@ -82,20 +88,7 @@ def get_my_subcontractors(
         )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -125,6 +118,8 @@ def get_manager_subcontractor_statistics(
 def search_subcontractors(
     search_term: Optional[str] = Query(None, description="Search in name, company, email"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     is_active: Optional[bool] = Query(True, description="Filter by active status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
@@ -140,26 +135,15 @@ def search_subcontractors(
         db,
         search_term=search_term,
         trade_specialty=trade_specialty,
+        trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+        planning_ready=planning_ready,
         is_active=is_active,
         skip=skip,
         limit=limit
     )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -188,20 +172,7 @@ def get_available_subcontractors(
         end_time=end_time
     )
     
-    return [
-        SubcontractorResponse(
-            id=s.id,
-            email=s.email,
-            first_name=s.first_name,
-            last_name=s.last_name,
-            company_name=s.company_name,
-            trade_specialty=s.trade_specialty,
-            phone=s.phone,
-            is_active=s.is_active,
-            created_at=s.created_at,
-            updated_at=s.updated_at
-        ) for s in available
-    ]
+    return [SubcontractorResponse.model_validate(s) for s in available]
 
 @router.get("/by-trade/{trade_specialty}", response_model=List[SubcontractorResponse])
 def get_subcontractors_by_trade(
@@ -225,20 +196,7 @@ def get_subcontractors_by_trade(
         limit=limit
     )
     
-    return [
-        SubcontractorResponse(
-            id=s.id,
-            email=s.email,
-            first_name=s.first_name,
-            last_name=s.last_name,
-            company_name=s.company_name,
-            trade_specialty=s.trade_specialty,
-            phone=s.phone,
-            is_active=s.is_active,
-            created_at=s.created_at,
-            updated_at=s.updated_at
-        ) for s in subcontractors
-    ]
+    return [SubcontractorResponse.model_validate(s) for s in subcontractors]
 
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
@@ -246,6 +204,8 @@ def get_all_subcontractors(
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -259,24 +219,13 @@ def get_all_subcontractors(
         skip=skip,
         limit=limit,
         is_active=is_active,
-        trade_specialty=trade_specialty
+        trade_specialty=trade_specialty,
+        trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+        planning_ready=planning_ready,
     )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -395,6 +344,11 @@ def get_subcontractor(
         last_name=subcontractor.last_name,
         company_name=subcontractor.company_name,
         trade_specialty=subcontractor.trade_specialty,
+        suggested_trade_specialty=subcontractor.suggested_trade_specialty,
+        trade_resolution_status=subcontractor.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value,
+        trade_inference_source=subcontractor.trade_inference_source,
+        trade_inference_confidence=subcontractor.trade_inference_confidence,
+        planning_ready=subcontractor.planning_ready,
         phone=subcontractor.phone,
         is_active=subcontractor.is_active,
         created_at=subcontractor.created_at,

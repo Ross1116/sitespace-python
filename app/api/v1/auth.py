@@ -496,6 +496,11 @@ def get_current_user_info(
             last_name=current_entity.last_name,
             company_name=current_entity.company_name,
             trade_specialty=current_entity.trade_specialty,
+            suggested_trade_specialty=current_entity.suggested_trade_specialty,
+            trade_resolution_status=current_entity.trade_resolution_status or "unknown",
+            trade_inference_source=current_entity.trade_inference_source,
+            trade_inference_confidence=current_entity.trade_inference_confidence,
+            planning_ready=current_entity.planning_ready,
             phone=current_entity.phone,
             is_active=current_entity.is_active,
         )

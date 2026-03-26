@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import os
 import logging
@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     # Database - Use PostgreSQL for production, SQLite for testing
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
     
@@ -81,9 +83,6 @@ class Settings(BaseSettings):
     NIGHTLY_LOOKAHEAD_HOUR: int = int(os.getenv("NIGHTLY_LOOKAHEAD_HOUR", "18"))
     NIGHTLY_LOOKAHEAD_MINUTE: int = int(os.getenv("NIGHTLY_LOOKAHEAD_MINUTE", "30"))
     NIGHTLY_LOOKAHEAD_TIMEZONE: str = os.getenv("NIGHTLY_LOOKAHEAD_TIMEZONE", "Australia/Adelaide")
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()
 

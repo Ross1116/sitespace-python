@@ -2,6 +2,7 @@ from pydantic import EmailStr, Field, field_validator, model_validator
 from typing import Optional, Literal
 from datetime import datetime
 from uuid import UUID
+from decimal import Decimal
 import re
 
 from .base import BaseSchema
@@ -148,6 +149,11 @@ class CurrentSubcontractorResponse(BaseSchema):
     last_name: str
     company_name: Optional[str] = None
     trade_specialty: Optional[str] = None
+    suggested_trade_specialty: Optional[str] = None
+    trade_resolution_status: str = "unknown"
+    trade_inference_source: Optional[str] = None
+    trade_inference_confidence: Optional[Decimal] = None
+    planning_ready: bool = False
     phone: Optional[str] = None
     is_active: bool
     role: Literal["subcontractor"] = "subcontractor"

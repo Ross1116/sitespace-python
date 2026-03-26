@@ -1409,6 +1409,20 @@ def _work_profile_prompt_text() -> str:
     return prompt_path.read_text(encoding="utf-8").strip()
 
 
+def _work_profile_response_max_tokens(duration_days: int) -> int:
+    """
+    Size the completion budget for one normalized bucket per activity day.
+
+    The original fixed 768-token budget is enough for short activities but it
+    truncates long responses once the model has to emit dozens or hundreds of
+    numeric buckets. Keep the historical floor for short rows, then scale
+    linearly with duration while capping spend for extremely long activities.
+    """
+    duration_days = max(1, int(duration_days or 1))
+    estimated_tokens = 320 + (duration_days * 8)
+    return max(AI_WORK_PROFILE_MAX_TOKENS, min(4096, estimated_tokens))
+
+
 def _posterior_hint_payload(profile: Optional[ItemContextProfile]) -> Optional[dict[str, float]]:
     if profile is None or profile.posterior_mean is None or profile.posterior_precision is None:
         return None
@@ -1546,6 +1560,7 @@ async def generate_work_profile_ai(
             f"{json.dumps(repair_errors, sort_keys=True)}"
         )
     user_message = json.dumps(request_payload, sort_keys=True)
+    response_max_tokens = _work_profile_response_max_tokens(duration_days)
 
     try:
         started = time.perf_counter()
@@ -1554,7 +1569,7 @@ async def generate_work_profile_ai(
             client,
             system_prompt,
             user_message,
-            max_tokens=AI_WORK_PROFILE_MAX_TOKENS,
+            max_tokens=response_max_tokens,
             timeout=float(settings.AI_TIMEOUT_WORK_PROFILE),
         )
         latency_ms = int((time.perf_counter() - started) * 1000)

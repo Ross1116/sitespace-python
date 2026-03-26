@@ -281,7 +281,7 @@ def create_booking(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid booking data"
+            detail=str(e)
         )
     except Exception:
         db.rollback()
@@ -401,7 +401,7 @@ def create_bulk_bookings(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid bulk booking request"
+            detail=str(e)
         )
     except Exception:
         db.rollback()

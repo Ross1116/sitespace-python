@@ -37,7 +37,8 @@ from ..core.constants import (
     get_active_asset_types,
     get_max_hours_for_type,
 )
-from .ai_service import normalize_asset_type, suggest_subcontractor_asset_types
+from .ai_service import suggest_subcontractor_asset_types
+from .metadata_confidence_service import asset_is_planning_ready, subcontractor_is_planning_ready
 from .lookahead_policy_service import ensure_project_alert_policy
 from .work_profile_service import build_compressed_context, build_default_profile, derive_distribution
 
@@ -373,26 +374,35 @@ def _compute_booked_by_week_asset(
     active_types = get_active_asset_types(db)
 
     for booking, asset in booking_rows:
-        # Prefer canonical_type (Stage 3) → normalize raw type → normalize name.
-        raw_asset_type = asset.type or ""
-        asset_type = asset.canonical_type
-        if asset_type is None:
-            asset_type = normalize_asset_type(raw_asset_type)
-            if asset_type is None:
-                asset_type = normalize_asset_type(asset.name or "")
-        if asset_type is None or asset_type not in active_types:
-            raw_attempted = raw_asset_type or (asset.name or "")
+        raw_attempted = asset.type or (asset.name or "")
+        if not asset_is_planning_ready(asset):
             if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
                 logger.warning(
-                    "Asset type '%s' not in allowed set; bucketing as 'other' (booking %s). "
-                    "Check asset configuration.",
+                    "Asset '%s' has unresolved planning type; booking %s will not count toward lookahead coverage.",
                     raw_attempted,
                     booking.id,
                 )
                 _warned_unknown_types.add(raw_attempted)
             elif raw_attempted:
-                logger.debug("Asset type '%s' not in allowed set; bucketing as 'other' for booking %s", raw_attempted, booking.id)
-            asset_type = "other"
+                logger.debug(
+                    "Asset '%s' has unresolved planning type; skipping lookahead coverage for booking %s",
+                    raw_attempted,
+                    booking.id,
+                )
+            continue
+
+        asset_type = asset.canonical_type
+        if asset_type is None or asset_type not in active_types:
+            if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
+                logger.warning(
+                    "Asset type '%s' not in allowed set; skipping lookahead coverage for booking %s.",
+                    raw_attempted,
+                    booking.id,
+                )
+                _warned_unknown_types.add(raw_attempted)
+            elif raw_attempted:
+                logger.debug("Asset type '%s' not in allowed set; skipping lookahead coverage for booking %s", raw_attempted, booking.id)
+            continue
 
         if not booking.booking_date or not booking.start_time or not booking.end_time:
             continue
@@ -913,14 +923,15 @@ def get_sub_asset_suggestions_for_project(
     snapshot = get_latest_snapshot(project_id, db)
     demand_rows: list[dict] = (snapshot.data or {}).get("rows", []) if snapshot else []
 
+    eligible_subs = [sub for sub in project.subcontractors if subcontractor_is_planning_ready(sub)]
     sub_dicts = [
         {"id": str(sub.id), "trade_specialty": sub.trade_specialty or ""}
-        for sub in project.subcontractors
+        for sub in eligible_subs
     ]
     suggestions = suggest_subcontractor_asset_types(sub_dicts)
 
     result: list[dict] = []
-    sub_map = {str(sub.id): sub for sub in project.subcontractors}
+    sub_map = {str(sub.id): sub for sub in eligible_subs}
 
     for suggestion in suggestions:
         sub = sub_map.get(suggestion.subcontractor_id)
