@@ -601,6 +601,7 @@ async def _call_api(
                 client.chat.completions.create(
                     model=settings.AI_MODEL,
                     max_tokens=max_tokens,
+                    temperature=0,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message},
@@ -616,6 +617,7 @@ async def _call_api(
                 client.messages.create(
                     model=settings.AI_MODEL,
                     max_tokens=max_tokens,
+                    temperature=0,
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_message}],
                 ),

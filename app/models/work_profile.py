@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     SmallInteger,
@@ -194,6 +195,10 @@ class ActivityWorkProfile(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
+        UniqueConstraint(
+            "activity_id",
+            name="uq_activity_work_profiles_activity_id",
+        ),
         CheckConstraint(
             "source IN ('ai', 'cache', 'manual', 'default')",
             name="ck_activity_work_profiles_source",
@@ -221,4 +226,52 @@ class ActivityWorkProfile(Base):
         return (
             f"<ActivityWorkProfile(activity={self.activity_id}, asset='{self.asset_type}', "
             f"hours={self.total_hours}, source='{self.source}')>"
+        )
+
+
+class WorkProfileAILog(Base):
+    """Audit log for one work-profile AI request/response cycle."""
+
+    __tablename__ = "work_profile_ai_logs"
+    __table_args__ = (
+        Index("ix_work_profile_ai_logs_activity_id", "activity_id"),
+        Index("ix_work_profile_ai_logs_item_id", "item_id"),
+        Index("ix_work_profile_ai_logs_context_hash", "context_hash"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    activity_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("programme_activities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    context_hash = Column(String(64), nullable=False)
+    inference_version = Column(
+        SmallInteger,
+        ForeignKey("inference_policies.version", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    model_name = Column(String(100), nullable=False)
+    request_json = Column(JSONB, nullable=False)
+    response_json = Column(JSONB, nullable=True)
+    validation_errors_json = Column(JSONB, nullable=True)
+    fallback_used = Column(Boolean, nullable=False, default=False, server_default="false")
+    retry_count = Column(SmallInteger, nullable=False, default=0, server_default="0")
+    tokens_used = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    activity = relationship("ProgrammeActivity", foreign_keys=[activity_id])
+    item = relationship("Item", foreign_keys=[item_id])
+    inference_policy = relationship("InferencePolicy", foreign_keys=[inference_version])
+
+    def __repr__(self) -> str:
+        return (
+            f"<WorkProfileAILog(activity={self.activity_id}, item={self.item_id}, "
+            f"version={self.inference_version})>"
         )

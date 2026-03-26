@@ -15,10 +15,16 @@ from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.asset import Asset
-from ..models.lookahead import LookaheadSnapshot, Notification
+from ..models.lookahead import (
+    LookaheadRow as LookaheadRowModel,
+    LookaheadSnapshot,
+    Notification,
+    SubcontractorAssetTypeAssignment,
+)
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
+from ..models.work_profile import ActivityWorkProfile
 from ..schemas.enums import BookingStatus
 from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
@@ -29,14 +35,17 @@ from ..core.constants import (
     DEMAND_LEVEL_LOW_MAX,
     DEMAND_LEVEL_MEDIUM_MAX,
     get_active_asset_types,
+    get_max_hours_for_type,
 )
 from .ai_service import normalize_asset_type, suggest_subcontractor_asset_types
+from .lookahead_policy_service import ensure_project_alert_policy
+from .work_profile_service import build_compressed_context, build_default_profile, derive_distribution
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class LookaheadRow:
+class ComputedLookaheadRow:
     asset_type: str
     week_start: date
     demand_hours: float
@@ -44,6 +53,8 @@ class LookaheadRow:
     demand_level: str
     gap_hours: float
     low_confidence_flag: bool = False
+    is_anomalous: bool = False
+    anomaly_flags_json: dict[str, bool | float] | None = None
 
 
 def _week_start(d: date) -> date:
@@ -83,6 +94,18 @@ def _working_days_in_range(start: date, end: date, work_days_per_week: int) -> i
             count += 1
         current += timedelta(days=1)
     return count
+
+
+def _iter_working_dates(start: date, end: date, work_days_per_week: int) -> list[date]:
+    span_start = min(start, end)
+    span_end = max(start, end)
+    days: list[date] = []
+    current = span_start
+    while current <= span_end:
+        if current.weekday() < work_days_per_week:
+            days.append(current)
+        current += timedelta(days=1)
+    return days
 
 
 def _iter_weekly_activity_hours(
@@ -181,7 +204,12 @@ def _compute_anomaly_flags(
 def _compute_demand_by_week_asset(
     db: Session,
     upload_id: uuid.UUID,
-) -> tuple[dict[tuple[date, str], float], set[tuple[str, str]], set[tuple[date, str]]]:
+) -> tuple[
+    dict[tuple[date, str], float],
+    set[tuple[str, str]],
+    set[tuple[date, str]],
+    dict[tuple[date, str], dict[str, bool | float]],
+]:
     """Query committed activity-asset mappings and bucket demand hours by (week, asset_type).
 
     Returns (demand_by_week_asset, current_mapping_set, low_confidence_buckets).
@@ -194,9 +222,10 @@ def _compute_demand_by_week_asset(
         depend solely on these buckets (plan §20.8).
     """
     mapping_rows = (
-        db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload)
+        db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload, ActivityWorkProfile)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             or_(
@@ -225,9 +254,19 @@ def _compute_demand_by_week_asset(
     current_mapping_set: set[tuple[str, str]] = set()
     # Track confidence values per bucket to compute low_confidence_flag.
     bucket_confidences: dict[tuple[date, str], set[str]] = defaultdict(set)
+    bucket_flags: dict[tuple[date, str], dict[str, bool | float]] = defaultdict(
+        lambda: {
+            "demand_spike": False,
+            "mapping_change": False,
+            "activity_delta": False,
+            "low_confidence_only": False,
+            "missing_work_profile": False,
+            "per_day_cap_repaired": False,
+        }
+    )
 
     active_types = get_active_asset_types(db)
-    for mapping, activity, upload in mapping_rows:
+    for mapping, activity, upload, profile in mapping_rows:
         if mapping.asset_type not in active_types:
             logger.warning("Invalid mapping asset_type=%s for activity=%s; skipping", mapping.asset_type, activity.id)
             continue
@@ -244,23 +283,73 @@ def _compute_demand_by_week_asset(
                     upload.id, raw_wdpw,
                 )
             work_days = 5
-        for week, demand_hours in _iter_weekly_activity_hours(
-            activity.start_date, activity.end_date, work_days
-        ):
-            demand_by_week_asset[(week, mapping.asset_type)] += demand_hours
-            bucket_confidences[(week, mapping.asset_type)].add(activity.row_confidence)
+        work_dates = _iter_working_dates(activity.start_date, activity.end_date, work_days)
+        if not work_dates:
+            continue
+
+        max_hours_per_day = get_max_hours_for_type(db, mapping.asset_type)
+        low_confidence = bool(activity.row_confidence == "low")
+        repaired = False
+        missing_profile = profile is None
+        compressed_context = build_compressed_context(
+            activity.name,
+            level_name=activity.level_name,
+            zone_name=activity.zone_name,
+        )
+        _fallback_total, fallback_distribution, fallback_norm = build_default_profile(
+            mapping.asset_type,
+            len(work_dates),
+            max_hours_per_day,
+            compressed_context=compressed_context,
+        )
+
+        if profile is None:
+            distribution = fallback_distribution
+            low_confidence = True
+        else:
+            profile_distribution = [float(value) for value in list(profile.distribution_json)]
+            if len(profile_distribution) != len(work_dates):
+                distribution = derive_distribution(
+                    fallback_norm,
+                    float(profile.total_hours),
+                    max_hours_per_day=max_hours_per_day,
+                )
+                low_confidence = True
+                repaired = True
+            elif any(value > max_hours_per_day for value in profile_distribution):
+                distribution = derive_distribution(
+                    fallback_norm,
+                    float(profile.total_hours),
+                    max_hours_per_day=max_hours_per_day,
+                )
+                low_confidence = True
+                repaired = True
+            else:
+                distribution = profile_distribution
+                low_confidence = low_confidence or bool(profile.low_confidence_flag)
+
+        for activity_day, demand_hours in zip(work_dates, distribution, strict=True):
+            key = (_week_start(activity_day), mapping.asset_type)
+            demand_by_week_asset[key] += float(demand_hours)
+            bucket_confidences[key].add("low" if low_confidence else "high")
+            bucket_flags[key]["missing_work_profile"] = bool(
+                bucket_flags[key]["missing_work_profile"] or missing_profile
+            )
+            bucket_flags[key]["per_day_cap_repaired"] = bool(
+                bucket_flags[key]["per_day_cap_repaired"] or repaired
+            )
 
         current_mapping_set.add((str(activity.id), mapping.asset_type))
 
-    # A bucket is low-confidence only when every contributing activity is 'low'
-    # and none are None (unknown confidence makes the verdict uncertain).
     low_confidence_buckets: set[tuple[date, str]] = {
         key
         for key, confidences in bucket_confidences.items()
-        if confidences and None not in confidences and all(c == "low" for c in confidences)
+        if confidences and all(c == "low" for c in confidences)
     }
+    for key in low_confidence_buckets:
+        bucket_flags[key]["low_confidence_only"] = True
 
-    return demand_by_week_asset, current_mapping_set, low_confidence_buckets
+    return demand_by_week_asset, current_mapping_set, low_confidence_buckets, bucket_flags
 
 
 def _compute_booked_by_week_asset(
@@ -331,6 +420,192 @@ def _compute_booked_by_week_asset(
     return booked_by_week_asset
 
 
+def _severity_score(demand_hours: float, gap_hours: float) -> float:
+    gap_ratio = (gap_hours / demand_hours) if demand_hours > 0 else 0.0
+    return round((1.0 * gap_hours) + (16.0 * gap_ratio) + (0.25 * demand_hours), 4)
+
+
+def _upsert_snapshot_with_rows(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    latest_upload_id: uuid.UUID,
+    snapshot_date: date,
+    snapshot_payload: dict,
+    anomaly_flags: dict,
+    row_payloads: list[dict[str, object]],
+) -> LookaheadSnapshot:
+    snapshot = (
+        db.query(LookaheadSnapshot)
+        .filter(
+            LookaheadSnapshot.project_id == project_id,
+            LookaheadSnapshot.snapshot_date == snapshot_date,
+        )
+        .first()
+    )
+
+    if snapshot is None:
+        snapshot = LookaheadSnapshot(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            programme_upload_id=latest_upload_id,
+            snapshot_date=snapshot_date,
+            data=snapshot_payload,
+            anomaly_flags=anomaly_flags,
+        )
+        db.add(snapshot)
+        db.flush()
+    else:
+        snapshot.programme_upload_id = latest_upload_id
+        snapshot.data = snapshot_payload
+        snapshot.anomaly_flags = anomaly_flags
+        db.flush()
+
+    (
+        db.query(LookaheadRowModel)
+        .filter(LookaheadRowModel.snapshot_id == snapshot.id)
+        .delete(synchronize_session=False)
+    )
+    if row_payloads:
+        db.bulk_insert_mappings(
+            LookaheadRowModel,
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "snapshot_id": snapshot.id,
+                    "project_id": project_id,
+                    "week_start": row["week_start"],
+                    "asset_type": row["asset_type"],
+                    "demand_hours": row["demand_hours"],
+                    "booked_hours": row["booked_hours"],
+                    "gap_hours": row["gap_hours"],
+                    "is_anomalous": row["is_anomalous"],
+                    "anomaly_flags_json": row["anomaly_flags_json"],
+                }
+                for row in row_payloads
+            ],
+        )
+    db.flush()
+    return snapshot
+
+
+def _sync_thresholded_notifications(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    snapshot_date: date,
+    row_payloads: list[dict[str, object]],
+    suppress_external: bool,
+) -> None:
+    policy = ensure_project_alert_policy(db, project_id)
+    assignments = (
+        db.query(SubcontractorAssetTypeAssignment)
+        .filter(
+            SubcontractorAssetTypeAssignment.project_id == project_id,
+            SubcontractorAssetTypeAssignment.is_active.is_(True),
+        )
+        .all()
+    )
+    assignments_by_type: dict[str, list[uuid.UUID]] = defaultdict(list)
+    for assignment in assignments:
+        assignments_by_type[assignment.asset_type].append(assignment.subcontractor_id)
+
+    candidates: list[dict[str, object]] = []
+    if not suppress_external and policy.mode != "observe_only" and bool(policy.external_enabled):
+        for row in row_payloads:
+            demand_hours = float(row["demand_hours"])
+            gap_hours = float(row["gap_hours"])
+            week_start = row["week_start"]
+            asset_type = str(row["asset_type"])
+            flags = row["anomaly_flags_json"] or {}
+            gap_ratio = (gap_hours / demand_hours) if demand_hours > 0 else 0.0
+
+            if asset_type == "other":
+                continue
+            if gap_hours <= 0:
+                continue
+            if demand_hours < float(policy.min_demand_hours):
+                continue
+            if not (gap_hours >= float(policy.min_gap_hours) or gap_ratio >= float(policy.min_gap_ratio)):
+                continue
+            if week_start < snapshot_date + timedelta(weeks=int(policy.min_lead_weeks)):
+                continue
+            if bool(row["is_anomalous"]):
+                continue
+            if bool(flags.get("low_confidence_only")):
+                continue
+
+            for subcontractor_id in assignments_by_type.get(asset_type, []):
+                candidates.append(
+                    {
+                        "key": (project_id, subcontractor_id, asset_type, week_start),
+                        "sub_id": subcontractor_id,
+                        "asset_type": asset_type,
+                        "week_start": week_start,
+                        "severity_score": _severity_score(demand_hours, gap_hours),
+                    }
+                )
+
+    candidates.sort(
+        key=lambda row: (
+            -float(row["severity_score"]),
+            str(row["sub_id"]),
+            str(row["asset_type"]),
+            row["week_start"].isoformat(),
+        )
+    )
+
+    surviving: list[dict[str, object]] = []
+    per_sub_counts: dict[uuid.UUID, int] = defaultdict(int)
+    project_count = 0
+    for candidate in candidates:
+        if per_sub_counts[candidate["sub_id"]] >= int(policy.max_alerts_per_subcontractor_per_week):
+            continue
+        if project_count >= int(policy.max_alerts_per_project_per_week):
+            continue
+        surviving.append(candidate)
+        per_sub_counts[candidate["sub_id"]] += 1
+        project_count += 1
+
+    existing = (
+        db.query(Notification)
+        .filter(
+            Notification.project_id == project_id,
+            Notification.trigger_type == "lookahead",
+            Notification.status.in_(["pending", "sent"]),
+        )
+        .all()
+    )
+    existing_by_key = {
+        (row.project_id, row.sub_id, row.asset_type, row.week_start): row
+        for row in existing
+    }
+    surviving_keys = {row["key"] for row in surviving}
+
+    for row in surviving:
+        existing_row = existing_by_key.get(row["key"])
+        if existing_row is not None:
+            existing_row.severity_score = row["severity_score"]
+            continue
+        db.add(
+            Notification(
+                sub_id=row["sub_id"],
+                project_id=project_id,
+                activity_id=None,
+                asset_type=row["asset_type"],
+                week_start=row["week_start"],
+                trigger_type="lookahead",
+                status="pending",
+                severity_score=row["severity_score"],
+            )
+        )
+
+    for row in existing:
+        key = (row.project_id, row.sub_id, row.asset_type, row.week_start)
+        if key not in surviving_keys and row.status in ("pending", "sent"):
+            row.status = "cancelled"
+
+
 def _upsert_snapshot(
     db: Session,
     project_id: uuid.UUID,
@@ -395,7 +670,10 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
 
     latest_upload = (
         db.query(ProgrammeUpload)
-        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
+        .filter(
+            ProgrammeUpload.project_id == project_id,
+            ProgrammeUpload.status.in_(["committed", "degraded"]),
+        )
         .order_by(ProgrammeUpload.version_number.desc())
         .first()
     )
@@ -410,12 +688,12 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         timezone_name = "Australia/Adelaide"
         tz = ZoneInfo("Australia/Adelaide")
 
-    demand_by_week_asset, current_mapping_set, low_confidence_buckets = _compute_demand_by_week_asset(db, latest_upload.id)
+    demand_by_week_asset, current_mapping_set, low_confidence_buckets, bucket_flags = _compute_demand_by_week_asset(db, latest_upload.id)
     booked_by_week_asset = _compute_booked_by_week_asset(db, project_id, tz)
 
     all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
-    rows: list[LookaheadRow] = [
-        LookaheadRow(
+    rows: list[ComputedLookaheadRow] = [
+        ComputedLookaheadRow(
             asset_type=asset_type,
             week_start=week,
             demand_hours=round(demand_by_week_asset.get((week, asset_type), 0.0), 2),
@@ -423,6 +701,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
             demand_level=_demand_level(demand_by_week_asset.get((week, asset_type), 0.0)),
             gap_hours=round(max(demand_by_week_asset.get((week, asset_type), 0.0) - booked_by_week_asset.get((week, asset_type), 0.0), 0.0), 2),
             low_confidence_flag=(week, asset_type) in low_confidence_buckets,
+            anomaly_flags_json=dict(bucket_flags.get((week, asset_type), {})),
         )
         for week, asset_type in all_keys
     ]
@@ -442,47 +721,115 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         for entry in previous_data.get("mapping_set", [])
     }
 
-    current_rows_payload = [
-        {
-            "asset_type": r.asset_type,
-            "week_start": r.week_start.isoformat(),
-            "demand_hours": r.demand_hours,
-            "booked_hours": r.booked_hours,
-            "demand_level": r.demand_level,
-            "gap_hours": r.gap_hours,
-            "low_confidence_flag": r.low_confidence_flag,
-        }
-        for r in rows
-    ]
-
     activity_count = (
         db.query(ProgrammeActivity)
         .filter(ProgrammeActivity.programme_upload_id == latest_upload.id)
         .count()
     )
-
     anomaly_flags = _compute_anomaly_flags(
         previous_rows=previous_rows,
-        current_rows=current_rows_payload,
+        current_rows=[
+            {
+                "asset_type": r.asset_type,
+                "week_start": r.week_start.isoformat(),
+                "demand_hours": r.demand_hours,
+            }
+            for r in rows
+        ],
         previous_activity_count=previous_activity_count,
         current_activity_count=activity_count,
         previous_mapping_set=previous_mapping_set,
         current_mapping_set=current_mapping_set,
     )
 
+    previous_by_key = {
+        (row["asset_type"], row["week_start"]): float(row["demand_hours"])
+        for row in previous_rows
+    }
+    row_payloads: list[dict[str, object]] = []
+    snapshot_rows: list[dict[str, object]] = []
+    for row in rows:
+        key = (row.asset_type, row.week_start.isoformat())
+        prev_demand = previous_by_key.get(key)
+        row_flags = dict(row.anomaly_flags_json or {})
+        if prev_demand is not None and prev_demand > 0:
+            pct_change = abs(row.demand_hours - prev_demand) / prev_demand
+            if pct_change > ANOMALY_DEMAND_SPIKE_THRESHOLD:
+                row_flags["demand_spike"] = True
+        if anomaly_flags.get("mapping_changes_over_50pct"):
+            row_flags["mapping_change"] = True
+        if anomaly_flags.get("activity_count_delta_over_30pct"):
+            row_flags["activity_delta"] = True
+        if row.asset_type == "other" and row.demand_hours >= DEMAND_LEVEL_LOW_MAX:
+            anomaly_flags["other_asset_threshold_exceeded"] = True
+
+        row.is_anomalous = bool(
+            row_flags.get("demand_spike")
+            or row_flags.get("mapping_change")
+            or row_flags.get("activity_delta")
+            or row_flags.get("per_day_cap_repaired")
+        )
+        row.anomaly_flags_json = row_flags
+
+        row_payloads.append(
+            {
+                "asset_type": row.asset_type,
+                "week_start": row.week_start,
+                "demand_hours": row.demand_hours,
+                "booked_hours": row.booked_hours,
+                "gap_hours": row.gap_hours,
+                "is_anomalous": row.is_anomalous,
+                "anomaly_flags_json": row.anomaly_flags_json,
+            }
+        )
+        snapshot_rows.append(
+            {
+                "asset_type": row.asset_type,
+                "week_start": row.week_start.isoformat(),
+                "demand_hours": row.demand_hours,
+                "booked_hours": row.booked_hours,
+                "demand_level": row.demand_level,
+                "gap_hours": row.gap_hours,
+                "low_confidence_flag": row.low_confidence_flag,
+                "is_anomalous": row.is_anomalous,
+                "anomaly_flags_json": row.anomaly_flags_json,
+            }
+        )
+
     snapshot_date = datetime.now(tz).date()
     snapshot_payload = {
         "timezone": timezone_name,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "activity_count": activity_count,
-        "rows": current_rows_payload,
+        "rows": snapshot_rows,
         "mapping_set": [
             {"activity_id": activity_id, "asset_type": asset_type}
             for activity_id, asset_type in sorted(current_mapping_set)
         ],
     }
-
-    return _upsert_snapshot(db, project_id, latest_upload.id, snapshot_date, snapshot_payload, anomaly_flags)
+    snapshot = _upsert_snapshot_with_rows(
+        db,
+        project_id=project_id,
+        latest_upload_id=latest_upload.id,
+        snapshot_date=snapshot_date,
+        snapshot_payload=snapshot_payload,
+        anomaly_flags=anomaly_flags,
+        row_payloads=row_payloads,
+    )
+    suppress_external = (
+        latest_upload.status == "degraded"
+        or getattr(latest_upload, "processing_outcome", None) == "completed_with_warnings"
+    )
+    _sync_thresholded_notifications(
+        db,
+        project_id=project_id,
+        snapshot_date=snapshot_date,
+        row_payloads=row_payloads,
+        suppress_external=suppress_external,
+    )
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
 
 
 def get_latest_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
@@ -605,7 +952,7 @@ def nightly_lookahead_job() -> None:
                 row[0]
                 for row in (
                     db.query(ProgrammeUpload.project_id)
-                    .filter(ProgrammeUpload.status == "committed")
+                    .filter(ProgrammeUpload.status.in_(["committed", "degraded"]))
                     .distinct()
                     .all()
                 )
