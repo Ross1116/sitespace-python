@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..core.constants import (
+    AI_WORK_PROFILE_MAX_CONCURRENT,
     AI_WORK_PROFILE_MAX_TOKENS,
     WORK_PROFILE_ACTUAL_ERROR_FRACTION,
     WORK_PROFILE_AI_ERROR_FRACTION,
@@ -89,6 +90,22 @@ class WorkProfilePreflight:
     cached: Optional[ItemContextProfile] = None
     tier: Optional[str] = None
     trusted_baseline: Optional[float] = None
+
+
+@dataclass
+class WorkProfileAIOutcome:
+    proposal: Optional[dict[str, object]] = None
+    attempted_ai: bool = False
+    ai_attempts: int = 0
+    ai_tokens_used: int = 0
+    validation_failures: int = 0
+    request_json: dict[str, object] = field(default_factory=dict)
+    response_json: Optional[dict[str, object]] = None
+    validation_errors: Optional[list[str]] = None
+    fallback_used: bool = False
+    retry_count: int = 0
+    log_tokens_used: Optional[int] = None
+    latency_ms: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1746,6 +1763,92 @@ def _request_validated_ai_proposal_sync(**kwargs: object) -> Optional[dict[str, 
     return asyncio.run(_request_validated_ai_proposal(**kwargs))
 
 
+async def _precompute_validated_ai_proposal(
+    *,
+    activity_name: str,
+    asset_type: str,
+    duration_days: int,
+    max_hours_per_day: float,
+    compressed_context: dict,
+    level_name: Optional[str],
+    zone_name: Optional[str],
+    row_confidence: Optional[str],
+    posterior_hint: Optional[dict[str, float]],
+    trusted_baseline: Optional[float],
+) -> WorkProfileAIOutcome:
+    last_errors: list[str] = []
+    last_request: dict[str, object] = {}
+    last_response: dict[str, object] | None = None
+    last_tokens: int | None = None
+    last_latency: int | None = None
+    total_tokens = 0
+    ai_attempts = 0
+
+    for attempt in range(2):
+        proposal = await generate_work_profile_ai(
+            activity_name=activity_name,
+            asset_type=asset_type,
+            duration_days=duration_days,
+            max_hours_per_day=max_hours_per_day,
+            level_name=level_name,
+            zone_name=zone_name,
+            row_confidence=row_confidence,
+            compressed_context=compressed_context,
+            posterior_hint=posterior_hint,
+            repair_errors=last_errors or None,
+        )
+        if proposal is None:
+            last_errors = ["ai_unavailable_or_invalid_response"]
+            continue
+
+        ai_attempts += 1
+        current_tokens = int(proposal.get("tokens_used", 0) or 0)
+        total_tokens += current_tokens
+        last_request = proposal.get("request_json") if isinstance(proposal.get("request_json"), dict) else {}
+        last_response = proposal.get("response_json") if isinstance(proposal.get("response_json"), dict) else {}
+        last_tokens = current_tokens
+        last_latency = int(proposal.get("latency_ms", 0) or 0)
+
+        validated, errors = _validate_ai_proposal(
+            proposal,
+            asset_type=asset_type,
+            duration_days=duration_days,
+            max_hours_per_day=max_hours_per_day,
+            trusted_baseline=trusted_baseline,
+        )
+        if validated is not None:
+            return WorkProfileAIOutcome(
+                proposal=validated,
+                attempted_ai=True,
+                ai_attempts=ai_attempts,
+                ai_tokens_used=total_tokens,
+                validation_failures=0,
+                request_json=last_request,
+                response_json=last_response,
+                validation_errors=None,
+                fallback_used=False,
+                retry_count=attempt,
+                log_tokens_used=last_tokens,
+                latency_ms=last_latency,
+            )
+        last_errors = errors
+
+    return WorkProfileAIOutcome(
+        proposal=None,
+        attempted_ai=True,
+        ai_attempts=ai_attempts,
+        ai_tokens_used=total_tokens,
+        validation_failures=1,
+        request_json=last_request,
+        response_json=last_response,
+        validation_errors=last_errors or ["ai_fallback_used"],
+        fallback_used=True,
+        retry_count=1 if last_errors else 0,
+        log_tokens_used=last_tokens,
+        latency_ms=last_latency,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 12. ActivityWorkProfile writer
 # ---------------------------------------------------------------------------
@@ -1775,10 +1878,26 @@ def _write_activity_profile(
     if awp is None:
         savepoint = db.begin_nested()
         try:
-            awp = ActivityWorkProfile(activity_id=activity_id)
+            awp = ActivityWorkProfile(
+                activity_id=activity_id,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_days=duration_days,
+                context_version=context_version,
+                inference_version=inference_version,
+                total_hours=total_hours,
+                distribution_json=distribution,
+                normalized_distribution_json=normalized_distribution,
+                confidence=confidence,
+                low_confidence_flag=low_confidence_flag,
+                source=source,
+                context_hash=context_hash,
+                context_profile_id=context_profile_id,
+            )
             db.add(awp)
             db.flush()
             savepoint.commit()
+            return awp
         except IntegrityError:
             savepoint.rollback()
             awp = (
@@ -2133,76 +2252,158 @@ async def materialize_work_profiles_for_upload(
         if needs_ai:
             ai_needed_keys.add(preflight.context_hash)
 
+    logger.info(
+        "Work-profile materialization starting: upload=%s mapped_rows=%d context_groups=%d ai_candidates=%d",
+        upload.id,
+        len(rows),
+        len(grouped),
+        len(ai_needed_keys),
+    )
+
     if len(ai_needed_keys) > WORK_PROFILE_MAX_NEW_CONTEXTS_PER_UPLOAD and not operator_override:
         runtime.allow_ai = False
         _append_runtime_reason(runtime, "max_new_contexts_exceeded")
 
-    for context_hash, group in grouped.items():
-        activity, mapping, preflight = group[0]
-        representative_ai_payload: Optional[dict[str, object]] = None
+    grouped_items = list(grouped.items())
+    max_batch_size = max(1, AI_WORK_PROFILE_MAX_CONCURRENT)
+    processed_groups = 0
+    processed_ai_candidates = 0
+
+    for batch_start in range(0, len(grouped_items), max_batch_size):
+        batch = grouped_items[batch_start : batch_start + max_batch_size]
+        representative_outcomes: dict[str, WorkProfileAIOutcome] = {}
+        precompute_inputs: list[tuple[str, ProgrammeActivity, ActivityAssetMapping, WorkProfilePreflight, Optional[dict[str, float]]]] = []
 
         if runtime.allow_ai:
-            needs_ai, hint = _preflight_needs_ai(preflight)
-            if needs_ai:
-                representative_ai_payload = await _request_validated_ai_proposal(
+            for context_hash, group in batch:
+                representative_activity, representative_mapping, representative_preflight = group[0]
+                needs_ai, hint = _preflight_needs_ai(representative_preflight)
+                if needs_ai:
+                    precompute_inputs.append(
+                        (
+                            context_hash,
+                            representative_activity,
+                            representative_mapping,
+                            representative_preflight,
+                            hint,
+                        )
+                    )
+
+        if precompute_inputs:
+            outcome_list = await asyncio.gather(
+                *[
+                    _precompute_validated_ai_proposal(
+                        activity_name=representative_activity.name,
+                        asset_type=representative_mapping.asset_type,
+                        duration_days=max(int(representative_activity.duration_days or 0), 1),
+                        max_hours_per_day=representative_preflight.max_hours_per_day,
+                        compressed_context=representative_preflight.compressed_context,
+                        level_name=representative_activity.level_name,
+                        zone_name=representative_activity.zone_name,
+                        row_confidence=representative_activity.row_confidence,
+                        posterior_hint=hint,
+                        trusted_baseline=None,
+                    )
+                    for (
+                        _context_hash,
+                        representative_activity,
+                        representative_mapping,
+                        representative_preflight,
+                        hint,
+                    ) in precompute_inputs
+                ]
+            )
+
+            for (
+                context_hash,
+                representative_activity,
+                _representative_mapping,
+                _representative_preflight,
+                _hint,
+            ), outcome in zip(precompute_inputs, outcome_list, strict=True):
+                representative_outcomes[context_hash] = outcome
+                processed_ai_candidates += 1
+                runtime.ai_attempts += outcome.ai_attempts
+                runtime.ai_tokens_used += outcome.ai_tokens_used
+                runtime.validation_failures += outcome.validation_failures
+
+                _write_work_profile_ai_log(
                     db,
-                    activity_id=activity.id,
-                    item_id=activity.item_id,
+                    activity_id=representative_activity.id,
+                    item_id=representative_activity.item_id,
                     context_hash=context_hash,
-                    activity_name=activity.name,
-                    asset_type=mapping.asset_type,
-                    duration_days=max(int(activity.duration_days or 0), 1),
-                    max_hours_per_day=preflight.max_hours_per_day,
-                    compressed_context=preflight.compressed_context,
-                    level_name=activity.level_name,
-                    zone_name=activity.zone_name,
-                    row_confidence=activity.row_confidence,
-                    posterior_hint=hint,
-                    trusted_baseline=None,
-                    runtime=runtime,
+                    request_json=outcome.request_json,
+                    response_json=outcome.response_json,
+                    validation_errors=outcome.validation_errors,
+                    fallback_used=outcome.fallback_used,
+                    retry_count=outcome.retry_count,
+                    tokens_used=outcome.log_tokens_used,
+                    latency_ms=outcome.latency_ms,
+                    model_name=settings.AI_MODEL,
                 )
-                if (
-                    runtime.ai_attempts > 0
-                    and runtime.validation_failures / max(runtime.ai_attempts, 1)
-                    > WORK_PROFILE_CORRECTION_RATE_THRESHOLD
-                    and not operator_override
-                ):
-                    runtime.allow_ai = False
-                    _append_runtime_reason(runtime, "validation_failure_rate_exceeded")
 
-        resolve_work_profile(
-            db,
-            activity_id=activity.id,
-            item_id=activity.item_id,
-            asset_type=mapping.asset_type,
-            duration_days=max(int(activity.duration_days or 0), 1),
-            activity_name=activity.name,
-            level_name=activity.level_name,
-            zone_name=activity.zone_name,
-            row_confidence=activity.row_confidence,
-            allow_ai=runtime.allow_ai,
-            degraded_mode=not runtime.allow_ai,
-            runtime=runtime,
-            preflight=preflight,
-            precomputed_ai_proposal=representative_ai_payload,
-        )
+            if (
+                runtime.ai_attempts > 0
+                and runtime.validation_failures / max(runtime.ai_attempts, 1)
+                > WORK_PROFILE_CORRECTION_RATE_THRESHOLD
+                and not operator_override
+            ):
+                runtime.allow_ai = False
+                _append_runtime_reason(runtime, "validation_failure_rate_exceeded")
 
-        for activity, mapping, preflight in group[1:]:
+        for context_hash, group in batch:
+            representative_activity, representative_mapping, representative_preflight = group[0]
+            representative_outcome = representative_outcomes.get(context_hash)
+            representative_attempted_ai = representative_outcome is not None and representative_outcome.attempted_ai
+            representative_ai_payload = representative_outcome.proposal if representative_outcome is not None else None
+            representative_degraded = (not runtime.allow_ai) or (
+                representative_attempted_ai and representative_ai_payload is None
+            )
+
             resolve_work_profile(
                 db,
-                activity_id=activity.id,
-                item_id=activity.item_id,
-                asset_type=mapping.asset_type,
-                duration_days=max(int(activity.duration_days or 0), 1),
-                activity_name=activity.name,
-                level_name=activity.level_name,
-                zone_name=activity.zone_name,
-                row_confidence=activity.row_confidence,
-                allow_ai=False,
-                degraded_mode=not runtime.allow_ai,
+                activity_id=representative_activity.id,
+                item_id=representative_activity.item_id,
+                asset_type=representative_mapping.asset_type,
+                duration_days=max(int(representative_activity.duration_days or 0), 1),
+                activity_name=representative_activity.name,
+                level_name=representative_activity.level_name,
+                zone_name=representative_activity.zone_name,
+                row_confidence=representative_activity.row_confidence,
+                allow_ai=runtime.allow_ai and not representative_attempted_ai,
+                degraded_mode=representative_degraded,
                 runtime=runtime,
-                preflight=preflight,
-                precomputed_ai_proposal=None,
+                preflight=representative_preflight,
+                precomputed_ai_proposal=representative_ai_payload,
             )
+
+            for sub_activity, sub_mapping, sub_preflight in group[1:]:
+                resolve_work_profile(
+                    db,
+                    activity_id=sub_activity.id,
+                    item_id=sub_activity.item_id,
+                    asset_type=sub_mapping.asset_type,
+                    duration_days=max(int(sub_activity.duration_days or 0), 1),
+                    activity_name=sub_activity.name,
+                    level_name=sub_activity.level_name,
+                    zone_name=sub_activity.zone_name,
+                    row_confidence=sub_activity.row_confidence,
+                    allow_ai=False,
+                    degraded_mode=representative_degraded,
+                    runtime=runtime,
+                    preflight=sub_preflight,
+                    precomputed_ai_proposal=None,
+                )
+
+        processed_groups += len(batch)
+        logger.info(
+            "Work-profile materialization progress: upload=%s groups=%d/%d ai_contexts=%d/%d allow_ai=%s",
+            upload.id,
+            processed_groups,
+            len(grouped_items),
+            processed_ai_candidates,
+            len(ai_needed_keys),
+            runtime.allow_ai,
+        )
 
     return runtime

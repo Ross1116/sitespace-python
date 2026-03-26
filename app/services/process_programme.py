@@ -454,6 +454,7 @@ async def _run(upload_id: str, db: Session) -> None:
                 db,
                 "DB connection lost during subcontractor assignment — re-upload to retry.",
             )
+            _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
             return
 
     try:
@@ -481,6 +482,11 @@ async def _run(upload_id: str, db: Session) -> None:
                     upload_id,
                     rb_exc,
                 )
+            _mark_failed_as_committed(
+                upload_id,
+                db,
+                "DB connection lost during work-profile materialization - re-upload to retry.",
+            )
             _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
             return
         notes_dict = dict(upload.completeness_notes or {})
