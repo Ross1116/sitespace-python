@@ -413,6 +413,8 @@ def create_bulk_bookings(
             if a:
                 sync_maintenance_status(db, a)
 
+        seen_booking_pairs: set[tuple[UUID, date]] = set()
+
         for asset_id in bulk_data.asset_ids:
             asset = db.query(Asset).filter(Asset.id == asset_id).first()
             if not asset:
@@ -440,6 +442,15 @@ def create_bulk_bookings(
                         })
                         continue
 
+                pair_key = (asset_id, booking_date)
+                if pair_key in seen_booking_pairs:
+                    failed_bookings.append({
+                        "asset_id": asset_id,
+                        "date": booking_date,
+                        "reason": "Duplicate asset/date pair in bulk booking payload",
+                    })
+                    continue
+
                 conflict_check = BookingConflictCheck(
                     asset_id=asset_id,
                     booking_date=booking_date,
@@ -463,6 +474,7 @@ def create_bulk_bookings(
                     })
                     continue
 
+                seen_booking_pairs.add(pair_key)
                 booking_requests.append((asset_id, booking_date))
 
         if failed_bookings:
@@ -664,16 +676,28 @@ def update_booking(
         except ValueError as exc:
             raise ValueError(f"Invalid booking status: {raw_status}") from exc
 
-    if 'asset_id' in update_data:
-        asset = db.query(Asset).filter(Asset.id == update_data['asset_id']).first()
+    target_asset_id = update_data.get('asset_id', booking.asset_id)
+    target_date = update_data.get('booking_date', booking.booking_date)
+    target_start_time = update_data.get('start_time', booking.start_time)
+    target_end_time = update_data.get('end_time', booking.end_time)
+    target_status = update_data.get('status', booking.status)
+    requires_slot_validation = (
+        target_asset_id != booking.asset_id
+        or target_date != booking.booking_date
+        or target_start_time != booking.start_time
+        or target_end_time != booking.end_time
+        or target_status != booking.status
+    )
+
+    if requires_slot_validation:
+        asset = db.query(Asset).filter(Asset.id == target_asset_id).first()
         if not asset:
-            raise ValueError(f"Asset with id {update_data['asset_id']} not found")
+            raise BookingValidationError(f"Asset with id {target_asset_id} not found")
         sync_maintenance_status(db, asset)
         _ensure_asset_planning_ready(asset)
         if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
             raise BookingValidationError(f"Asset is not available (status: {asset.status.value})")
 
-        target_date = update_data.get('booking_date', booking.booking_date)
         if asset.maintenance_start_date and asset.maintenance_end_date:
             if asset.maintenance_start_date <= target_date <= asset.maintenance_end_date:
                 raise BookingValidationError(
@@ -684,15 +708,14 @@ def update_booking(
         conflict_check = BookingConflictCheck(
             asset_id=asset.id,
             booking_date=target_date,
-            start_time=update_data.get('start_time', booking.start_time),
-            end_time=update_data.get('end_time', booking.end_time),
+            start_time=target_start_time,
+            end_time=target_end_time,
             exclude_booking_id=booking_id,
         )
         conflicts = check_booking_conflicts(db, conflict_check)
         if conflicts.has_confirmed_conflict:
             raise BookingValidationError("Updated booking would conflict with a confirmed reservation")
 
-        target_status = update_data.get('status', booking.status)
         if target_status == BookingStatus.PENDING and not conflicts.can_request:
             raise BookingValidationError(
                 "Limit reached for this time slot. Choose another slot or contact the manager."

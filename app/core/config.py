@@ -1,12 +1,16 @@
 import logging
+from pathlib import Path
 from typing import Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE))
 
     # Database - Use PostgreSQL for production, SQLite for testing
     database_url: str = Field("sqlite:///./test.db", validation_alias="DATABASE_URL")
@@ -46,12 +50,20 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [
+                normalized
+                for origin in value.split(",")
+                if (normalized := origin.strip().rstrip("/"))
+            ]
         return value
 
     @property
     def effective_cors_origins(self) -> list[str]:
-        origins = [origin.strip() for origin in self.cors_origins if origin.strip()]
+        origins = [
+            normalized
+            for origin in self.cors_origins
+            if (normalized := origin.strip().rstrip("/"))
+        ]
         if self.debug:
             origins += ["http://localhost:3000", "http://localhost:5173"]
         return origins

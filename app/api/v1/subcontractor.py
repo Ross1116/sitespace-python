@@ -9,6 +9,7 @@ from ...core.database import get_db
 from ...core.security import get_current_active_user, create_password_reset_token, require_manager_or_admin, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
+from ...models.subcontractor import Subcontractor
 from ...models.user import User
 from ...schemas.subcontractor import (
     SubcontractorCreate,
@@ -324,7 +325,7 @@ def update_subcontractor_me(
 def get_subcontractor(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
     subcontractor = subcontractor_crud.get_subcontractor_with_details(
         db, 
@@ -335,6 +336,26 @@ def get_subcontractor(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subcontractor not found"
+        )
+
+    current_role = getattr(current_user, "role", None)
+    current_role_value = current_role.value if hasattr(current_role, "value") else str(current_role or "").lower()
+    current_subcontractor_id = getattr(current_user, "subcontractor_id", None)
+    is_self = (
+        isinstance(current_user, Subcontractor)
+        and current_user.id == subcontractor.id
+    ) or current_subcontractor_id == subcontractor.id
+    is_admin = isinstance(current_user, User) and current_role_value == UserRole.ADMIN.value
+    has_manager_access = isinstance(current_user, User) and subcontractor_crud.check_manager_can_access_subcontractor(
+        db,
+        current_user.id,
+        subcontractor.id,
+    )
+
+    if not (is_self or is_admin or has_manager_access):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
         )
 
     current_assignments = [
