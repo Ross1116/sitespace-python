@@ -161,6 +161,16 @@ def _persist_classification(
 
     except IntegrityError:
         sp.rollback()
+        # A concurrent insert won the unique-active-row constraint race.
+        # Re-query to return whichever row was committed so the caller
+        # receives the actual persisted classification instead of an error.
+        winner = (
+            db.query(ItemClassification)
+            .filter_by(item_id=item_id, is_active=True)
+            .first()
+        )
+        if winner is not None:
+            return winner
         raise
 
 
@@ -207,7 +217,7 @@ def resolve_item_classification(
                         .with_for_update()
                         .first()
                     )
-                    if locked is not None:
+                    if locked is not None and locked.id == existing.id:
                         locked.confirmation_count += 1
                         db.add(ItemClassificationEvent(
                             id=uuid.uuid4(),
@@ -221,6 +231,8 @@ def resolve_item_classification(
                         db.flush()
                         sp.commit()
                     else:
+                        # Row was deactivated or replaced concurrently — skip
+                        # the increment to avoid mutating an inactive row.
                         sp.rollback()
                 except Exception:
                     sp.rollback()
@@ -245,20 +257,29 @@ def resolve_item_classification(
             try:
                 if ai_type != tentative_type:
                     # AI disagrees — flag for human review, do NOT auto-promote.
-                    db.add(ItemClassificationEvent(
-                        id=uuid.uuid4(),
-                        item_id=item_id,
-                        classification_id=existing.id,
-                        event_type="correction_flagged",
-                        old_asset_type=tentative_type,
-                        new_asset_type=ai_type,
-                        triggered_by_upload_id=upload_id,
-                        details_json={
-                            "ai_suggestion": ai_type,
-                            "ai_confidence": ai_confidence,
-                            "reason": "ai_disagrees_tentative",
-                        },
-                    ))
+                    # Revalidate under lock: existing.id must still be the active
+                    # row, otherwise the event would reference an inactive row.
+                    revalidated = (
+                        db.query(ItemClassification)
+                        .filter_by(item_id=item_id, is_active=True)
+                        .with_for_update()
+                        .first()
+                    )
+                    if revalidated is not None and revalidated.id == existing.id:
+                        db.add(ItemClassificationEvent(
+                            id=uuid.uuid4(),
+                            item_id=item_id,
+                            classification_id=revalidated.id,
+                            event_type="correction_flagged",
+                            old_asset_type=tentative_type,
+                            new_asset_type=ai_type,
+                            triggered_by_upload_id=upload_id,
+                            details_json={
+                                "ai_suggestion": ai_type,
+                                "ai_confidence": ai_confidence,
+                                "reason": "ai_disagrees_tentative",
+                            },
+                        ))
                 else:
                     # AI agrees — increment confirmation with a row lock so
                     # concurrent increments are serialised.
@@ -268,7 +289,7 @@ def resolve_item_classification(
                         .with_for_update()
                         .first()
                     )
-                    if locked is not None:
+                    if locked is not None and locked.id == existing.id:
                         locked.confirmation_count += 1
                         db.add(ItemClassificationEvent(
                             id=uuid.uuid4(),

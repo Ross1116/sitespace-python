@@ -454,18 +454,21 @@ def classify_item_standalone(
             thread_client = anthropic.AsyncAnthropic(api_key=settings.AI_API_KEY, max_retries=0)
 
         async def _run() -> tuple[str, str] | None:
-            try:
-                raw = await _classify_batch(batch, system_prompt, thread_client)
-            except Exception as exc:
-                logger.warning("classify_item_standalone AI call failed: %s", exc)
+            # Use the client as an async context manager so its connection pool is
+            # closed before the event loop is torn down.
+            async with thread_client:
+                try:
+                    raw = await _classify_batch(batch, system_prompt, thread_client)
+                except Exception as exc:
+                    logger.warning("classify_item_standalone AI call failed: %s", exc)
+                    return None
+                for item in raw.get("classifications") or []:
+                    if str(item.get("activity_id")) == fake_id:
+                        asset_type = str(item.get("asset_type") or "").strip().lower()
+                        confidence = str(item.get("confidence") or "").strip().lower()
+                        if asset_type in valid_types and confidence in {"high", "medium"}:
+                            return asset_type, confidence
                 return None
-            for item in raw.get("classifications") or []:
-                if str(item.get("activity_id")) == fake_id:
-                    asset_type = str(item.get("asset_type") or "").strip().lower()
-                    confidence = str(item.get("confidence") or "").strip().lower()
-                    if asset_type in valid_types and confidence in {"high", "medium"}:
-                        return asset_type, confidence
-            return None
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
