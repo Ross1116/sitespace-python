@@ -80,20 +80,29 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
     if scheduler is not None:
-        # Start first so the job store loads existing jobs from DB,
-        # then add_job with replace_existing=True does an UPDATE not INSERT.
         scheduler.start()
-        hour = settings.NIGHTLY_LOOKAHEAD_HOUR
-        minute = settings.NIGHTLY_LOOKAHEAD_MINUTE
-        scheduler.add_job(
-            nightly_lookahead_job,
-            trigger="cron",
-            hour=hour,
-            minute=minute,
-            timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-            id="nightly_lookahead_job",
-            replace_existing=True,
-        )
+        job_id = "nightly_lookahead_job"
+        try:
+            scheduler.add_job(
+                nightly_lookahead_job,
+                trigger="cron",
+                hour=settings.NIGHTLY_LOOKAHEAD_HOUR,
+                minute=settings.NIGHTLY_LOOKAHEAD_MINUTE,
+                timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+                id=job_id,
+                replace_existing=True,
+            )
+            logger.info(
+                "Registered or updated scheduler job %s (%s) for %02d:%02d %s",
+                job_id,
+                nightly_lookahead_job.__name__,
+                settings.NIGHTLY_LOOKAHEAD_HOUR,
+                settings.NIGHTLY_LOOKAHEAD_MINUTE,
+                settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+            )
+        except Exception as exc:
+            logger.warning("Nightly lookahead job registration/update failed; continuing without scheduler refresh: %s", exc)
+            sentry_sdk.capture_exception(exc)
     yield
     # Shutdown
     if scheduler is not None and scheduler.running:

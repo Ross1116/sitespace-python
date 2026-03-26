@@ -112,6 +112,15 @@ AI_CLASSIFICATION_PARALLEL_THRESHOLD: int = 80
 # spiking provider errors or spend.
 AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES: int = 3
 
+# Shared provider throttle applied at the actual API call layer. This keeps
+# structure detection, classification, and work-profile inference from all
+# bursting at once even when their local batchers are active.
+AI_PROVIDER_MAX_CONCURRENT_REQUESTS: int = 2
+
+# Stagger launches slightly so retries and large uploads do not hammer the
+# provider in a single burst.
+AI_PROVIDER_MIN_REQUEST_SPACING_SECONDS: float = 0.35
+
 # Give the outer timeout a little headroom over the coroutine timeout so the
 # inner timeout is what usually fires first.
 AI_STANDALONE_TIMEOUT_BUFFER_SECONDS: int = 3

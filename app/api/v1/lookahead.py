@@ -50,12 +50,15 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
 
 
 def _get_fresh_snapshot(project_id: UUID, db: Session):
-    """Return the current snapshot, recalculating if it is stale relative to the latest committed upload."""
+    """Return the current snapshot, recalculating if it is stale relative to the latest processed upload."""
     from ...models.programme import ProgrammeUpload
 
     latest_upload = (
         db.query(ProgrammeUpload)
-        .filter(ProgrammeUpload.project_id == project_id, ProgrammeUpload.status == "committed")
+        .filter(
+            ProgrammeUpload.project_id == project_id,
+            ProgrammeUpload.status.in_(["committed", "degraded"]),
+        )
         .order_by(ProgrammeUpload.version_number.desc())
         .first()
     )
@@ -78,7 +81,7 @@ def get_lookahead(
 
     snapshot = _get_fresh_snapshot(project_id, db)
     if not snapshot:
-        return LookaheadResponse(project_id=project_id, rows=[], message="No committed programme available yet.")
+        return LookaheadResponse(project_id=project_id, rows=[], message="No processed programme available yet.")
 
     return LookaheadResponse(
         project_id=project_id,

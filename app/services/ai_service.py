@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,6 +35,8 @@ from ..core.constants import (
     AI_CLASSIFICATION_BATCH_SIZE,
     AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES,
     AI_CLASSIFICATION_PARALLEL_THRESHOLD,
+    AI_PROVIDER_MAX_CONCURRENT_REQUESTS,
+    AI_PROVIDER_MIN_REQUEST_SPACING_SECONDS,
     AI_STANDALONE_TIMEOUT_BUFFER_SECONDS,
     AI_STRUCTURE_DETECTION_MAX_TOKENS,
     AI_STRUCTURE_DETECTION_SAMPLE_SIZE,
@@ -42,6 +45,11 @@ from ..core.constants import (
 logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+_AI_PROVIDER_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
+    max(1, AI_PROVIDER_MAX_CONCURRENT_REQUESTS)
+)
+_AI_PROVIDER_PACING_LOCK = threading.Lock()
+_AI_PROVIDER_NEXT_REQUEST_AT = 0.0
 
 # P6 and common programme day-step prefix stripped before name dedup.
 # Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
@@ -581,6 +589,46 @@ def _is_openai_client(client: Any) -> bool:
     return _openai_module is not None and isinstance(client, _openai_module.AsyncOpenAI)
 
 
+def _reserve_provider_start_delay() -> float:
+    """Reserve the next provider start time and return required delay in seconds."""
+    global _AI_PROVIDER_NEXT_REQUEST_AT
+
+    spacing = max(0.0, AI_PROVIDER_MIN_REQUEST_SPACING_SECONDS)
+    if spacing <= 0:
+        return 0.0
+
+    with _AI_PROVIDER_PACING_LOCK:
+        now = time.monotonic()
+        start_at = max(now, _AI_PROVIDER_NEXT_REQUEST_AT)
+        _AI_PROVIDER_NEXT_REQUEST_AT = start_at + spacing
+        return max(0.0, start_at - now)
+
+
+async def _acquire_provider_request_slot() -> None:
+    """
+    Apply process-wide back-pressure before hitting the upstream AI provider.
+
+    Uses a thread-safe semaphore so standalone per-thread event loops are
+    throttled together with the main async pipeline.
+    """
+    permit_acquired = False
+    try:
+        await asyncio.to_thread(_AI_PROVIDER_REQUEST_SEMAPHORE.acquire)
+        permit_acquired = True
+        delay = _reserve_provider_start_delay()
+        if delay > 0:
+            logger.debug("AI provider pacing delay %.3fs", delay)
+            await asyncio.sleep(delay)
+    except BaseException:
+        if permit_acquired:
+            _AI_PROVIDER_REQUEST_SEMAPHORE.release()
+        raise
+
+
+def _release_provider_request_slot() -> None:
+    _AI_PROVIDER_REQUEST_SEMAPHORE.release()
+
+
 async def _call_api(
     client: Any,
     system_prompt: str,
@@ -595,53 +643,57 @@ async def _call_api(
     re-raised immediately as RuntimeError so the SDK's built-in retry loop doesn't
     waste minutes retrying a permanent billing error.
     """
+    await _acquire_provider_request_slot()
     try:
-        if _is_openai_client(client):
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=settings.AI_MODEL,
-                    max_tokens=max_tokens,
-                    temperature=0,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                ),
-                timeout=timeout,
+        try:
+            if _is_openai_client(client):
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=settings.AI_MODEL,
+                        max_tokens=max_tokens,
+                        temperature=0,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message},
+                        ],
+                    ),
+                    timeout=timeout,
+                )
+                content = response.choices[0].message.content if response.choices else None
+                usage = getattr(response, "usage", None)
+                tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
+            else:
+                response = await asyncio.wait_for(
+                    client.messages.create(
+                        model=settings.AI_MODEL,
+                        max_tokens=max_tokens,
+                        temperature=0,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": user_message}],
+                    ),
+                    timeout=timeout,
+                )
+                content = response.content[0].text if response.content else None
+                usage = getattr(response, "usage", None)
+                tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+        except Exception as exc:
+            # Permanent billing/quota errors — skip retries and fail fast.
+            # OpenAI:    RateLimitError with code="insufficient_quota"
+            # Anthropic: APIStatusError with status 400 + "credit balance is too low"
+            err_code = getattr(exc, "code", None) or ""
+            err_body = str(getattr(exc, "message", "") or exc)
+            is_quota = (
+                err_code == "insufficient_quota"
+                or "insufficient_quota" in err_body
+                or "credit balance is too low" in err_body
+                or "exceeded your current quota" in err_body
             )
-            content = response.choices[0].message.content if response.choices else None
-            usage = getattr(response, "usage", None)
-            tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
-        else:
-            response = await asyncio.wait_for(
-                client.messages.create(
-                    model=settings.AI_MODEL,
-                    max_tokens=max_tokens,
-                    temperature=0,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_message}],
-                ),
-                timeout=timeout,
-            )
-            content = response.content[0].text if response.content else None
-            usage = getattr(response, "usage", None)
-            tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
-    except Exception as exc:
-        # Permanent billing/quota errors — skip retries and fail fast.
-        # OpenAI:    RateLimitError with code="insufficient_quota"
-        # Anthropic: APIStatusError with status 400 + "credit balance is too low"
-        err_code = getattr(exc, "code", None) or ""
-        err_body = str(getattr(exc, "message", "") or exc)
-        is_quota = (
-            err_code == "insufficient_quota"
-            or "insufficient_quota" in err_body
-            or "credit balance is too low" in err_body
-            or "exceeded your current quota" in err_body
-        )
-        if is_quota:
-            logger.error("AI provider quota/billing limit reached — disabling AI for this request: %s", exc)
-            raise RuntimeError(f"AI quota exhausted: {exc}") from exc
-        raise
+            if is_quota:
+                logger.error("AI provider quota/billing limit reached — disabling AI for this request: %s", exc)
+                raise RuntimeError(f"AI quota exhausted: {exc}") from exc
+            raise
+    finally:
+        _release_provider_request_slot()
 
     if not content:
         raise ValueError("Empty or malformed API response")
