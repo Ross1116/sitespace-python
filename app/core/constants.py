@@ -146,6 +146,13 @@ AI_WORK_PROFILE_MAX_CONCURRENT: int = 3
 # Enough room for bounded JSON output describing total hours and normalized shape.
 AI_WORK_PROFILE_MAX_TOKENS: int = 768
 
+# Dynamic work-profile response sizing. Long-duration activities need one
+# normalized bucket per day, so the completion budget scales with duration while
+# staying bounded for very large activities.
+WORK_PROFILE_BASE_TOKENS: int = 320
+WORK_PROFILE_TOKENS_PER_DAY: int = 8
+WORK_PROFILE_MAX_TOKENS_CAP: int = 4096
+
 
 # ---------------------------------------------------------------------------
 # Work-profile validation and maturity thresholds

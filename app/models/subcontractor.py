@@ -4,6 +4,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 import uuid
 from app.core.database import Base
+from app.schemas.enums import TradeResolutionStatus
 from .site_project import subcontractor_site_project_association
 
 class Subcontractor(Base):
@@ -43,4 +44,6 @@ class Subcontractor(Base):
 
     @property
     def planning_ready(self) -> bool:
-        return bool(self.trade_specialty) and (self.trade_resolution_status or "unknown") == "confirmed"
+        return bool(self.trade_specialty) and (
+            self.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value
+        ) == TradeResolutionStatus.CONFIRMED.value

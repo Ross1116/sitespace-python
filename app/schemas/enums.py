@@ -48,6 +48,14 @@ class TradeResolutionStatus(str, Enum):
     SUGGESTED = "suggested"
     CONFIRMED = "confirmed"
 
+
+ASSET_TYPE_RESOLUTION_READY: frozenset[str] = frozenset(
+    {
+        AssetTypeResolutionStatus.INFERRED.value,
+        AssetTypeResolutionStatus.CONFIRMED.value,
+    }
+)
+
 class BookingAuditAction(str, Enum):
     CREATED = "created"
     APPROVED = "approved"

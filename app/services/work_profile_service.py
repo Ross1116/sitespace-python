@@ -31,16 +31,19 @@ from ..core.constants import (
     AI_WORK_PROFILE_MAX_TOKENS,
     WORK_PROFILE_ACTUAL_ERROR_FRACTION,
     WORK_PROFILE_AI_ERROR_FRACTION,
+    WORK_PROFILE_BASE_TOKENS,
     WORK_PROFILE_CONTEXT_VERSION,
     WORK_PROFILE_CORRECTION_MIN_SAMPLES,
     WORK_PROFILE_CORRECTION_RATE_THRESHOLD,
     WORK_PROFILE_CV_CONFIRMED,
     WORK_PROFILE_CV_TRUSTED,
     WORK_PROFILE_INFERENCE_VERSION,
+    WORK_PROFILE_MAX_TOKENS_CAP,
     WORK_PROFILE_MAX_NEW_CONTEXTS_PER_UPLOAD,
     WORK_PROFILE_MIN_HOURS,
     WORK_PROFILE_NORM_DIST_SUM_TOLERANCE,
     WORK_PROFILE_OPERATIONAL_UNIT,
+    WORK_PROFILE_TOKENS_PER_DAY,
 )
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
 from ..models.work_profile import (
@@ -1419,8 +1422,8 @@ def _work_profile_response_max_tokens(duration_days: int) -> int:
     linearly with duration while capping spend for extremely long activities.
     """
     duration_days = max(1, int(duration_days or 1))
-    estimated_tokens = 320 + (duration_days * 8)
-    return max(AI_WORK_PROFILE_MAX_TOKENS, min(4096, estimated_tokens))
+    estimated_tokens = WORK_PROFILE_BASE_TOKENS + (duration_days * WORK_PROFILE_TOKENS_PER_DAY)
+    return max(AI_WORK_PROFILE_MAX_TOKENS, min(WORK_PROFILE_MAX_TOKENS_CAP, estimated_tokens))
 
 
 def _posterior_hint_payload(profile: Optional[ItemContextProfile]) -> Optional[dict[str, float]]:

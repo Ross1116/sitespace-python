@@ -14,6 +14,7 @@ from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import (
+    ASSET_TYPE_RESOLUTION_READY,
     AssetTypeResolutionStatus,
     BookingStatus,
     TradeResolutionStatus,
@@ -28,12 +29,6 @@ ACTIVE_BOOKING_STATUSES = {
     BookingStatus.IN_PROGRESS,
     BookingStatus.COMPLETED,
 }
-
-ASSET_TYPE_RESOLUTION_READY = {
-    AssetTypeResolutionStatus.INFERRED.value,
-    AssetTypeResolutionStatus.CONFIRMED.value,
-}
-
 
 @dataclass(frozen=True)
 class AssetTypeResolution:
@@ -256,6 +251,8 @@ def get_project_planning_completeness(project_id: UUID, db: Session) -> dict:
         if row.get("week_start")
     )
 
+    planning_ready_assets = 0
+    planning_ready_trades = 0
     unknown_assets = inferred_assets = confirmed_assets = 0
     unknown_trades = suggested_trades = confirmed_trades = 0
     blocking_unknown_assets = blocking_unknown_trades = 0
@@ -263,19 +260,21 @@ def get_project_planning_completeness(project_id: UUID, db: Session) -> dict:
 
     for asset in project.assets:
         status = asset.type_resolution_status or AssetTypeResolutionStatus.UNKNOWN.value
-        if status == AssetTypeResolutionStatus.CONFIRMED.value:
-            confirmed_assets += 1
-        elif status == AssetTypeResolutionStatus.INFERRED.value:
-            inferred_assets += 1
+        affects_window = any(
+            booking.project_id == project_id
+            and booking.status in ACTIVE_BOOKING_STATUSES
+            and booking.booking_date is not None
+            and window_start <= booking.booking_date <= window_end
+            for booking in asset.bookings
+        )
+        if asset_is_planning_ready(asset):
+            planning_ready_assets += 1
+            if status == AssetTypeResolutionStatus.CONFIRMED.value:
+                confirmed_assets += 1
+            else:
+                inferred_assets += 1
         else:
             unknown_assets += 1
-            affects_window = any(
-                booking.project_id == project_id
-                and booking.status in ACTIVE_BOOKING_STATUSES
-                and booking.booking_date is not None
-                and window_start <= booking.booking_date <= window_end
-                for booking in asset.bookings
-            )
             if affects_window:
                 blocking_unknown_assets += 1
             tasks.append(
@@ -300,26 +299,16 @@ def get_project_planning_completeness(project_id: UUID, db: Session) -> dict:
             and window_start <= booking.booking_date <= window_end
             for booking in subcontractor.bookings
         )
-        if status == TradeResolutionStatus.CONFIRMED.value:
+        if subcontractor_is_planning_ready(subcontractor):
+            planning_ready_trades += 1
             confirmed_trades += 1
-        elif status == TradeResolutionStatus.SUGGESTED.value:
-            suggested_trades += 1
-            tasks.append(
-                {
-                    "kind": "confirm_subcontractor_trade",
-                    "severity": "warning",
-                    "entity_type": "subcontractor",
-                    "entity_id": subcontractor.id,
-                    "title": f"Confirm trade for {subcontractor.company_name or subcontractor.email}",
-                    "suggested_value": subcontractor.suggested_trade_specialty,
-                    "blocking": False,
-                    "affects_next_6_weeks": affects_window,
-                }
-            )
         else:
-            unknown_trades += 1
             if affects_window:
                 blocking_unknown_trades += 1
+            if status == TradeResolutionStatus.SUGGESTED.value:
+                suggested_trades += 1
+            else:
+                unknown_trades += 1
             tasks.append(
                 {
                     "kind": "confirm_subcontractor_trade",

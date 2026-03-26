@@ -36,9 +36,14 @@ from ..services.metadata_confidence_service import asset_is_planning_ready
 # Helpers shared across conflict-checking, auto-deny, and competing count
 # ---------------------------------------------------------------------------
 
+
+class BookingValidationError(ValueError):
+    """Domain validation error for booking create/duplicate flows."""
+
+
 def _ensure_asset_planning_ready(asset: Asset) -> None:
     if not asset_is_planning_ready(asset):
-        raise ValueError(
+        raise BookingValidationError(
             f"Asset '{asset.name}' must have a confirmed or inferred canonical type before it can be booked."
         )
 
@@ -142,7 +147,7 @@ def _resolve_booking_actor(
 
     Returns ``(manager_id, subcontractor_id, booking_status)``.
 
-    Raises ``ValueError`` for any invalid/missing entity reference.
+    Raises ``BookingValidationError`` for any invalid/missing entity reference.
     """
     if actor_role in [UserRole.ADMIN, UserRole.MANAGER]:
         manager_id = provided_manager_id or actor_id
@@ -151,7 +156,7 @@ def _resolve_booking_actor(
 
         manager = db.query(User).filter(User.id == manager_id).first()
         if not manager:
-            raise ValueError(f"Manager with id {manager_id} not found")
+            raise BookingValidationError(f"Manager with id {manager_id} not found")
 
         project = (
             db.query(SiteProject)
@@ -160,26 +165,26 @@ def _resolve_booking_actor(
             .first()
         )
         if not project:
-            raise ValueError(f"Project with id {project_id} not found")
+            raise BookingValidationError(f"Project with id {project_id} not found")
         if not any(str(m.id) == str(manager_id) for m in project.managers):
-            raise ValueError(f"Manager {manager_id} is not a member of project {project_id}")
+            raise BookingValidationError(f"Manager {manager_id} is not a member of project {project_id}")
 
         if subcontractor_id:
             subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
             if not subcontractor:
-                raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+                raise BookingValidationError(f"Subcontractor with id {subcontractor_id} not found")
             if not any(str(s.id) == str(subcontractor_id) for s in project.subcontractors):
-                raise ValueError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
+                raise BookingValidationError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
 
     elif actor_role == UserRole.SUBCONTRACTOR:
         subcontractor_id = actor_id
 
         if provided_subcontractor_id and provided_subcontractor_id != actor_id:
-            raise ValueError("Subcontractors can only create bookings for themselves")
+            raise BookingValidationError("Subcontractors can only create bookings for themselves")
 
         subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
         if not subcontractor:
-            raise ValueError(f"Subcontractor with id {subcontractor_id} not found")
+            raise BookingValidationError(f"Subcontractor with id {subcontractor_id} not found")
 
         project_with_members = (
             db.query(SiteProject)
@@ -188,25 +193,25 @@ def _resolve_booking_actor(
             .first()
         )
         if not project_with_members:
-            raise ValueError(f"Project with id {project_id} not found")
+            raise BookingValidationError(f"Project with id {project_id} not found")
         if not any(str(s.id) == str(subcontractor_id) for s in project_with_members.subcontractors):
-            raise ValueError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
+            raise BookingValidationError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
 
         if provided_manager_id:
             manager_id = provided_manager_id
             manager = db.query(User).filter(User.id == manager_id).first()
             if not manager:
-                raise ValueError(f"Manager with id {manager_id} not found")
+                raise BookingValidationError(f"Manager with id {manager_id} not found")
             if not any(str(m.id) == str(manager_id) for m in project_with_members.managers):
-                raise ValueError(f"Manager {manager_id} is not a member of project {project_id}")
+                raise BookingValidationError(f"Manager {manager_id} is not a member of project {project_id}")
         else:
             if not project_with_members.managers:
-                raise ValueError("No managers found for this project")
+                raise BookingValidationError("No managers found for this project")
             manager_id = project_with_members.managers[0].id
 
         booking_status = BookingStatus.PENDING
     else:
-        raise ValueError(f"Invalid user role: {actor_role}")
+        raise BookingValidationError(f"Invalid user role: {actor_role}")
 
     return manager_id, subcontractor_id, booking_status
 
@@ -294,23 +299,23 @@ def create_booking(
     # Validate that all referenced entities exist
     project = db.query(SiteProject).filter(SiteProject.id == booking_data.project_id).first()
     if not project:
-        raise ValueError(f"Project with id {booking_data.project_id} not found")
+        raise BookingValidationError(f"Project with id {booking_data.project_id} not found")
     
     asset = db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
     if not asset:
-        raise ValueError(f"Asset with id {booking_data.asset_id} not found")
+        raise BookingValidationError(f"Asset with id {booking_data.asset_id} not found")
     _ensure_asset_planning_ready(asset)
 
     sync_maintenance_status(db, asset)
 
     # Block permanently unavailable statuses
     if asset.status in (AssetStatus.MAINTENANCE, AssetStatus.RETIRED):
-        raise ValueError(f"Asset is not available (status: {asset.status.value})")
+        raise BookingValidationError(f"Asset is not available (status: {asset.status.value})")
 
     # Block bookings during scheduled maintenance windows
     if asset.maintenance_start_date and asset.maintenance_end_date:
         if asset.maintenance_start_date <= booking_data.booking_date <= asset.maintenance_end_date:
-            raise ValueError(
+            raise BookingValidationError(
                 f"Asset is under scheduled maintenance from "
                 f"{asset.maintenance_start_date} to {asset.maintenance_end_date}"
             )

@@ -6,6 +6,7 @@ from decimal import Decimal
 import re
 
 from .base import BaseSchema
+from .enums import TradeResolutionStatus
 
 
 def validate_password_strength(value: str) -> str:
@@ -150,7 +151,7 @@ class CurrentSubcontractorResponse(BaseSchema):
     company_name: Optional[str] = None
     trade_specialty: Optional[str] = None
     suggested_trade_specialty: Optional[str] = None
-    trade_resolution_status: str = "unknown"
+    trade_resolution_status: TradeResolutionStatus = TradeResolutionStatus.UNKNOWN
     trade_inference_source: Optional[str] = None
     trade_inference_confidence: Optional[Decimal] = None
     planning_ready: bool = False

@@ -336,6 +336,18 @@ def get_subcontractor(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subcontractor not found"
         )
+
+    current_assignments = [
+        ProjectAssignmentResponse(
+            project_id=project.id,
+            project_name=project.name,
+            project_location=project.location,
+            assigned_date=project.created_at.date(),
+            hourly_rate=None,
+            is_active=project.status == "active" or project.status is None,
+        )
+        for project in subcontractor.assigned_projects
+    ]
     
     return SubcontractorDetailResponse(
         id=subcontractor.id,
@@ -353,12 +365,12 @@ def get_subcontractor(
         is_active=subcontractor.is_active,
         created_at=subcontractor.created_at,
         updated_at=subcontractor.updated_at,
-        total_projects=len(subcontractor.assigned_projects),
-        active_projects=sum(1 for p in subcontractor.assigned_projects 
-                          if p.status == "active" or p.status is None),
+        active_projects_count=sum(
+            1 for p in subcontractor.assigned_projects
+            if p.status == "active" or p.status is None
+        ),
         total_bookings=len(subcontractor.bookings),
-        upcoming_bookings=sum(1 for b in subcontractor.bookings
-                             if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today())
+        current_assignments=current_assignments,
     )
 
 @router.put("/{subcontractor_id}", response_model=SubcontractorResponse)

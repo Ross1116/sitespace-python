@@ -12,11 +12,21 @@ from ..models.user import User
 from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
 
 from ..core.security import get_password_hash, normalize_email as _normalize_email, verify_password
-from ..schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus
+from ..schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus, TradeSpecialty
 from ..services.metadata_confidence_service import (
     confirmed_subcontractor_trade_resolution,
     infer_subcontractor_trade_resolution,
 )
+
+
+def _normalize_explicit_trade_value(raw_value: Optional[object]) -> Optional[str]:
+    if raw_value is None:
+        return None
+    normalized = raw_value.value if hasattr(raw_value, "value") else str(raw_value)
+    normalized = normalized.strip().lower()
+    if normalized in {"", TradeSpecialty.GENERAL.value, TradeSpecialty.OTHER.value}:
+        return None
+    return normalized
 
 
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
@@ -24,13 +34,7 @@ def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -
     # Hash the password
     hashed_password = get_password_hash(subcontractor_data.password)
     
-    trade_value = None
-    if subcontractor_data.trade_specialty:
-        if hasattr(subcontractor_data.trade_specialty, 'value'):
-            trade_value = subcontractor_data.trade_specialty.value
-        else:
-            trade_value = str(subcontractor_data.trade_specialty)
-    
+    trade_value = _normalize_explicit_trade_value(subcontractor_data.trade_specialty)
     if trade_value:
         resolution = confirmed_subcontractor_trade_resolution(trade_value)
     else:
@@ -162,9 +166,15 @@ def update_subcontractor(
     if "trade_specialty" in update_data:
         trade_value = update_data["trade_specialty"]
         if trade_value:
-            normalized_trade = trade_value.value if hasattr(trade_value, 'value') else str(trade_value)
+            normalized_trade = _normalize_explicit_trade_value(trade_value)
             update_data["trade_specialty"] = normalized_trade
-            resolution = confirmed_subcontractor_trade_resolution(normalized_trade)
+            if normalized_trade:
+                resolution = confirmed_subcontractor_trade_resolution(normalized_trade)
+            else:
+                resolution = infer_subcontractor_trade_resolution(
+                    company_name=update_data.get("company_name", db_subcontractor.company_name),
+                    email=update_data.get("email", db_subcontractor.email),
+                )
         else:
             resolution = infer_subcontractor_trade_resolution(
                 company_name=update_data.get("company_name", db_subcontractor.company_name),

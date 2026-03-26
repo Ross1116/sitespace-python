@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 from app.core.database import Base
-from app.schemas.enums import AssetStatus
+from app.schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetStatus
 
 class Asset(Base):
     __tablename__ = "assets"
@@ -46,4 +46,4 @@ class Asset(Base):
 
     @property
     def planning_ready(self) -> bool:
-        return bool(self.canonical_type) and (self.type_resolution_status or "unknown") in {"inferred", "confirmed"}
+        return bool(self.canonical_type) and (self.type_resolution_status or "unknown") in ASSET_TYPE_RESOLUTION_READY

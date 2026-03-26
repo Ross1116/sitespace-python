@@ -46,11 +46,11 @@ def upgrade() -> None:
         UPDATE assets
         SET
             type_resolution_status = CASE
-                WHEN canonical_type IS NOT NULL THEN 'inferred'
+                WHEN NULLIF(TRIM(canonical_type), '') IS NOT NULL THEN 'inferred'
                 ELSE 'unknown'
             END,
             type_inference_source = CASE
-                WHEN canonical_type IS NOT NULL THEN 'migration'
+                WHEN NULLIF(TRIM(canonical_type), '') IS NOT NULL THEN 'migration'
                 ELSE NULL
             END
         """
@@ -61,20 +61,21 @@ def upgrade() -> None:
         UPDATE subcontractors
         SET
             suggested_trade_specialty = CASE
-                WHEN trade_specialty IN ('general', 'other') THEN trade_specialty
-                ELSE suggested_trade_specialty
+                WHEN LOWER(NULLIF(TRIM(trade_specialty), '')) IN ('general', 'other')
+                    THEN LOWER(NULLIF(TRIM(trade_specialty), ''))
+                ELSE NULLIF(TRIM(suggested_trade_specialty), '')
             END,
             trade_specialty = CASE
-                WHEN trade_specialty IN ('general', 'other') THEN NULL
-                ELSE trade_specialty
+                WHEN LOWER(NULLIF(TRIM(trade_specialty), '')) IN ('general', 'other') THEN NULL
+                ELSE LOWER(NULLIF(TRIM(trade_specialty), ''))
             END,
             trade_resolution_status = CASE
-                WHEN trade_specialty IS NULL THEN 'unknown'
-                WHEN trade_specialty IN ('general', 'other') THEN 'suggested'
+                WHEN NULLIF(TRIM(trade_specialty), '') IS NULL THEN 'unknown'
+                WHEN LOWER(NULLIF(TRIM(trade_specialty), '')) IN ('general', 'other') THEN 'suggested'
                 ELSE 'confirmed'
             END,
             trade_inference_source = CASE
-                WHEN trade_specialty IN ('general', 'other') THEN 'migration'
+                WHEN LOWER(NULLIF(TRIM(trade_specialty), '')) IN ('general', 'other') THEN 'migration'
                 ELSE NULL
             END
         """
