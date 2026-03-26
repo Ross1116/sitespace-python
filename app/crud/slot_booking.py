@@ -1089,11 +1089,13 @@ def get_asset_availability(
     work_end = end_time or time(18, 0)
     
     if not bookings:
-        available_slots.append({
-            'start_time': work_start,
-            'end_time': work_end,
-            'duration_minutes': _calculate_minutes_between(work_start, work_end)
-        })
+        duration = _calculate_minutes_between(work_start, work_end)
+        if duration >= BOOKING_MIN_SLOT_DURATION_MINUTES:
+            available_slots.append({
+                'start_time': work_start,
+                'end_time': work_end,
+                'duration_minutes': duration
+            })
     else:
         current_time = work_start
         

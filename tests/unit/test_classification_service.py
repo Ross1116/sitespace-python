@@ -202,7 +202,8 @@ class TestResolveItemClassificationNoActive:
         item_id = uuid.uuid4()
         db = self._setup_db_no_active()
         new_cls = _make_cls(asset_type="crane", item_id=item_id)
-        with patch("app.services.classification_service._persist_classification", return_value=new_cls) as mock_p:
+        with patch("app.services.classification_service._persist_classification", return_value=new_cls) as mock_p, \
+             patch("app.core.constants.get_active_asset_types", return_value=frozenset({"crane", "hoist", "ewp", "forklift", "excavator", "telehandler", "concrete_pump", "compactor", "loading_bay", "other"})):
             result = resolve_item_classification(db, item_id, "Install precast panels")
         assert result == "crane"
         mock_p.assert_called_once()
@@ -314,6 +315,9 @@ class TestReconcileClassificationsOnMerge:
         # manual wins — target (loser) should be deactivated
         assert target_cls.is_active is False
         assert source_cls.confirmation_count == 5  # 2 + 3
+        # winner must be reattached to the canonical target item
+        assert source_cls.item_id == target_id
+        assert source_cls.is_active is True
 
     def test_target_wins_on_tie(self):
         source_id = uuid.uuid4()
@@ -339,6 +343,9 @@ class TestReconcileClassificationsOnMerge:
         reconcile_classifications_on_merge(db, source_id, target_id)
         assert target_cls.is_active is False
         assert source_cls.confirmation_count == 1  # 0 + 1
+        # winner must be reattached to the canonical target item
+        assert source_cls.item_id == target_id
+        assert source_cls.is_active is True
 
     def test_no_source_classification_no_op(self):
         source_id = uuid.uuid4()

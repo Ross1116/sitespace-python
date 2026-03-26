@@ -184,7 +184,7 @@ def get_classification_history(
     events = (
         db.query(ItemClassificationEvent)
         .filter(ItemClassificationEvent.item_id == item_id)
-        .order_by(ItemClassificationEvent.created_at.desc())
+        .order_by(ItemClassificationEvent.created_at.desc(), ItemClassificationEvent.id.desc())
         .offset(offset)
         .limit(limit)
         .all()

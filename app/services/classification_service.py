@@ -189,17 +189,23 @@ def resolve_item_classification(
 
             if tier in (TIER_PERMANENT, TIER_STABLE, TIER_CONFIRMED):
                 # Stable — increment confirmation count and return.
-                existing.confirmation_count += 1
-                db.add(ItemClassificationEvent(
-                    id=uuid.uuid4(),
-                    item_id=item_id,
-                    classification_id=existing.id,
-                    event_type="confirmed",
-                    old_asset_type=None,
-                    new_asset_type=existing.asset_type,
-                    triggered_by_upload_id=upload_id,
-                ))
-                db.flush()
+                sp = db.begin_nested()
+                try:
+                    existing.confirmation_count += 1
+                    db.add(ItemClassificationEvent(
+                        id=uuid.uuid4(),
+                        item_id=item_id,
+                        classification_id=existing.id,
+                        event_type="confirmed",
+                        old_asset_type=None,
+                        new_asset_type=existing.asset_type,
+                        triggered_by_upload_id=upload_id,
+                    ))
+                    db.flush()
+                    sp.commit()
+                except Exception:
+                    sp.rollback()
+                    logger.warning("Failed to record confirmation for item %s — returning type anyway", item_id)
                 return existing.asset_type
 
             # TENTATIVE — return current type for this run; AI re-check below.
@@ -216,47 +222,56 @@ def resolve_item_classification(
                 return tentative_type
 
             ai_type, ai_confidence = ai_result
-            if ai_type != tentative_type:
-                # AI disagrees — flag for human review, do NOT auto-promote.
-                db.add(ItemClassificationEvent(
-                    id=uuid.uuid4(),
-                    item_id=item_id,
-                    classification_id=existing.id,
-                    event_type="correction_flagged",
-                    old_asset_type=tentative_type,
-                    new_asset_type=ai_type,
-                    triggered_by_upload_id=upload_id,
-                    details_json={
-                        "ai_suggestion": ai_type,
-                        "ai_confidence": ai_confidence,
-                        "reason": "ai_disagrees_tentative",
-                    },
-                ))
+            sp = db.begin_nested()
+            try:
+                if ai_type != tentative_type:
+                    # AI disagrees — flag for human review, do NOT auto-promote.
+                    db.add(ItemClassificationEvent(
+                        id=uuid.uuid4(),
+                        item_id=item_id,
+                        classification_id=existing.id,
+                        event_type="correction_flagged",
+                        old_asset_type=tentative_type,
+                        new_asset_type=ai_type,
+                        triggered_by_upload_id=upload_id,
+                        details_json={
+                            "ai_suggestion": ai_type,
+                            "ai_confidence": ai_confidence,
+                            "reason": "ai_disagrees_tentative",
+                        },
+                    ))
+                else:
+                    # AI agrees — increment confirmation.
+                    existing.confirmation_count += 1
+                    db.add(ItemClassificationEvent(
+                        id=uuid.uuid4(),
+                        item_id=item_id,
+                        classification_id=existing.id,
+                        event_type="confirmed",
+                        old_asset_type=None,
+                        new_asset_type=tentative_type,
+                        triggered_by_upload_id=upload_id,
+                    ))
                 db.flush()
-            else:
-                # AI agrees — increment confirmation.
-                existing.confirmation_count += 1
-                db.add(ItemClassificationEvent(
-                    id=uuid.uuid4(),
-                    item_id=item_id,
-                    classification_id=existing.id,
-                    event_type="confirmed",
-                    old_asset_type=None,
-                    new_asset_type=tentative_type,
-                    triggered_by_upload_id=upload_id,
-                ))
-                db.flush()
+                sp.commit()
+            except Exception:
+                sp.rollback()
+                logger.warning("Failed to record TENTATIVE re-check event for item %s", item_id)
 
             return tentative_type
 
-        # Step 2 — keyword scan
+        # Step 2 — keyword scan (validate against active taxonomy before persisting)
         keyword_type = _keyword_scan(activity_name)
         if keyword_type:
-            new_cls = _persist_classification(
-                db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id,
-            )
-            logger.debug("Item %s classified via keyword → %s", item_id, keyword_type)
-            return new_cls.asset_type
+            from ..core.constants import get_active_asset_types
+            if keyword_type in get_active_asset_types(db):
+                new_cls = _persist_classification(
+                    db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id,
+                )
+                logger.debug("Item %s classified via keyword → %s", item_id, keyword_type)
+                return new_cls.asset_type
+            else:
+                logger.debug("Item %s keyword match '%s' is not an active asset type — skipping", item_id, keyword_type)
 
         # Step 3 — standalone AI
         ai_result = _run_standalone_ai(activity_name, db)
@@ -393,18 +408,17 @@ def reconcile_classifications_on_merge(
         return
 
     if target_cls is None:
-        # Source has a classification; target doesn't — nothing to merge, the
-        # source's row stays on source_item_id (which is now merged).  The
-        # redirect in follow_item_redirect means any lookup for source resolves
-        # to target, so we write an event and leave the source row in place.
+        # Source has a classification; target doesn't — move it to the canonical
+        # target item so get_active_classification(db, target_item_id) works.
+        source_cls.item_id = target_item_id
         db.add(ItemClassificationEvent(
             id=uuid.uuid4(),
-            item_id=source_item_id,
+            item_id=target_item_id,
             classification_id=source_cls.id,
             event_type="merge_reconcile",
             old_asset_type=source_cls.asset_type,
             new_asset_type=source_cls.asset_type,
-            details_json={"note": "source_only_no_target_classification"},
+            details_json={"note": "source_only_moved_to_target", "original_source_item_id": str(source_item_id)},
         ))
         db.flush()
         return

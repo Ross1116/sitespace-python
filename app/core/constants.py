@@ -48,7 +48,7 @@ DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
 DEMAND_HOURS_PER_DAY: int = 8
 
 # Weekly demand-level bucket boundaries (hours per asset type per week).
-# Demand is computed as working_days × DEMAND_HOURS_PER_DAY, so a single
+# Demand is computed as working_days x DEMAND_HOURS_PER_DAY, so a single
 # asset running a full 5-day week contributes 40 h.  Thresholds are set so
 # that normal full-week single-asset utilisation lands in "high", not
 # "critical".  "Critical" implies multi-asset demand or a scheduling conflict.

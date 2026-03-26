@@ -424,29 +424,40 @@ def classify_item_standalone(
     batch = [{"id": fake_id, "name": activity_name}]
     system_prompt, _ = _build_classification_prompt(None)
 
-    async def _run() -> tuple[str, str] | None:
-        client = _get_async_client()
-        try:
-            raw = await _classify_batch(batch, system_prompt, client)
-        except Exception as exc:
-            logger.warning("classify_item_standalone AI call failed: %s", exc)
-            return None
-
-        for item in raw.get("classifications") or []:
-            if str(item.get("activity_id")) == fake_id:
-                asset_type = str(item.get("asset_type") or "").strip().lower()
-                confidence = str(item.get("confidence") or "").strip().lower()
-                if asset_type in valid_types and confidence in {"high", "medium"}:
-                    return asset_type, confidence
-        return None
-
     # Run the async helper in a dedicated thread with its own event loop so this
     # sync function is safe to call from within a running async context (e.g. the
     # process_programme pipeline).  asyncio.run() cannot be called when a loop is
     # already running, so we isolate it completely.
+    # A fresh client is created inside the thread because the module-level
+    # AsyncAnthropic singleton has an httpx connection pool tied to the main event
+    # loop and is not safe to reuse from a different loop.
     import concurrent.futures
 
     def _run_in_thread() -> tuple[str, str] | None:
+        if not settings.AI_API_KEY:
+            return None
+        provider = settings.AI_PROVIDER.lower()
+        if provider == "openai":
+            if _openai_module is None:
+                return None
+            thread_client = _openai_module.AsyncOpenAI(api_key=settings.AI_API_KEY, max_retries=0)
+        else:
+            thread_client = anthropic.AsyncAnthropic(api_key=settings.AI_API_KEY, max_retries=0)
+
+        async def _run() -> tuple[str, str] | None:
+            try:
+                raw = await _classify_batch(batch, system_prompt, thread_client)
+            except Exception as exc:
+                logger.warning("classify_item_standalone AI call failed: %s", exc)
+                return None
+            for item in raw.get("classifications") or []:
+                if str(item.get("activity_id")) == fake_id:
+                    asset_type = str(item.get("asset_type") or "").strip().lower()
+                    confidence = str(item.get("confidence") or "").strip().lower()
+                    if asset_type in valid_types and confidence in {"high", "medium"}:
+                        return asset_type, confidence
+            return None
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
