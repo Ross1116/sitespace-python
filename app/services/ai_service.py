@@ -28,7 +28,16 @@ except ImportError:
     _openai_module = None  # type: ignore[assignment]
 
 from ..core.config import settings
-from ..core.constants import ALLOWED_ASSET_TYPES
+from ..core.constants import (
+    ALLOWED_ASSET_TYPES,
+    AI_CLASSIFICATION_BATCH_MAX_TOKENS,
+    AI_CLASSIFICATION_BATCH_SIZE,
+    AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES,
+    AI_CLASSIFICATION_PARALLEL_THRESHOLD,
+    AI_STANDALONE_TIMEOUT_BUFFER_SECONDS,
+    AI_STRUCTURE_DETECTION_MAX_TOKENS,
+    AI_STRUCTURE_DETECTION_SAMPLE_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +457,7 @@ def classify_item_standalone(
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             return executor.submit(_run_in_thread).result(
-                timeout=float(settings.AI_TIMEOUT_CLASSIFY) + 2
+                timeout=float(settings.AI_TIMEOUT_CLASSIFY) + AI_STANDALONE_TIMEOUT_BUFFER_SECONDS
             )
     except Exception as exc:
         logger.warning("classify_item_standalone failed: %s", exc)
@@ -744,15 +753,14 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
     client = _get_async_client()
     system_prompt = _load_prompt("structure_detection.txt")
 
-    # 50 rows is sufficient to reliably identify headers and date patterns
-    sample = rows[:50]
+    sample = rows[:AI_STRUCTURE_DETECTION_SAMPLE_SIZE]
     user_message = (
         f"Here are the first {len(sample)} rows from a construction programme file. "
         "Identify the column structure. Return ONLY valid JSON.\n\n"
         f"ROWS:\n{json.dumps(sample, default=str)}"
     )
 
-    text, _tokens = await _call_api(client, system_prompt, user_message, max_tokens=2048, timeout=float(settings.AI_TIMEOUT_STRUCTURE))
+    text, _tokens = await _call_api(client, system_prompt, user_message, max_tokens=AI_STRUCTURE_DETECTION_MAX_TOKENS, timeout=float(settings.AI_TIMEOUT_STRUCTURE))
     data = _parse_json_response(text)
 
     # Extract mapping, dropping null values
@@ -829,9 +837,7 @@ async def _classify_batch(
         f"ACTIVITIES:\n{json.dumps(batch, ensure_ascii=False)}"
     )
 
-    # Each activity produces ~30 output tokens (UUID + asset_type + confidence + source).
-    # 50-activity batches → ~1,500 tokens + JSON overhead; 8192 gives a safe 5× headroom.
-    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=8192, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
+    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=AI_CLASSIFICATION_BATCH_MAX_TOKENS, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
     try:
         data = _parse_json_response(text)
         return {
@@ -1062,9 +1068,7 @@ async def _classify_assets_real(
     )
 
     # Step 2: Batch remaining through AI
-    # 50 activities × ~30 output tokens each = ~1,500 tokens per batch, well
-    # within the 8192 max_tokens ceiling even when all activities need a skipped[].
-    BATCH_SIZE = 50
+    BATCH_SIZE = AI_CLASSIFICATION_BATCH_SIZE
     all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
     total_tokens = 0
 
@@ -1075,12 +1079,8 @@ async def _classify_assets_real(
         ]
         batch_tasks = [_classify_batch(batch, system_prompt, client) for batch in batches]
 
-        # Parallel for large volumes (bounded concurrency), sequential otherwise.
-        # The semaphore prevents multiplying long per-batch timeouts into
-        # unbounded in-flight requests when many batches are fanned out at once.
-        # Threshold: >2 batches (>100 unique candidates) goes parallel.
-        if len(deduped_candidates) > 100:
-            _sem = asyncio.Semaphore(4)
+        if len(deduped_candidates) > AI_CLASSIFICATION_PARALLEL_THRESHOLD:
+            _sem = asyncio.Semaphore(AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES)
 
             async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
                 async with _sem:

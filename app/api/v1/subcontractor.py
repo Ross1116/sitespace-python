@@ -24,6 +24,12 @@ from ...schemas.subcontractor import (
     SubcontractorBookingSummary,
     SubcontractorProjectSummary,
 )
+from ...core.constants import (
+    SUBCONTRACTOR_PAGE_DEFAULT,
+    SUBCONTRACTOR_PAGE_MAX,
+    UPCOMING_BOOKINGS_DEFAULT_DAYS_AHEAD,
+    UPCOMING_BOOKINGS_MAX_DAYS_AHEAD,
+)
 from ...schemas.base import MessageResponse
 from ...schemas.enums import BookingStatus, UserRole
 
@@ -37,7 +43,7 @@ router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 @router.get("/my-subcontractors", response_model=SubcontractorListResponse)
 def get_my_subcontractors(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
     project_id: Optional[UUID] = Query(None, description="Filter by specific project"),
@@ -121,7 +127,7 @@ def search_subcontractors(
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
     is_active: Optional[bool] = Query(True, description="Filter by active status"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -202,7 +208,7 @@ def get_subcontractors_by_trade(
     trade_specialty: str,
     is_active: bool = Query(True, description="Filter by active status"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -237,7 +243,7 @@ def get_subcontractors_by_trade(
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
     db: Session = Depends(get_db),
@@ -620,7 +626,7 @@ def get_subcontractor_projects(
     subcontractor_id: UUID,
     is_active: Optional[bool] = Query(None, description="Filter by active project status"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -687,7 +693,7 @@ def get_subcontractor_bookings(
     end_date: Optional[date] = Query(None),
     status: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -731,7 +737,7 @@ def get_subcontractor_bookings(
 @router.get("/{subcontractor_id}/bookings/upcoming", response_model=List[SubcontractorBookingSummary])
 def get_upcoming_bookings(
     subcontractor_id: UUID,
-    days_ahead: int = Query(7, ge=1, le=90, description="Number of days to look ahead"),
+    days_ahead: int = Query(UPCOMING_BOOKINGS_DEFAULT_DAYS_AHEAD, ge=1, le=UPCOMING_BOOKINGS_MAX_DAYS_AHEAD, description="Number of days to look ahead"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):

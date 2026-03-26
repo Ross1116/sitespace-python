@@ -88,6 +88,101 @@ CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS: int = 2
 CLASSIFICATION_STABLE_MIN_CONFIRMATIONS: int = 5
 
 
+# ---------------------------------------------------------------------------
+# AI service — processing parameters
+# ---------------------------------------------------------------------------
+
+# Number of rows sampled from an uploaded file for structure detection.
+# 50 rows is sufficient to identify column headers and date patterns reliably.
+AI_STRUCTURE_DETECTION_SAMPLE_SIZE: int = 50
+
+# max_tokens budget for the structure detection API call.
+AI_STRUCTURE_DETECTION_MAX_TOKENS: int = 2048
+
+# max_tokens budget for a single activity classification batch call.
+# 50 activities × ~30 output tokens = ~1,500 tokens + JSON overhead;
+# 8192 gives ~5× headroom.
+AI_CLASSIFICATION_BATCH_MAX_TOKENS: int = 8192
+
+# Number of activities sent to the AI in a single classification batch call.
+AI_CLASSIFICATION_BATCH_SIZE: int = 50
+
+# Unique-candidate count above which classification batches are fanned out in
+# parallel rather than run sequentially.
+AI_CLASSIFICATION_PARALLEL_THRESHOLD: int = 100
+
+# Maximum number of in-flight classification batch calls when running in parallel.
+AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES: int = 4
+
+# Extra seconds added to AI_TIMEOUT_CLASSIFY for the ThreadPoolExecutor timeout
+# in classify_item_standalone, to allow the coroutine's own timeout to fire first.
+AI_STANDALONE_TIMEOUT_BUFFER_SECONDS: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Booking rules
+# ---------------------------------------------------------------------------
+
+# Minimum duration (minutes) for a gap to be reported as an available booking slot.
+BOOKING_MIN_SLOT_DURATION_MINUTES: int = 30
+
+# Maximum date-range span (days) accepted by calendar / report query endpoints.
+BOOKING_CALENDAR_MAX_DAYS: int = 90
+
+
+# ---------------------------------------------------------------------------
+# File handling
+# ---------------------------------------------------------------------------
+
+# Maximum accepted upload size in bytes (20 MB).
+MAX_FILE_UPLOAD_SIZE_BYTES: int = 20 * 1024 * 1024
+
+# HTTP Cache-Control max-age for served file previews and images (seconds).
+FILE_CACHE_MAX_AGE_SECONDS: int = 3600
+
+# PDF → PNG render scale for the low-resolution preview endpoint.
+PDF_PREVIEW_SCALE: float = 1.5
+
+# PDF → PNG render scale for the full-resolution image endpoint.
+PDF_IMAGE_SCALE: float = 3.0
+
+
+# ---------------------------------------------------------------------------
+# API pagination defaults
+# ---------------------------------------------------------------------------
+
+# Default and maximum page sizes for list endpoints.
+# Naming: <RESOURCE>_PAGE_<DEFAULT|MAX>
+
+ASSET_PAGE_DEFAULT: int = 100
+ASSET_PAGE_MAX: int = 100
+
+BOOKING_PAGE_DEFAULT: int = 100
+BOOKING_PAGE_MAX: int = 1000
+
+BOOKING_AUDIT_PAGE_DEFAULT: int = 50
+BOOKING_AUDIT_PAGE_MAX: int = 200
+
+UPCOMING_BOOKINGS_PAGE_DEFAULT: int = 10
+UPCOMING_BOOKINGS_PAGE_MAX: int = 100
+
+ITEM_PAGE_DEFAULT: int = 50
+ITEM_PAGE_MAX: int = 200
+
+CLASSIFICATION_HISTORY_PAGE_DEFAULT: int = 50
+CLASSIFICATION_HISTORY_PAGE_MAX: int = 200
+
+PROJECT_PAGE_DEFAULT: int = 100
+PROJECT_PAGE_MAX: int = 1000
+
+SUBCONTRACTOR_PAGE_DEFAULT: int = 100
+SUBCONTRACTOR_PAGE_MAX: int = 1000
+
+# Default look-ahead window (days) for upcoming-bookings queries.
+UPCOMING_BOOKINGS_DEFAULT_DAYS_AHEAD: int = 7
+UPCOMING_BOOKINGS_MAX_DAYS_AHEAD: int = 90
+
+
 def get_active_asset_types(db: object) -> frozenset[str]:
     """Load active asset type codes from the DB taxonomy.
 

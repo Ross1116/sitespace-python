@@ -5,6 +5,7 @@ from uuid import UUID
 from datetime import date
 import logging
 
+from ...core.constants import PROJECT_PAGE_DEFAULT, PROJECT_PAGE_MAX
 from ...core.database import get_db
 from ...core.security import get_current_user, get_current_active_user, require_manager_or_admin
 from ...models.user import User
@@ -170,7 +171,7 @@ def list_projects(
     start_date_to: Optional[date] = Query(None, description="Filter by start date (to)"),
     my_projects: bool = Query(False, description="Show only my projects"),
     skip: int = Query(0, ge=0, description="Number of items to skip"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of items to return"),
+    limit: int = Query(PROJECT_PAGE_DEFAULT, ge=1, le=PROJECT_PAGE_MAX, description="Number of items to return"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ) -> SiteProjectListResponse:

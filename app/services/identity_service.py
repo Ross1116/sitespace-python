@@ -228,6 +228,8 @@ def merge_items(
     db.flush()
 
     # Reconcile classification memory — runs inside the same transaction.
+    # Import here, not at module top, to avoid a circular dependency:
+    #   identity_service → classification_service → identity_service (Item model)
     try:
         from .classification_service import reconcile_classifications_on_merge
         reconcile_classifications_on_merge(db, source_item_id, target_item_id)

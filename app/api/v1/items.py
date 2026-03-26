@@ -16,6 +16,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from ...core.constants import (
+    ITEM_PAGE_DEFAULT,
+    ITEM_PAGE_MAX,
+    CLASSIFICATION_HISTORY_PAGE_DEFAULT,
+    CLASSIFICATION_HISTORY_PAGE_MAX,
+)
 from ...core.database import get_db
 from ...core.security import require_role
 from ...models.item_identity import Item, ItemClassificationEvent
@@ -32,7 +38,7 @@ from ...schemas.item_identity import (
 from ...services.classification_service import (
     apply_manual_classification,
     get_active_classification,
-    _maturity_tier,
+    maturity_tier,
 )
 from ...services.identity_service import MergeError, merge_items
 
@@ -45,7 +51,7 @@ router = APIRouter(prefix="/items", tags=["Items"])
 def list_items(
     search: str | None = Query(None, description="Filter by display_name (case-insensitive substring)"),
     identity_status: str | None = Query(None, description="Filter by identity_status ('active' or 'merged')"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(ITEM_PAGE_DEFAULT, ge=1, le=ITEM_PAGE_MAX),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
@@ -114,7 +120,7 @@ def _classification_response(cls) -> ItemClassificationResponse:
         is_active=cls.is_active,
         confirmation_count=cls.confirmation_count,
         correction_count=cls.correction_count,
-        maturity_tier=_maturity_tier(cls),
+        maturity_tier=maturity_tier(cls),
         created_at=cls.created_at,
         updated_at=cls.updated_at,
     )
@@ -166,7 +172,7 @@ def override_item_classification(
 @router.get("/{item_id}/classification/history", response_model=list[ItemClassificationEventResponse])
 def get_classification_history(
     item_id: UUID,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(CLASSIFICATION_HISTORY_PAGE_DEFAULT, ge=1, le=CLASSIFICATION_HISTORY_PAGE_MAX),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),

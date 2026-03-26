@@ -13,12 +13,18 @@ from ...models.site_plan import SitePlan
 from ...models.user import User
 from ...schemas.enums import UserRole
 from ...schemas.stored_file import FileUploadResponse
+from ...core.constants import (
+    FILE_CACHE_MAX_AGE_SECONDS,
+    MAX_FILE_UPLOAD_SIZE_BYTES,
+    PDF_IMAGE_SCALE,
+    PDF_PREVIEW_SCALE,
+)
 from ...utils.pdf_utils import extract_suggested_title, render_pdf_to_png
 from ...utils.storage import storage
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_FILE_SIZE = MAX_FILE_UPLOAD_SIZE_BYTES
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
@@ -38,7 +44,7 @@ def _get_stored_file(file_id: UUID, db: Session) -> StoredFile:
 
 def _cache_headers(file_id: UUID, suffix: str) -> dict[str, str]:
     return {
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": f"public, max-age={FILE_CACHE_MAX_AGE_SECONDS}",
         "ETag": f'"{file_id}-{suffix}"',
     }
 
@@ -139,7 +145,7 @@ def serve_file_preview(
 ):
     """PNG at 1.5× scale. PDFs render first page; images served as-is. Cached 1 hour."""
     record = _get_stored_file(file_id, db)
-    return _serve_as_image(record, scale=1.5, cache_suffix="preview")
+    return _serve_as_image(record, scale=PDF_PREVIEW_SCALE, cache_suffix="preview")
 
 
 @router.get("/{file_id}/image")
@@ -150,7 +156,7 @@ def serve_file_image(
 ):
     """PNG at 3× scale for standalone display in popups or detail views. Cached 1 hour."""
     record = _get_stored_file(file_id, db)
-    return _serve_as_image(record, scale=3.0, cache_suffix="image")
+    return _serve_as_image(record, scale=PDF_IMAGE_SCALE, cache_suffix="image")
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

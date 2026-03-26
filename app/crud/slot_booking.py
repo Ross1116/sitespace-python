@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.sql.elements import ColumnElement
 from collections import defaultdict
 
+from ..core.constants import BOOKING_MIN_SLOT_DURATION_MINUTES
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
 from ..models.user import User
@@ -1099,7 +1100,7 @@ def get_asset_availability(
         for booking in bookings:
             if booking.start_time > current_time:
                 duration = _calculate_minutes_between(current_time, booking.start_time)
-                if duration >= 30:
+                if duration >= BOOKING_MIN_SLOT_DURATION_MINUTES:
                     available_slots.append({
                         'start_time': current_time,
                         'end_time': booking.start_time,

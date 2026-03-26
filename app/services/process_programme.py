@@ -455,7 +455,7 @@ def _insert_activities(
         # per unique item per upload, even when the same item appears many times.
         if item_id is not None and item_id not in classification_cache:
             classification_cache[item_id] = resolve_item_classification(
-                db, item_id, item.name, upload_id=uuid.UUID(str(upload_id)),
+                db, item_id, item.name, upload_id=uuid.UUID(upload_id),
             )
         resolved_type = classification_cache.get(item_id) if item_id is not None else None
         if resolved_type is not None:
