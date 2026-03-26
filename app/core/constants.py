@@ -48,7 +48,7 @@ DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
 # Standard working hours contributed by one asset across one working day.
 DEMAND_HOURS_PER_DAY: int = 8
 
-# Weekly demand bands. These keep up to 2 standard days in "low", 2–4 days in
+# Weekly demand bands. These keep up to 2 standard days in "low", 2-4 days in
 # "medium", and one full single-asset week in "high" before "critical" starts.
 DEMAND_LEVEL_LOW_MAX: int = 16
 DEMAND_LEVEL_MEDIUM_MAX: int = 32

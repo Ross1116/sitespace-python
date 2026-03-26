@@ -16,9 +16,9 @@ Architecture:
   10. Cache write          — persist / update item_context_profiles with full evidence tracking
   11. Profile write        — persist activity_work_profiles
 
-AI generation (cache misses, TENTATIVE, CONFIRMED hints) is in the second half
-of Stage 5 and wired in via generate_work_profile_ai().  Until that function is
-implemented, resolve_work_profile() falls back to a default pattern.
+The timeout-aware AI helper is available via generate_work_profile_ai(), but
+resolve_work_profile() still uses the conservative cache/baseline/default path
+until the second-half AI flow is enabled.
 """
 
 from __future__ import annotations
@@ -34,7 +34,9 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from ..core.config import settings
 from ..core.constants import (
+    AI_WORK_PROFILE_MAX_TOKENS,
     DEFAULT_MAX_HOURS_PER_DAY,
     WORK_PROFILE_ACTUAL_ERROR_FRACTION,
     WORK_PROFILE_AI_ERROR_FRACTION,
@@ -49,6 +51,7 @@ from ..core.constants import (
     WORK_PROFILE_OPERATIONAL_UNIT,
 )
 from ..models.work_profile import ActivityWorkProfile, ItemContextProfile
+from .ai_service import _call_api, _get_async_client, _parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +335,11 @@ def _find_trusted_baseline(
     (item_id, asset_type, duration_days), or None if no baseline exists.
 
     Manual rows establish a baseline immediately.
-    Learned / AI rows require NOT low_confidence_flag and sample_count >= 3.
+    Learned / AI rows require NOT low_confidence_flag and
+    sample_count >= WORK_PROFILE_CORRECTION_MIN_SAMPLES for each qualifying row.
+    In addition, this function requires at least
+    WORK_PROFILE_CORRECTION_MIN_SAMPLES qualifying learned / AI rows before it
+    will return a baseline, so the current rule is a dual threshold.
     """
     manual_rows = (
         db.query(ItemContextProfile)
@@ -444,7 +451,11 @@ def derive_normalized_distribution(distribution: list[float]) -> list[float]:
     total = sum(distribution)
     if total <= 0:
         return [0.0] * len(distribution)
-    return [round(v / total, 6) for v in distribution]
+
+    normalized = [v / total for v in distribution]
+    rounded = [round(v, 6) for v in normalized[:-1]]
+    last_value = max(0.0, round(1.0 - sum(rounded), 6))
+    return rounded + [last_value]
 
 
 def _base_context_only(compressed_context: dict) -> dict:
@@ -870,6 +881,96 @@ def _activity_profile_source_for_cache(profile_source: str) -> str:
     return "cache"
 
 
+async def generate_work_profile_ai(
+    *,
+    activity_name: str,
+    asset_type: str,
+    duration_days: int,
+    max_hours_per_day: float,
+    level_name: Optional[str] = None,
+    zone_name: Optional[str] = None,
+    row_confidence: Optional[str] = None,
+) -> Optional[dict[str, object]]:
+    """
+    Request an AI work-profile proposal for total_hours and normalized shape.
+
+    This helper centralizes the provider timeout so work-profile AI calls honor
+    settings.AI_TIMEOUT_WORK_PROFILE instead of using an unrelated or hardcoded
+    timeout value.
+    """
+    if duration_days <= 0:
+        duration_days = 1
+
+    if asset_type == "none":
+        return {
+            "total_hours": 0.0,
+            "normalized_distribution": [0.0] * duration_days,
+            "confidence": 1.0,
+        }
+
+    if not settings.AI_ENABLED or not settings.AI_API_KEY:
+        return None
+
+    system_prompt = (
+        "You are estimating construction work-profile effort for one activity. "
+        "Return JSON only with keys total_hours, normalized_distribution, and confidence. "
+        "total_hours must be a non-negative number. "
+        "normalized_distribution must be an array of length duration_days with non-negative "
+        "values summing to 1.0 for non-zero work, or all zeros for zero work. "
+        "confidence must be a number between 0 and 1."
+    )
+    user_message = json.dumps(
+        {
+            "activity_name": activity_name,
+            "asset_type": asset_type,
+            "duration_days": duration_days,
+            "max_hours_per_day": max_hours_per_day,
+            "level_name": level_name,
+            "zone_name": zone_name,
+            "row_confidence": row_confidence,
+        },
+        sort_keys=True,
+    )
+
+    try:
+        client = _get_async_client()
+        text, _tokens = await _call_api(
+            client,
+            system_prompt,
+            user_message,
+            max_tokens=AI_WORK_PROFILE_MAX_TOKENS,
+            timeout=float(settings.AI_TIMEOUT_WORK_PROFILE),
+        )
+        data = _parse_json_response(text)
+    except Exception as exc:
+        logger.warning("Work-profile AI generation failed: %s", exc)
+        return None
+
+    try:
+        total_hours = float(data["total_hours"])
+        raw_distribution = data["normalized_distribution"]
+        if not isinstance(raw_distribution, list) or len(raw_distribution) != duration_days:
+            raise ValueError(
+                "normalized_distribution must be a list matching duration_days"
+            )
+        weights = [max(0.0, float(value)) for value in raw_distribution]
+        normalized_distribution = (
+            derive_normalized_distribution(weights)
+            if sum(weights) > 0
+            else [0.0] * duration_days
+        )
+        confidence = min(1.0, max(0.0, float(data.get("confidence", 0.5))))
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning("Work-profile AI response was invalid: %s", exc)
+        return None
+
+    return {
+        "total_hours": total_hours,
+        "normalized_distribution": normalized_distribution,
+        "confidence": confidence,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 12. ActivityWorkProfile writer
 # ---------------------------------------------------------------------------
@@ -1064,6 +1165,7 @@ def resolve_work_profile(
             "Stage D validation failed for item=%s asset=%s dur=%d: %s",
             item_id, asset_type, duration_days, "; ".join(result.errors),
         )
+        low_flag = True
 
     # ── Step 6: write activity_work_profiles ─────────────────────────────────
     return _write_activity_profile(

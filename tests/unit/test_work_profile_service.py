@@ -17,10 +17,12 @@ Tests cover (in order):
   - build_default_profile: 'none' zeros, non-none conservative default
 """
 
+import asyncio
+import json
 import math
 import uuid
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 from app.services.work_profile_service import (
     MATURITY_CONFIRMED,
@@ -35,6 +37,7 @@ from app.services.work_profile_service import (
     derive_distribution,
     derive_normalized_distribution,
     finalize_total_hours,
+    generate_work_profile_ai,
     quantize_hours,
     redistribute_capped_distribution,
     resolve_work_profile,
@@ -53,7 +56,7 @@ from app.services.work_profile_service import (
 from app.models.work_profile import ItemContextProfile
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _make_profile(
     *,
@@ -80,7 +83,7 @@ def _make_profile(
     return p
 
 
-# ─── build_compressed_context ─────────────────────────────────────────────────
+# â”€â”€â”€ build_compressed_context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestBuildCompressedContext:
 
@@ -133,7 +136,7 @@ class TestBuildCompressedContext:
         assert ctx["work_type"] == "unknown"
 
 
-# ─── build_context_key ────────────────────────────────────────────────────────
+# â”€â”€â”€ build_context_key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestBuildContextKey:
 
@@ -176,7 +179,7 @@ class TestBuildContextKey:
                build_context_key(item_id, "crane", 5, ctx, inference_version=2)
 
 
-# ─── work_profile_maturity ────────────────────────────────────────────────────
+# â”€â”€â”€ work_profile_maturity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestWorkProfileMaturity:
 
@@ -194,7 +197,7 @@ class TestWorkProfileMaturity:
 
     def test_trusted_baseline_cv_below_010(self):
         # cv = (1/sqrt(pp)) / pm; want cv < 0.10
-        # cv = sigma / pm → sigma = pm * 0.05 → pp = 1/(pm*0.05)^2
+        # cv = sigma / pm â†’ sigma = pm * 0.05 â†’ pp = 1/(pm*0.05)^2
         pm = 10.0
         sigma = pm * 0.05  # cv = 0.05 < 0.10
         pp = 1.0 / (sigma ** 2)
@@ -237,7 +240,7 @@ class TestWorkProfileMaturity:
         assert work_profile_maturity(p) == MATURITY_TRUSTED_BASELINE
 
     def test_correction_rate_no_override_below_min_samples(self):
-        # sample_count < 3 → override does not apply even if rate is high
+        # sample_count < 3 â†’ override does not apply even if rate is high
         pm = 10.0
         sigma = pm * 0.05
         pp = 1.0 / (sigma ** 2)
@@ -362,7 +365,7 @@ class TestUpdateCacheOnHit:
         assert profile.observation_count == original_observation_count
 
 
-# ─── bayesian_update ──────────────────────────────────────────────────────────
+# â”€â”€â”€ bayesian_update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestBayesianUpdate:
 
@@ -381,8 +384,8 @@ class TestBayesianUpdate:
         assert new_mean == 10.0
 
     def test_high_obs_precision_dominates(self):
-        # obs_precision much larger → new_mean approaches obs_value
-        new_mean, new_prec = bayesian_update(10.0, 0.01, 20.0, 1000.0)
+        # obs_precision much larger -> new_mean approaches obs_value
+        new_mean, _new_prec = bayesian_update(10.0, 0.01, 20.0, 1000.0)
         assert abs(new_mean - 20.0) < 0.1
 
     def test_equal_precisions_averages(self):
@@ -391,7 +394,7 @@ class TestBayesianUpdate:
         assert abs(new_prec - 2.0) < 1e-9
 
 
-# ─── _obs_precision ───────────────────────────────────────────────────────────
+# â”€â”€â”€ _obs_precision â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestObsPrecision:
 
@@ -417,7 +420,7 @@ class TestObsPrecision:
         assert _obs_precision(-5.0, "ai") == 0.0
 
 
-# ─── _initial_posterior ───────────────────────────────────────────────────────
+# â”€â”€â”€ _initial_posterior â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestInitialPosterior:
 
@@ -428,7 +431,7 @@ class TestInitialPosterior:
     def test_precision_uses_confidence(self):
         total_hours = 10.0
         confidence = 0.8
-        # σ = 10 * (1 - 0.8) = 2.0  → pp = 1/4 = 0.25
+        # sigma = 10 * (1 - 0.8) = 2.0 -> pp = 1/4 = 0.25
         _, pp = _initial_posterior(total_hours, confidence)
         expected_pp = 1.0 / (total_hours * (1.0 - confidence)) ** 2
         assert abs(pp - expected_pp) < 1e-9
@@ -439,13 +442,13 @@ class TestInitialPosterior:
         assert pp == 0.0
 
     def test_full_confidence_fallback(self):
-        # confidence=1.0 → sigma=0 → fallback to 1% uncertainty
+        # confidence=1.0 -> sigma=0 -> fallback to 1% uncertainty
         pm, pp = _initial_posterior(10.0, 1.0)
         assert pm == 10.0
         assert pp > 0
 
 
-# ─── quantize_hours ───────────────────────────────────────────────────────────
+# â”€â”€â”€ quantize_hours â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestQuantizeHours:
 
@@ -464,7 +467,7 @@ class TestQuantizeHours:
         assert quantize_hours(input_h) == expected
 
 
-# ─── finalize_total_hours ─────────────────────────────────────────────────────
+# â”€â”€â”€ finalize_total_hours â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestFinalizeTotalHours:
 
@@ -485,17 +488,17 @@ class TestFinalizeTotalHours:
         assert result == 7.0
 
     def test_ai_clamped_to_max(self):
-        # max_hours_per_day=10, duration=2 → max=20; proposal=25 → clamped to 20
+        # max_hours_per_day=10, duration=2 â†’ max=20; proposal=25 â†’ clamped to 20
         result = finalize_total_hours(25.0, "crane", 2, 10.0)
         assert result == 20.0
 
     def test_ai_clamped_to_min(self):
-        # proposal=0.1 → clamped to 0.5
+        # proposal=0.1 â†’ clamped to 0.5
         result = finalize_total_hours(0.1, "crane", 2, 10.0)
         assert result == 0.5
 
     def test_result_is_quantized(self):
-        # 7.3 → nearest 0.5 = 7.5
+        # 7.3 â†’ nearest 0.5 = 7.5
         result = finalize_total_hours(7.3, "crane", 5, 10.0)
         assert result == 7.5
 
@@ -504,7 +507,7 @@ class TestFinalizeTotalHours:
         assert result == 6.0
 
 
-# ─── derive_distribution / normalized ─────────────────────────────────────────
+# â”€â”€â”€ derive_distribution / normalized â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestDeriveDistribution:
 
@@ -524,6 +527,10 @@ class TestDeriveDistribution:
         norm = derive_normalized_distribution(original)
         assert abs(sum(norm) - 1.0) < 1e-5
 
+    def test_normalize_matches_stage_d_tolerance_for_rounding_edge_cases(self):
+        norm = derive_normalized_distribution([1.0] * 6)
+        assert abs(sum(norm) - 1.0) < WORK_PROFILE_NORM_DIST_SUM_TOLERANCE
+
     def test_normalize_zero_total_gives_zeros(self):
         norm = derive_normalized_distribution([0.0, 0.0, 0.0])
         assert norm == [0.0, 0.0, 0.0]
@@ -537,7 +544,7 @@ class TestDeriveDistribution:
             )
 
 
-# ─── validate_stage_b ─────────────────────────────────────────────────────────
+# â”€â”€â”€ validate_stage_b â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestValidateStageB:
 
@@ -570,7 +577,7 @@ class TestValidateStageB:
         assert result.valid is False
 
 
-# ─── validate_stage_d ─────────────────────────────────────────────────────────
+# â”€â”€â”€ validate_stage_d â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestValidateStageD:
 
@@ -608,7 +615,7 @@ class TestValidateStageD:
 
     def test_distribution_sum_mismatch_fails(self):
         norm = [0.6, 0.4]
-        dist = [6.0, 3.0]  # sum = 9 ≠ total_hours = 10
+        dist = [6.0, 3.0]  # sum = 9 â‰  total_hours = 10
         result = validate_stage_d(10.0, dist, norm, "crane", 2, 10.0)
         assert result.valid is False
 
@@ -633,7 +640,7 @@ class TestValidateStageD:
         assert any("max_hours_per_day" in e for e in result.errors)
 
 
-# ─── redistribute_capped_distribution ─────────────────────────────────────────
+# â”€â”€â”€ redistribute_capped_distribution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestRedistributeCappedDistribution:
 
@@ -652,9 +659,9 @@ class TestRedistributeCappedDistribution:
 
     def test_all_at_cap_triggers_uniform_fallback(self):
         # Both buckets exceed cap and total > sum-of-caps, so no uncapped neighbours
-        # can absorb the remaining hours → uniform fallback.
+        # can absorb the remaining hours â†’ uniform fallback.
         # cap=10, total=25: after capping each to 10, sum=20 < 25, remaining=5
-        # but all buckets are at cap → no uncapped_indices → fallback
+        # but all buckets are at cap â†’ no uncapped_indices â†’ fallback
         dist = [15.0, 15.0]
         adjusted, fallback = redistribute_capped_distribution(dist, 10.0, 25.0)
         assert fallback is True
@@ -678,7 +685,7 @@ class TestRedistributeCappedDistribution:
         assert all(v <= 10.0 for v in adjusted)
 
 
-# ─── build_default_profile ────────────────────────────────────────────────────
+# â”€â”€â”€ build_default_profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestBuildDefaultProfile:
 
@@ -707,13 +714,42 @@ class TestBuildDefaultProfile:
             assert len(norm) == dur
 
     def test_respects_half_utilisation_convention(self):
-        # Default is 0.5 × max_hours_per_day × duration_days, quantized
+        # Default is 0.5 Ã— max_hours_per_day Ã— duration_days, quantized
         total, _, _ = build_default_profile("crane", 4, 10.0)
         expected = quantize_hours(0.5 * 10.0 * 4)
         assert total == expected
 
 
 class TestResolveWorkProfile:
+
+    def test_generate_work_profile_ai_uses_configured_timeout(self):
+        response = json.dumps(
+            {
+                "total_hours": 12.0,
+                "normalized_distribution": [0.5, 0.5],
+                "confidence": 0.75,
+            }
+        )
+
+        with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 123)) as call_api, \
+             patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
+             patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"), \
+             patch("app.services.work_profile_service.settings.AI_TIMEOUT_WORK_PROFILE", 25):
+            result = asyncio.run(
+                generate_work_profile_ai(
+                    activity_name="Pour slab",
+                    asset_type="crane",
+                    duration_days=2,
+                    max_hours_per_day=10.0,
+                )
+            )
+
+        assert result is not None
+        assert result["total_hours"] == 12.0
+        assert result["normalized_distribution"] == [0.5, 0.5]
+        assert result["confidence"] == 0.75
+        assert call_api.await_args.kwargs["timeout"] == 25.0
 
     def test_trusted_baseline_writes_activity_profile_with_cache_source(self):
         db = MagicMock()
@@ -740,3 +776,31 @@ class TestResolveWorkProfile:
         assert result is written_profile
         assert write_activity.call_args.kwargs["source"] == "cache"
         assert write_activity.call_args.kwargs["context_profile_id"] == cache_row.id
+
+    def test_stage_d_failure_marks_activity_profile_low_confidence(self):
+        db = MagicMock()
+        cached = MagicMock()
+        cached.id = uuid.uuid4()
+        cached.posterior_mean = 10.0
+        cached.total_hours = 10.0
+        cached.normalized_distribution_json = [0.5, 0.5]
+        cached.source = "ai"
+        cached.confidence = 0.8
+        cached.low_confidence_flag = False
+        written_profile = MagicMock()
+
+        with patch("app.services.work_profile_service._lookup_cache_with_reduced_context", return_value=(cached, "exact-hash")), \
+             patch("app.services.work_profile_service.work_profile_maturity", return_value=MATURITY_TRUSTED_BASELINE), \
+             patch("app.services.work_profile_service.validate_stage_d", return_value=ValidationResult(valid=False, errors=["distribution mismatch"])), \
+             patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_activity, \
+             patch("app.core.constants.get_max_hours_for_type", return_value=10.0):
+            resolve_work_profile(
+                db,
+                activity_id=uuid.uuid4(),
+                item_id=uuid.uuid4(),
+                asset_type="crane",
+                duration_days=2,
+                activity_name="Pour slab",
+            )
+
+        assert write_activity.call_args.kwargs["low_confidence_flag"] is True
