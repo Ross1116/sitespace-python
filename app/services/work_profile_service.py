@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
@@ -130,10 +131,22 @@ _WORK_TYPE_KEYWORDS: dict[str, list[str]] = {
 
 def _keyword_match(text: str, keyword_map: dict[str, list[str]]) -> str:
     """Return the first matching key or 'unknown'."""
-    lowered = text.lower()
+    def _normalize_match_text(value: str) -> str:
+        # Remove ampersands before punctuation stripping so tokens like FF&E
+        # normalize to "ffe" instead of splitting into "ff e".
+        normalized = value.lower().replace("&", "")
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    normalized_text = _normalize_match_text(text)
+    if not normalized_text:
+        return "unknown"
+    padded_text = f" {normalized_text} "
+
     for label, keywords in keyword_map.items():
         for kw in keywords:
-            if kw in lowered:
+            normalized_kw = _normalize_match_text(kw)
+            if normalized_kw and f" {normalized_kw} " in padded_text:
                 return label
     return "unknown"
 
@@ -329,6 +342,8 @@ def _find_trusted_baseline(
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> Optional[float]:
     """
     Return the median total_hours across trusted historical cache entries for
@@ -369,6 +384,8 @@ def _find_trusted_baseline(
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.asset_type == asset_type,
             ItemContextProfile.duration_days == duration_days,
+            ItemContextProfile.context_version == context_version,
+            ItemContextProfile.inference_version == inference_version,
             ItemContextProfile.source.in_(["learned", "ai"]),
             ItemContextProfile.low_confidence_flag.is_(False),
             ItemContextProfile.sample_count >= WORK_PROFILE_CORRECTION_MIN_SAMPLES,
@@ -643,6 +660,11 @@ def validate_stage_d(
         )
 
     # Distribution sum
+    if len(distribution) != duration_days:
+        errors.append(
+            f"distribution length {len(distribution)} != duration_days {duration_days}"
+        )
+
     dist_sum = sum(distribution)
     if abs(dist_sum - total_hours) > 0.01:
         errors.append(
@@ -659,6 +681,12 @@ def validate_stage_d(
     neg = [i for i, v in enumerate(distribution) if v < 0]
     if neg:
         errors.append(f"distribution has negative buckets at indices {neg}")
+
+    neg_norm = [i for i, v in enumerate(normalized_distribution) if v < 0]
+    if neg_norm:
+        errors.append(
+            f"normalized_distribution has negative buckets at indices {neg_norm}"
+        )
 
     over_cap = [i for i, v in enumerate(distribution) if v > max_hours_per_day]
     if over_cap:
@@ -706,9 +734,12 @@ def redistribute_capped_distribution(
     uncapped_set = set(uncapped_indices)
     capped_sum = sum(v for i, v in enumerate(adjusted) if i not in uncapped_set)
     remaining = total_hours - capped_sum
-    share = remaining / len(uncapped_indices)
-    for i in uncapped_indices:
-        adjusted[i] = round(min(share, max_hours_per_day), 4)
+    current_uncapped_sum = sum(adjusted[i] for i in uncapped_indices)
+    extra = remaining - current_uncapped_sum
+    if extra > 0:
+        per_add = extra / len(uncapped_indices)
+        for i in uncapped_indices:
+            adjusted[i] = round(min(adjusted[i] + per_add, max_hours_per_day), 4)
 
     if abs(sum(adjusted) - total_hours) > 0.01:
         per_bucket = min(round(total_hours / n, 4), max_hours_per_day)
@@ -852,8 +883,22 @@ def _write_cache_entry(
         actuals_count=0,
     )
     db.add(profile)
-    db.flush()
-    return profile
+    try:
+        db.flush()
+        return profile
+    except IntegrityError:
+        db.rollback()
+        existing = (
+            db.query(ItemContextProfile)
+            .filter(
+                ItemContextProfile.item_id == item_id,
+                ItemContextProfile.context_hash == context_hash,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            raise
+        return existing
 
 
 def _update_cache_on_hit(

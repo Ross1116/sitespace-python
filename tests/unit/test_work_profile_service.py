@@ -22,6 +22,7 @@ import json
 import math
 import uuid
 import pytest
+from sqlalchemy.exc import IntegrityError
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 from app.services.work_profile_service import (
@@ -51,6 +52,7 @@ from app.services.work_profile_service import (
     _uniform_normalized,
     _find_trusted_baseline,
     _update_cache_on_hit,
+    _write_cache_entry,
     WORK_PROFILE_NORM_DIST_SUM_TOLERANCE,
 )
 from app.models.work_profile import ItemContextProfile
@@ -134,6 +136,14 @@ class TestBuildCompressedContext:
     def test_work_type_unknown_fallback(self):
         ctx = build_compressed_context("Generic crane lift")
         assert ctx["work_type"] == "unknown"
+
+    def test_phase_detection_handles_mixed_case_punctuation_keywords(self):
+        ctx = build_compressed_context("Install FF&E package")
+        assert ctx["phase"] == "fitout"
+
+    def test_keyword_matching_respects_word_boundaries(self):
+        ctx = build_compressed_context("Blockwork masonry")
+        assert ctx["spatial_type"] == "unknown"
 
 
 # â”€â”€â”€ build_context_key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -269,9 +279,12 @@ class TestFindTrustedBaseline:
     def test_uses_median_across_rows(self):
         db = MagicMock()
         row1 = _make_profile(source="learned", posterior_mean=10.0, sample_count=3)
-        row2 = _make_profile(source="ai", posterior_mean=14.0, sample_count=4)
-        row3 = _make_profile(source="manual", posterior_mean=None, total_hours=12.0, sample_count=5)
-        db.query.return_value.filter.return_value.all.return_value = [row1, row2, row3]
+        row2 = _make_profile(source="ai", posterior_mean=12.0, sample_count=4)
+        row3 = _make_profile(source="learned", posterior_mean=14.0, sample_count=5)
+        db.query.return_value.filter.return_value.all.side_effect = [
+            [],
+            [row1, row2, row3],
+        ]
 
         baseline = _find_trusted_baseline(db, uuid.uuid4(), "crane", 5)
 
@@ -363,6 +376,31 @@ class TestUpdateCacheOnHit:
         _update_cache_on_hit(MagicMock(), profile)
 
         assert profile.observation_count == original_observation_count
+
+
+class TestWriteCacheEntry:
+
+    def test_integrity_error_reuses_existing_row(self):
+        db = MagicMock()
+        existing = MagicMock(spec=ItemContextProfile)
+        db.flush.side_effect = IntegrityError("insert", {}, Exception("duplicate"))
+        db.query.return_value.filter.return_value.one_or_none.return_value = existing
+
+        result = _write_cache_entry(
+            db,
+            item_id=uuid.uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            context_hash="hash123",
+            total_hours=10.0,
+            distribution=[5.0, 5.0],
+            normalized_distribution=[0.5, 0.5],
+            confidence=0.8,
+            source="learned",
+        )
+
+        assert result is existing
+        db.rollback.assert_called_once()
 
 
 # â”€â”€â”€ bayesian_update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -632,6 +670,20 @@ class TestValidateStageD:
         assert result.valid is False
         assert any("normalized_distribution length" in e for e in result.errors)
 
+    def test_distribution_length_mismatch_fails(self):
+        norm = [0.6, 0.4]
+        dist = [10.0]
+        result = validate_stage_d(10.0, dist, norm, "crane", 2, 10.0)
+        assert result.valid is False
+        assert any("distribution length" in e for e in result.errors)
+
+    def test_negative_normalized_bucket_fails(self):
+        norm = [1.2, -0.2]
+        dist = [12.0, -2.0]
+        result = validate_stage_d(10.0, dist, norm, "crane", 2, 10.0)
+        assert result.valid is False
+        assert any("normalized_distribution has negative buckets" in e for e in result.errors)
+
     def test_distribution_bucket_above_cap_fails(self):
         norm = [0.7, 0.3]
         dist = [11.0, 4.0]
@@ -677,6 +729,12 @@ class TestRedistributeCappedDistribution:
         adjusted, fallback = redistribute_capped_distribution(dist, 10.0, 17.0)
         assert not fallback
         assert abs(sum(adjusted) - 17.0) < 0.01
+
+    def test_redistribution_does_not_shrink_existing_uncapped_buckets(self):
+        dist = [12.0, 7.0, 1.0]
+        adjusted, fallback = redistribute_capped_distribution(dist, 10.0, 20.0)
+        assert not fallback
+        assert adjusted == [10.0, 8.0, 2.0]
 
     def test_uniform_fallback_respects_per_bucket_cap(self):
         dist = [20.0, 20.0]
