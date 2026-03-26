@@ -83,24 +83,25 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         job_id = "nightly_lookahead_job"
         try:
-            existing_job = scheduler.get_job(job_id)
-            if existing_job is None:
-                hour = settings.NIGHTLY_LOOKAHEAD_HOUR
-                minute = settings.NIGHTLY_LOOKAHEAD_MINUTE
-                scheduler.add_job(
-                    nightly_lookahead_job,
-                    trigger="cron",
-                    hour=hour,
-                    minute=minute,
-                    timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-                    id=job_id,
-                    replace_existing=True,
-                )
-                logger.info("Registered nightly lookahead job")
-            else:
-                logger.info("Nightly lookahead job already registered; skipping duplicate add")
+            scheduler.add_job(
+                nightly_lookahead_job,
+                trigger="cron",
+                hour=settings.NIGHTLY_LOOKAHEAD_HOUR,
+                minute=settings.NIGHTLY_LOOKAHEAD_MINUTE,
+                timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+                id=job_id,
+                replace_existing=True,
+            )
+            logger.info(
+                "Registered or updated scheduler job %s (%s) for %02d:%02d %s",
+                job_id,
+                nightly_lookahead_job.__name__,
+                settings.NIGHTLY_LOOKAHEAD_HOUR,
+                settings.NIGHTLY_LOOKAHEAD_MINUTE,
+                settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+            )
         except Exception as exc:
-            logger.warning("Nightly lookahead job registration failed; continuing without re-registering it: %s", exc)
+            logger.warning("Nightly lookahead job registration/update failed; continuing without scheduler refresh: %s", exc)
     yield
     # Shutdown
     if scheduler is not None and scheduler.running:

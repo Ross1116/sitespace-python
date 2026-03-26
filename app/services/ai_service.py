@@ -611,14 +611,17 @@ async def _acquire_provider_request_slot() -> None:
     Uses a thread-safe semaphore so standalone per-thread event loops are
     throttled together with the main async pipeline.
     """
-    await asyncio.to_thread(_AI_PROVIDER_REQUEST_SEMAPHORE.acquire)
+    permit_acquired = False
     try:
+        await asyncio.to_thread(_AI_PROVIDER_REQUEST_SEMAPHORE.acquire)
+        permit_acquired = True
         delay = _reserve_provider_start_delay()
         if delay > 0:
             logger.debug("AI provider pacing delay %.3fs", delay)
             await asyncio.sleep(delay)
-    except Exception:
-        _AI_PROVIDER_REQUEST_SEMAPHORE.release()
+    except BaseException:
+        if permit_acquired:
+            _AI_PROVIDER_REQUEST_SEMAPHORE.release()
         raise
 
 
