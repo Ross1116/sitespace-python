@@ -33,11 +33,13 @@ from typing import Any
 
 import sentry_sdk
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models.asset import Asset
+from ..models.lookahead import ProjectAlertPolicy, SubcontractorAssetTypeAssignment
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..utils.storage import storage
@@ -55,6 +57,7 @@ from .ai_service import (
 from .classification_service import resolve_item_classification
 from .identity_service import normalize_activity_name, resolve_or_create_item
 from .lookahead_engine import calculate_lookahead_for_project
+from .work_profile_service import materialize_work_profiles_for_upload
 
 logger = logging.getLogger(__name__)
 SAFE_FAILURE_REASON = "processing_failed"
@@ -133,11 +136,82 @@ def process_programme(upload_id: str) -> None:
             db.close()
 
 
+def _project_lock_key(project_id: uuid.UUID) -> int:
+    return int.from_bytes(project_id.bytes[:8], byteorder="big", signed=True)
+
+
+def _acquire_project_processing_guard(
+    project_id: uuid.UUID,
+    upload_id: str,
+) -> tuple[Session | None, bool]:
+    lock_db = SessionLocal()
+    advisory_locked = False
+    try:
+        try:
+            advisory_locked = bool(
+                lock_db.execute(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": _project_lock_key(project_id)},
+                ).scalar()
+            )
+        except Exception:
+            lock_db.rollback()
+            advisory_locked = False
+
+        existing = (
+            lock_db.query(ProgrammeUpload)
+            .filter(
+                ProgrammeUpload.project_id == project_id,
+                ProgrammeUpload.status == "processing",
+                ProgrammeUpload.id != upload_id,
+            )
+            .first()
+        )
+        if existing is not None:
+            if advisory_locked:
+                try:
+                    lock_db.execute(
+                        text("SELECT pg_advisory_unlock(:key)"),
+                        {"key": _project_lock_key(project_id)},
+                    )
+                except Exception:
+                    lock_db.rollback()
+            lock_db.close()
+            return None, False
+
+        return lock_db, advisory_locked
+    except Exception:
+        lock_db.close()
+        raise
+
+
+def _release_project_processing_guard(lock_db: Session | None, project_id: uuid.UUID, advisory_locked: bool) -> None:
+    if lock_db is None:
+        return
+    try:
+        if advisory_locked:
+            lock_db.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": _project_lock_key(project_id)},
+            )
+            lock_db.commit()
+    except Exception:
+        lock_db.rollback()
+    finally:
+        lock_db.close()
+
+
 async def _run(upload_id: str, db: Session) -> None:
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         logger.error("process_programme: upload %s not found", upload_id)
         return
+
+    guard_db, advisory_locked = _acquire_project_processing_guard(upload.project_id, upload_id)
+    if guard_db is None:
+        _commit_degraded(upload, db, completeness_score=0.0, notes=["project_processing_conflict"])
+        return
+    upload.processing_outcome = "processing"
 
     # Capture primitive values before releasing the connection — ORM objects
     # become detached/expired after Session.close().
@@ -164,6 +238,7 @@ async def _run(upload_id: str, db: Session) -> None:
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload:
             _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
+        _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
     # 2. Parse rows from file (CSV, XLSX/XLSM, or PDF)
@@ -173,6 +248,7 @@ async def _run(upload_id: str, db: Session) -> None:
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload:
             _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
+        _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
     # 3. Detect column structure.
@@ -229,6 +305,7 @@ async def _run(upload_id: str, db: Session) -> None:
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         logger.error("process_programme: upload %s disappeared after parse", upload_id)
+        _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
     # 5. Persist column_mapping + score on programme_uploads
@@ -304,6 +381,7 @@ async def _run(upload_id: str, db: Session) -> None:
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         logger.error("process_programme: upload %s disappeared after classification", upload_id)
+        _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
     if classification is not None:
@@ -349,6 +427,7 @@ async def _run(upload_id: str, db: Session) -> None:
                     db,
                     "DB connection lost during classification persistence — re-upload to retry.",
                 )
+                _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
                 return
 
     # 9b. Assign subcontractor suggestions based on trade specialty + asset type match.
@@ -375,8 +454,32 @@ async def _run(upload_id: str, db: Session) -> None:
             )
             return
 
+    try:
+        with db.begin_nested():
+            runtime = await materialize_work_profiles_for_upload(db, upload)
+            _sync_subcontractor_asset_type_assignments(upload.project_id, upload_id, db)
+            _ensure_project_alert_policy(upload.project_id, db)
+            upload.ai_tokens_used = int(upload.ai_tokens_used or 0) + int(runtime.ai_tokens_used or 0)
+            notes_dict = dict(upload.completeness_notes or {})
+            if runtime.degraded_reasons:
+                notes_dict["work_profile_degraded_reasons"] = runtime.degraded_reasons
+                upload.completeness_notes = notes_dict
+    except Exception as exc:
+        logger.warning(
+            "Work-profile materialization failed for upload %s (%s) - continuing in degraded mode",
+            upload_id,
+            exc,
+        )
+        notes_dict = dict(upload.completeness_notes or {})
+        notes_dict["work_profile_degraded_reasons"] = ["materialization_failed"]
+        upload.completeness_notes = notes_dict
+        upload.status = "degraded"
+        upload.processing_outcome = "completed_with_warnings"
+
     # 10. Mark committed
-    upload.status = "committed"
+    if upload.status != "degraded":
+        upload.status = "committed"
+        upload.processing_outcome = "committed"
 
     db.commit()
 
@@ -394,6 +497,8 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.info("Lookahead snapshot refreshed for project %s", _project_id)
     except Exception:
         logger.warning("Lookahead snapshot refresh failed for project %s — nightly job will catch up", _project_id)
+
+    _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
 
 
 def _insert_activities(
@@ -1021,6 +1126,67 @@ def _assign_subcontractor_suggestions(
         )
 
 
+def _sync_subcontractor_asset_type_assignments(
+    project_id: uuid.UUID,
+    upload_id: str,
+    db: Session,
+) -> None:
+    desired_rows = (
+        db.query(ActivityAssetMapping.subcontractor_id, ActivityAssetMapping.asset_type)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .filter(
+            ProgrammeActivity.programme_upload_id == upload_id,
+            ActivityAssetMapping.subcontractor_id.isnot(None),
+            ActivityAssetMapping.asset_type.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    desired = {
+        (subcontractor_id, asset_type)
+        for subcontractor_id, asset_type in desired_rows
+        if subcontractor_id is not None and asset_type is not None
+    }
+
+    existing = (
+        db.query(SubcontractorAssetTypeAssignment)
+        .filter(SubcontractorAssetTypeAssignment.project_id == project_id)
+        .all()
+    )
+    existing_by_key = {
+        (row.subcontractor_id, row.asset_type): row
+        for row in existing
+    }
+
+    for subcontractor_id, asset_type in desired:
+        current = existing_by_key.get((subcontractor_id, asset_type))
+        if current is None:
+            db.add(
+                SubcontractorAssetTypeAssignment(
+                    project_id=project_id,
+                    subcontractor_id=subcontractor_id,
+                    asset_type=asset_type,
+                    is_active=True,
+                )
+            )
+        else:
+            current.is_active = True
+
+    for key, row in existing_by_key.items():
+        if key not in desired:
+            row.is_active = False
+
+
+def _ensure_project_alert_policy(project_id: uuid.UUID, db: Session) -> None:
+    existing = (
+        db.query(ProjectAlertPolicy)
+        .filter(ProjectAlertPolicy.project_id == project_id)
+        .first()
+    )
+    if existing is None:
+        db.add(ProjectAlertPolicy(project_id=project_id))
+
+
 def _commit_degraded(
     upload: ProgrammeUpload,
     db: Session,
@@ -1031,6 +1197,7 @@ def _commit_degraded(
     upload.completeness_score = completeness_score
     upload.completeness_notes = {"missing_fields": notes, "notes": "Processing degraded."}
     upload.status = "degraded"
+    upload.processing_outcome = "completed_with_warnings"
     db.commit()
 
 
@@ -1042,6 +1209,7 @@ def _mark_failed_as_committed(upload_id: str, db: Session, reason: str) -> None:
             upload.completeness_score = 0.0
             upload.completeness_notes = {"missing_fields": ["unknown_error"], "notes": reason}
             upload.status = "degraded"
+            upload.processing_outcome = "failed"
             db.commit()
     except Exception:
         logger.exception("Could not mark upload %s as committed after failure", upload_id)

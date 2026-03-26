@@ -35,9 +35,10 @@ class ProgrammeUpload(Base):
     file_name = Column(String(255), nullable=False)
     column_mapping = Column(JSONB, nullable=True)
     version_number = Column(Integer, nullable=False, default=1)
-    completeness_score = Column(Float, nullable=True)       # 0.0–1.0
+    completeness_score = Column(Float, nullable=True)       # 0.0-1.0
     completeness_notes = Column(JSONB, nullable=True)       # list of degradation reason strings
     status = Column(String(20), nullable=False, default="processing")  # processing | committed
+    processing_outcome = Column(String(30), nullable=True)
     ai_tokens_used = Column(Integer, nullable=True)
     work_days_per_week = Column(SmallInteger, nullable=False, default=5)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

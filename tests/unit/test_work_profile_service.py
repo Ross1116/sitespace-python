@@ -819,7 +819,7 @@ class TestResolveWorkProfile:
 
         with patch("app.services.work_profile_service._lookup_cache_with_reduced_context", return_value=(None, "exact-hash")), \
              patch("app.services.work_profile_service._find_trusted_baseline", return_value=8.0), \
-             patch("app.services.work_profile_service._write_cache_entry", return_value=cache_row), \
+             patch("app.services.work_profile_service._upsert_cache_from_external_observation", return_value=cache_row), \
              patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_activity, \
              patch("app.core.constants.get_max_hours_for_type", return_value=10.0):
             result = resolve_work_profile(

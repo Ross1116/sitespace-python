@@ -6,12 +6,18 @@ from .site_project import SiteProject
 from .subcontractor import Subcontractor
 from .file_upload import FileUpload
 from .booking_audit import BookingAuditLog
-from .lookahead import LookaheadSnapshot, Notification
+from .lookahead import (
+    LookaheadSnapshot,
+    LookaheadRow,
+    Notification,
+    ProjectAlertPolicy,
+    SubcontractorAssetTypeAssignment,
+)
 from .programme import ProgrammeUpload, ProgrammeActivity, ActivityAssetMapping, AISuggestionLog
 from .item_identity import Item, ItemAlias, ItemIdentityEvent, ItemClassification, ItemClassificationEvent
 from .stored_file import StoredFile
 from .site_plan import SitePlan
-from .work_profile import InferencePolicy, ItemContextProfile, ActivityWorkProfile
+from .work_profile import InferencePolicy, ItemContextProfile, ActivityWorkProfile, WorkProfileAILog
 
 __all__ = [
     "User",
@@ -23,7 +29,10 @@ __all__ = [
     "FileUpload",
     "BookingAuditLog",
     "LookaheadSnapshot",
+    "LookaheadRow",
     "Notification",
+    "ProjectAlertPolicy",
+    "SubcontractorAssetTypeAssignment",
     "ProgrammeUpload",
     "ProgrammeActivity",
     "ActivityAssetMapping",
@@ -38,4 +47,5 @@ __all__ = [
     "InferencePolicy",
     "ItemContextProfile",
     "ActivityWorkProfile",
+    "WorkProfileAILog",
 ]

@@ -125,7 +125,7 @@ AI_STANDALONE_TIMEOUT_BUFFER_SECONDS: int = 3
 WORK_PROFILE_CONTEXT_VERSION: int = 1
 
 # Bump when prompt/model/policy behavior changes in a way that changes cache semantics.
-WORK_PROFILE_INFERENCE_VERSION: int = 1
+WORK_PROFILE_INFERENCE_VERSION: int = 2
 
 # Cap new unique contexts per upload so cold-start uploads do not explode cost
 # or fragment the cache too aggressively.
