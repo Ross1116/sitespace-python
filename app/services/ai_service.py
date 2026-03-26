@@ -422,7 +422,16 @@ def classify_item_standalone(
 
     fake_id = str(uuid.uuid4())
     batch = [{"id": fake_id, "name": activity_name}]
-    system_prompt, _ = _build_classification_prompt(None)
+    # Build the system prompt from the caller-supplied taxonomy so the prompt
+    # and the post-filter below agree on which types are valid.
+    _base = _load_prompt("asset_classification.txt")
+    if "{{ASSET_TYPES_BLOCK}}" not in _base:
+        _base = _base + "\n\n" + _DEFAULT_ASSET_TYPES_BLOCK
+    _types_block = (
+        "ALLOWED ASSET TYPES (use ONLY these exact strings):\n"
+        + "\n".join(f"  - {t}" for t in sorted(valid_types))
+    )
+    system_prompt = _base.replace("{{ASSET_TYPES_BLOCK}}", _types_block)
 
     # Run the async helper in a dedicated thread with its own event loop so this
     # sync function is safe to call from within a running async context (e.g. the
@@ -465,14 +474,25 @@ def classify_item_standalone(
         finally:
             loop.close()
 
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(_run_in_thread).result(
-                timeout=float(settings.AI_TIMEOUT_CLASSIFY) + AI_STANDALONE_TIMEOUT_BUFFER_SECONDS
-            )
+        future = executor.submit(_run_in_thread)
+        return future.result(
+            timeout=float(settings.AI_TIMEOUT_CLASSIFY) + AI_STANDALONE_TIMEOUT_BUFFER_SECONDS
+        )
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "classify_item_standalone timed out after %ss",
+            float(settings.AI_TIMEOUT_CLASSIFY) + AI_STANDALONE_TIMEOUT_BUFFER_SECONDS,
+        )
+        return None
     except Exception as exc:
         logger.warning("classify_item_standalone failed: %s", exc)
         return None
+    finally:
+        # shutdown(wait=False) avoids blocking the caller while the background
+        # thread unwinds; the thread itself will clean up when it finishes.
+        executor.shutdown(wait=False)
 
 
 def suggest_subcontractor_asset_types(

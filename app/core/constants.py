@@ -100,8 +100,8 @@ AI_STRUCTURE_DETECTION_SAMPLE_SIZE: int = 50
 AI_STRUCTURE_DETECTION_MAX_TOKENS: int = 2048
 
 # max_tokens budget for a single activity classification batch call.
-# 50 activities × ~30 output tokens = ~1,500 tokens + JSON overhead;
-# 8192 gives ~5× headroom.
+# 50 activities x ~30 output tokens = ~1,500 tokens + JSON overhead;
+# 8192 gives ~5x headroom.
 AI_CLASSIFICATION_BATCH_MAX_TOKENS: int = 8192
 
 # Number of activities sent to the AI in a single classification batch call.

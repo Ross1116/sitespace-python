@@ -28,7 +28,7 @@ from ..core.constants import (
     CLASSIFICATION_STABLE_MIN_CONFIRMATIONS,
 )
 from ..crud import asset_type as asset_type_crud
-from ..models.item_identity import ItemClassification, ItemClassificationEvent
+from ..models.item_identity import Item, ItemClassification, ItemClassificationEvent
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +182,15 @@ def resolve_item_classification(
     Never raises; logs and returns None on unexpected errors.
     """
     try:
+        # Step 0 — reject merged items to avoid creating classifications on
+        # non-canonical IDs.  Callers should canonicalize via follow_item_redirect
+        # before reaching here; we guard defensively without importing from
+        # identity_service (which imports us) to prevent circular imports.
+        _item = db.get(Item, item_id)
+        if _item is not None and _item.identity_status == "merged":
+            logger.debug("Item %s has been merged — skipping classification", item_id)
+            return None
+
         # Step 1 — existing active classification
         existing = get_active_classification(db, item_id)
         if existing is not None:
@@ -189,20 +198,30 @@ def resolve_item_classification(
 
             if tier in (TIER_PERMANENT, TIER_STABLE, TIER_CONFIRMED):
                 # Stable — increment confirmation count and return.
+                # Re-read with a row lock so concurrent increments are serialised.
                 sp = db.begin_nested()
                 try:
-                    existing.confirmation_count += 1
-                    db.add(ItemClassificationEvent(
-                        id=uuid.uuid4(),
-                        item_id=item_id,
-                        classification_id=existing.id,
-                        event_type="confirmed",
-                        old_asset_type=None,
-                        new_asset_type=existing.asset_type,
-                        triggered_by_upload_id=upload_id,
-                    ))
-                    db.flush()
-                    sp.commit()
+                    locked = (
+                        db.query(ItemClassification)
+                        .filter_by(item_id=item_id, is_active=True)
+                        .with_for_update()
+                        .first()
+                    )
+                    if locked is not None:
+                        locked.confirmation_count += 1
+                        db.add(ItemClassificationEvent(
+                            id=uuid.uuid4(),
+                            item_id=item_id,
+                            classification_id=locked.id,
+                            event_type="confirmed",
+                            old_asset_type=None,
+                            new_asset_type=locked.asset_type,
+                            triggered_by_upload_id=upload_id,
+                        ))
+                        db.flush()
+                        sp.commit()
+                    else:
+                        sp.rollback()
                 except Exception:
                     sp.rollback()
                     logger.warning("Failed to record confirmation for item %s — returning type anyway", item_id)
@@ -241,17 +260,25 @@ def resolve_item_classification(
                         },
                     ))
                 else:
-                    # AI agrees — increment confirmation.
-                    existing.confirmation_count += 1
-                    db.add(ItemClassificationEvent(
-                        id=uuid.uuid4(),
-                        item_id=item_id,
-                        classification_id=existing.id,
-                        event_type="confirmed",
-                        old_asset_type=None,
-                        new_asset_type=tentative_type,
-                        triggered_by_upload_id=upload_id,
-                    ))
+                    # AI agrees — increment confirmation with a row lock so
+                    # concurrent increments are serialised.
+                    locked = (
+                        db.query(ItemClassification)
+                        .filter_by(item_id=item_id, is_active=True)
+                        .with_for_update()
+                        .first()
+                    )
+                    if locked is not None:
+                        locked.confirmation_count += 1
+                        db.add(ItemClassificationEvent(
+                            id=uuid.uuid4(),
+                            item_id=item_id,
+                            classification_id=locked.id,
+                            event_type="confirmed",
+                            old_asset_type=None,
+                            new_asset_type=tentative_type,
+                            triggered_by_upload_id=upload_id,
+                        ))
                 db.flush()
                 sp.commit()
             except Exception:
@@ -323,11 +350,11 @@ def apply_manual_classification(
     Raises ValueError if asset_type is not in the active taxonomy.
     Raises LookupError if item_id does not exist.
     """
-    from ..models.item_identity import Item
-
     item = db.get(Item, item_id)
     if item is None:
         raise LookupError(f"Item {item_id} not found")
+    if item.identity_status == "merged":
+        raise LookupError(f"Item {item_id} has been merged into another item")
 
     db_type = asset_type_crud.get_by_code(db, asset_type)
     if db_type is None or not db_type.is_active:

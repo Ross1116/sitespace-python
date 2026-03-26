@@ -141,7 +141,12 @@ class TestResolveItemClassificationActive:
 
     def _setup_db(self, cls_row):
         db = _make_db()
-        db.query.return_value.filter_by.return_value.first.return_value = cls_row
+        # Support both plain .first() (initial read) and .with_for_update().first()
+        # (locked re-read inside confirmation savepoints).
+        filter_by_mock = MagicMock()
+        filter_by_mock.first.return_value = cls_row
+        filter_by_mock.with_for_update.return_value.first.return_value = cls_row
+        db.query.return_value.filter_by.return_value = filter_by_mock
         return db
 
     @pytest.mark.parametrize("source,conf,corr", [
@@ -186,6 +191,21 @@ class TestResolveItemClassificationActive:
             resolve_item_classification(db, cls.item_id, "Lift column formwork")
         event_types = [e.event_type for e in added_events if isinstance(e, ItemClassificationEvent)]
         assert "correction_flagged" in event_types
+
+    def test_tentative_ai_returns_none_leaves_count_unchanged(self):
+        # Regression: when _run_standalone_ai returns None (timeout / disabled),
+        # the tentative item's confirmation_count must not be mutated and no new
+        # classification events should be written.
+        cls = _make_cls(source="ai", confirmation_count=1, correction_count=0, asset_type="crane")
+        db = self._setup_db(cls)
+        added_events = []
+        db.add.side_effect = lambda obj: added_events.append(obj)
+        with patch("app.services.classification_service._run_standalone_ai", return_value=None):
+            result = resolve_item_classification(db, cls.item_id, "some activity")
+        assert result == "crane"
+        assert cls.confirmation_count == 1  # unchanged
+        new_events = [e for e in added_events if isinstance(e, ItemClassificationEvent)]
+        assert not new_events
 
 
 class TestResolveItemClassificationNoActive:
