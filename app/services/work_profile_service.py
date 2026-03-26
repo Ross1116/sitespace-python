@@ -1785,6 +1785,7 @@ async def _precompute_validated_ai_proposal(
     ai_attempts = 0
 
     for attempt in range(2):
+        ai_attempts += 1
         proposal = await generate_work_profile_ai(
             activity_name=activity_name,
             asset_type=asset_type,
@@ -1801,7 +1802,6 @@ async def _precompute_validated_ai_proposal(
             last_errors = ["ai_unavailable_or_invalid_response"]
             continue
 
-        ai_attempts += 1
         current_tokens = int(proposal.get("tokens_used", 0) or 0)
         total_tokens += current_tokens
         last_request = proposal.get("request_json") if isinstance(proposal.get("request_json"), dict) else {}
@@ -2378,16 +2378,15 @@ async def materialize_work_profiles_for_upload(
             )
 
             for sub_activity, sub_mapping, sub_preflight in group[1:]:
-                if representative_degraded:
-                    sub_preflight = _preflight_work_profile_resolution(
-                        db,
-                        item_id=sub_activity.item_id,
-                        asset_type=sub_mapping.asset_type,
-                        duration_days=max(int(sub_activity.duration_days or 0), 1),
-                        activity_name=sub_activity.name,
-                        level_name=sub_activity.level_name,
-                        zone_name=sub_activity.zone_name,
-                    )
+                sub_preflight = _preflight_work_profile_resolution(
+                    db,
+                    item_id=sub_activity.item_id,
+                    asset_type=sub_mapping.asset_type,
+                    duration_days=max(int(sub_activity.duration_days or 0), 1),
+                    activity_name=sub_activity.name,
+                    level_name=sub_activity.level_name,
+                    zone_name=sub_activity.zone_name,
+                )
                 resolve_work_profile(
                     db,
                     activity_id=sub_activity.id,

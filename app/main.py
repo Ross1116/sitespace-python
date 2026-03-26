@@ -102,6 +102,7 @@ async def lifespan(app: FastAPI):
             )
         except Exception as exc:
             logger.warning("Nightly lookahead job registration/update failed; continuing without scheduler refresh: %s", exc)
+            sentry_sdk.capture_exception(exc)
     yield
     # Shutdown
     if scheduler is not None and scheduler.running:
