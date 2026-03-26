@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -126,4 +127,8 @@ class TestWorkProfileAIHardening:
 
         norm = write_activity.call_args.kwargs["normalized_distribution"]
         assert norm[1] == max(norm)
-        assert norm != [0.333333, 0.333333, 0.333334]
+        expected_uniform = [0.333333, 0.333333, 0.333334]
+        assert not all(
+            math.isclose(actual, expected, abs_tol=1e-6)
+            for actual, expected in zip(norm, expected_uniform, strict=True)
+        )

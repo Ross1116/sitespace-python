@@ -146,6 +146,7 @@ def _acquire_project_processing_guard(
     upload_id: str,
 ) -> tuple[Session | None, bool]:
     lock_db = SessionLocal()
+    parsed_upload_id = uuid.UUID(upload_id)
     advisory_locked = False
     try:
         try:
@@ -164,7 +165,7 @@ def _acquire_project_processing_guard(
             .filter(
                 ProgrammeUpload.project_id == project_id,
                 ProgrammeUpload.status == "processing",
-                ProgrammeUpload.id != upload_id,
+                ProgrammeUpload.id != parsed_upload_id,
             )
             .first()
         )
@@ -480,6 +481,8 @@ async def _run(upload_id: str, db: Session) -> None:
                     upload_id,
                     rb_exc,
                 )
+            _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
+            return
         notes_dict = dict(upload.completeness_notes or {})
         notes_dict["work_profile_degraded_reasons"] = ["materialization_failed"]
         upload.completeness_notes = notes_dict

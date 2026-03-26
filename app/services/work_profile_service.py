@@ -480,10 +480,10 @@ def derive_distribution(
         return []
 
     weights = derive_normalized_distribution(normalized_distribution)
-    total_units = int(round(total_hours / WORK_PROFILE_OPERATIONAL_UNIT))
+    total_units = round(total_hours / WORK_PROFILE_OPERATIONAL_UNIT)
     cap_units = None
     if max_hours_per_day is not None:
-        cap_units = int(round(max_hours_per_day / WORK_PROFILE_OPERATIONAL_UNIT))
+        cap_units = round(max_hours_per_day / WORK_PROFILE_OPERATIONAL_UNIT)
 
     ideal_units = [w * total_units for w in weights]
     allocated = [math.floor(value) for value in ideal_units]
@@ -1739,7 +1739,9 @@ def _request_validated_ai_proposal_sync(**kwargs: object) -> Optional[dict[str, 
         loop = None
     if loop is not None and loop.is_running():
         raise RuntimeError(
-            "Validated AI proposals must be precomputed before calling resolve_work_profile in async contexts"
+            "resolve_work_profile cannot use _request_validated_ai_proposal_sync while an event loop is running. "
+            "From async code, call _request_validated_ai_proposal directly and pass the result into "
+            "resolve_work_profile via precomputed_ai_proposal, or run the sync wrapper from a separate thread/event loop."
         )
     return asyncio.run(_request_validated_ai_proposal(**kwargs))
 
@@ -1887,11 +1889,6 @@ def resolve_work_profile(
             )
 
         norm_dist = list(cached.normalized_distribution_json)
-        distribution = derive_distribution(
-            norm_dist,
-            operative_hours,
-            max_hours_per_day=preflight.max_hours_per_day,
-        )
         final_hours = quantize_hours(operative_hours)
         distribution = derive_distribution(
             norm_dist,
