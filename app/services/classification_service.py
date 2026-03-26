@@ -184,7 +184,7 @@ def _persist_classification(
         sp.commit()
         return new_row
 
-    except IntegrityError:
+    except IntegrityError as e:
         sp.rollback()
         # A concurrent insert won the unique-active-row constraint race.
         # Re-query to find whichever row the winner committed.
@@ -195,7 +195,7 @@ def _persist_classification(
         )
         if winner is not None:
             if raise_on_conflict:
-                raise ClassificationConflictError(winner)
+                raise ClassificationConflictError(winner) from e
             return winner
         raise
 
