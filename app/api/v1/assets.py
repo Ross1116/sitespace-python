@@ -6,6 +6,7 @@ from datetime import date
 import logging
 
 from app.models.subcontractor import Subcontractor
+from ...core.constants import ASSET_PAGE_DEFAULT, ASSET_PAGE_MAX
 from ...core.database import get_db
 from ...core.security import get_current_active_user, get_user_role, get_entity_id
 from ...crud import asset as asset_crud
@@ -81,7 +82,7 @@ def list_assets(
     asset_status: Optional[AssetStatus] = Query(None, description="Filter by status"),
     asset_type: Optional[str] = Query(None, description="Filter by asset type"),
     skip: int = Query(0, ge=0, description="Number of items to skip"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items to return"),
+    limit: int = Query(ASSET_PAGE_DEFAULT, ge=1, le=ASSET_PAGE_MAX, description="Number of items to return"),
     db: Session = Depends(get_db),
     # Change Dependency to accept Subcontractors
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)

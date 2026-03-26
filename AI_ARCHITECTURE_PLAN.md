@@ -4469,12 +4469,12 @@ Because:
 - [x] Add `programme_activities.item_id`
 - [x] Implement normalization + alias resolution
 - [x] Implement active-item redirect logic for merged items
-- [ ] Add `asset_types`
-- [ ] Add `assets.canonical_type`
-- [ ] Seed initial taxonomy including `none`
-- [ ] Add `item_classifications`
-- [ ] Implement classification resolution order
-- [ ] Implement standalone AI classification
+- [x] Add `asset_types`
+- [x] Add `assets.canonical_type`
+- [x] Seed initial taxonomy including `none`
+- [x] Add `item_classifications`
+- [x] Implement classification resolution order
+- [x] Implement standalone AI classification
 - [ ] Add `inference_policies`
 - [ ] Add `item_context_profiles`
 - [ ] Add `activity_work_profiles`
@@ -4518,13 +4518,13 @@ Because:
 - [x] Implement safe degraded mode behavior
 - [ ] Surface system health state
 - [ ] Introduce explicit upload-status migration plan from current `degraded` semantics
-- [ ] Add `max_hours_per_day` to `asset_types` table with seed values
+- [x] Add `max_hours_per_day` to `asset_types` table with seed values
 - [ ] Implement per-day distribution bucket cap in work-profile Stage B validation
 - [ ] Implement per-day demand cap check in demand engine (second enforcement point)
-- [ ] Add `confirmation_count` and `correction_count` to `item_classifications`
-- [ ] Implement classification maturity tier evaluation (TENTATIVE / CONFIRMED / STABLE / PERMANENT)
-- [ ] Implement re-query logic for TENTATIVE classifications; flag disagreement for review, never auto-change
-- [ ] Increment `confirmation_count` on every classification reuse
+- [x] Add `confirmation_count` and `correction_count` to `item_classifications`
+- [x] Implement classification maturity tier evaluation (TENTATIVE / CONFIRMED / STABLE / PERMANENT)
+- [x] Implement re-query logic for TENTATIVE classifications; flag disagreement for review, never auto-change
+- [x] Increment `confirmation_count` on every classification reuse
 - [ ] Add Bayesian columns to `item_context_profiles` (`posterior_mean`, `posterior_precision`, `sample_count`, `correction_count`, `actuals_count`, `actuals_median`)
 - [ ] Implement Bayesian posterior update on each work-profile cache encounter
 - [ ] Implement work-profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)

@@ -227,6 +227,28 @@ def merge_items(
     db.add(event)
     db.flush()
 
+    # Reconcile classification memory — runs inside a savepoint so a partial
+    # failure rolls back only the classification work, not the merge itself.
+    # Import here, not at module top, to avoid a circular dependency:
+    #   identity_service → classification_service → identity_service (Item model)
+    try:
+        from .classification_service import reconcile_classifications_on_merge
+        sp = db.begin_nested()
+        try:
+            reconcile_classifications_on_merge(db, source_item_id, target_item_id)
+            sp.commit()
+        except Exception as exc:
+            sp.rollback()
+            logger.warning(
+                "Classification reconciliation failed for merge %s->%s: %s — merge itself succeeded",
+                source_item_id, target_item_id, exc,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Classification reconciliation import/setup failed for merge %s->%s: %s",
+            source_item_id, target_item_id, exc,
+        )
+
     logger.info(
         "Merged item %s ('%s') into %s ('%s') by user %s",
         source_item_id, source.display_name,

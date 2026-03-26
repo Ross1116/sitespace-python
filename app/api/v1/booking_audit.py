@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
 from sqlalchemy.orm import Session
 
+from app.core.constants import BOOKING_AUDIT_PAGE_DEFAULT, BOOKING_AUDIT_PAGE_MAX
 from app.core.database import get_db
 from app.core.security import get_current_active_user, get_user_role, get_entity_id
 from app.models.user import User
@@ -83,7 +84,7 @@ def audit_log_to_response(log) -> BookingAuditResponse:
 def get_booking_audit_trail(
     booking_id: UUID = Path(..., description="Booking ID"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(BOOKING_AUDIT_PAGE_DEFAULT, ge=1, le=BOOKING_AUDIT_PAGE_MAX),
     db: Session = Depends(get_db),
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> BookingAuditTrailResponse:
@@ -108,7 +109,7 @@ def get_booking_audit_trail(
 @router.get("/audit/my-activity", response_model=List[BookingAuditResponse])
 def get_my_audit_activity(
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(BOOKING_AUDIT_PAGE_DEFAULT, ge=1, le=BOOKING_AUDIT_PAGE_MAX),
     action: Optional[BookingAuditAction] = Query(None, description="Filter by action type"),
     db: Session = Depends(get_db),
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
@@ -139,7 +140,7 @@ def get_my_audit_activity(
 @router.get("/audit/project/{project_id}", response_model=List[BookingAuditResponse])
 def get_project_audit_logs(
     project_id: UUID = Path(..., description="Project ID"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(BOOKING_AUDIT_PAGE_DEFAULT, ge=1, le=BOOKING_AUDIT_PAGE_MAX),
     db: Session = Depends(get_db),
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> List[BookingAuditResponse]:

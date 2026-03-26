@@ -20,7 +20,16 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import BookingStatus
-from ..core.constants import get_active_asset_types
+from ..core.constants import (
+    ANOMALY_ACTIVITY_DELTA_THRESHOLD,
+    ANOMALY_DEMAND_SPIKE_THRESHOLD,
+    ANOMALY_MAPPING_CHANGE_THRESHOLD,
+    DEMAND_HOURS_PER_DAY,
+    DEMAND_LEVEL_HIGH_MAX,
+    DEMAND_LEVEL_LOW_MAX,
+    DEMAND_LEVEL_MEDIUM_MAX,
+    get_active_asset_types,
+)
 from .ai_service import normalize_asset_type, suggest_subcontractor_asset_types
 
 logger = logging.getLogger(__name__)
@@ -51,11 +60,11 @@ def _hours_between(start: time, end: time) -> float:
 
 
 def _demand_level(hours: float) -> str:
-    if hours < 8:
+    if hours < DEMAND_LEVEL_LOW_MAX:
         return "low"
-    if hours < 20:
+    if hours < DEMAND_LEVEL_MEDIUM_MAX:
         return "medium"
-    if hours < 40:
+    if hours < DEMAND_LEVEL_HIGH_MAX:
         return "high"
     return "critical"
 
@@ -104,7 +113,7 @@ def _iter_weekly_activity_hours(
         if overlap_end >= overlap_start:
             working_days = _working_days_in_range(overlap_start, overlap_end, work_days_per_week)
             if working_days > 0:
-                buckets.append((week, float(working_days * 8)))
+                buckets.append((week, float(working_days * DEMAND_HOURS_PER_DAY)))
         week += timedelta(days=7)
 
     return buckets
@@ -119,9 +128,13 @@ def _compute_anomaly_flags(
     current_mapping_set: set[tuple[str, str]],
 ) -> dict[str, bool | float]:
     flags: dict[str, bool | float] = {
+        # Accurate names (reflect actual thresholds from constants).
+        "demand_spike_over_150pct": False,
+        "mapping_changes_over_50pct": False,
+        "activity_count_delta_over_30pct": False,
+        # Legacy aliases kept for backward-compatibility with existing snapshots.
         "demand_spike_over_100pct": False,
         "mapping_changes_over_40pct": False,
-        "activity_count_delta_over_30pct": False,
     }
 
     prev_by_key = {
@@ -134,8 +147,9 @@ def _compute_anomaly_flags(
         curr = float(row["demand_hours"])
         if prev is not None and prev > 0:
             pct_change = abs(curr - prev) / prev
-            if pct_change > 1.0:
-                flags["demand_spike_over_100pct"] = True
+            if pct_change > ANOMALY_DEMAND_SPIKE_THRESHOLD:
+                flags["demand_spike_over_150pct"] = True
+                flags["demand_spike_over_100pct"] = True  # legacy alias
                 break
 
     if previous_mapping_set:
@@ -151,13 +165,14 @@ def _compute_anomaly_flags(
 
         ratio = changed / max(len(prev_by_activity), 1)
         flags["mapping_change_ratio"] = round(ratio, 4)
-        if ratio >= 0.4:
-            flags["mapping_changes_over_40pct"] = True
+        if ratio >= ANOMALY_MAPPING_CHANGE_THRESHOLD:
+            flags["mapping_changes_over_50pct"] = True
+            flags["mapping_changes_over_40pct"] = True  # legacy alias
 
     if previous_activity_count > 0:
         delta_ratio = abs(current_activity_count - previous_activity_count) / previous_activity_count
         flags["activity_count_delta_ratio"] = round(delta_ratio, 4)
-        if delta_ratio > 0.3:
+        if delta_ratio > ANOMALY_ACTIVITY_DELTA_THRESHOLD:
             flags["activity_count_delta_over_30pct"] = True
 
     return flags

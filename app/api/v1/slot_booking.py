@@ -31,6 +31,13 @@ from app.schemas.base import MessageResponse
 from app.schemas.enums import BookingStatus, UserRole
 from app.crud import slot_booking as booking_crud
 from app.crud import site_project as project_crud
+from app.core.constants import (
+    BOOKING_PAGE_DEFAULT,
+    BOOKING_PAGE_MAX,
+    BOOKING_CALENDAR_MAX_DAYS,
+    UPCOMING_BOOKINGS_PAGE_DEFAULT,
+    UPCOMING_BOOKINGS_PAGE_MAX,
+)
 from app.core.email import notify_booking_change
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
@@ -407,7 +414,7 @@ def create_bulk_bookings(
 @router.get("/", response_model=BookingListResponse)
 def get_bookings(
     skip: int = Query(0, ge=0, description="Number of items to skip"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of items to return"),
+    limit: int = Query(BOOKING_PAGE_DEFAULT, ge=1, le=BOOKING_PAGE_MAX, description="Number of items to return"),
     project_id: Optional[UUID] = Query(None, description="Filter by project ID"),
     manager_id: Optional[UUID] = Query(None, description="Filter by manager ID"),
     subcontractor_id: Optional[UUID] = Query(None, description="Filter by subcontractor ID"),
@@ -520,12 +527,11 @@ def get_calendar_view(
     try:
         validate_date_range(date_from, date_to)
         
-        max_days = 90
         delta = (date_to - date_from).days
-        if delta > max_days:
+        if delta > BOOKING_CALENDAR_MAX_DAYS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Date range cannot exceed {max_days} days"
+                detail=f"Date range cannot exceed {BOOKING_CALENDAR_MAX_DAYS} days"
             )
         
         user_id = get_entity_id(current_entity)
@@ -634,7 +640,7 @@ def get_booking_statistics(
 
 @router.get("/my/upcoming", response_model=List[BookingDetailResponse])
 def get_my_upcoming_bookings(
-    limit: int = Query(10, ge=1, le=100, description="Maximum number of bookings to return"),
+    limit: int = Query(UPCOMING_BOOKINGS_PAGE_DEFAULT, ge=1, le=UPCOMING_BOOKINGS_PAGE_MAX, description="Maximum number of bookings to return"),
     db: Session = Depends(get_db),
     current_entity: Union[User, Subcontractor] = Depends(get_current_active_user)
 ) -> List[BookingDetailResponse]:
