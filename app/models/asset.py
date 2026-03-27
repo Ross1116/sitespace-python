@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 from app.core.database import Base
-from app.schemas.enums import AssetStatus
+from app.schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetStatus
 
 class Asset(Base):
     __tablename__ = "assets"
@@ -28,6 +28,9 @@ class Asset(Base):
         nullable=True,
         index=True,
     )
+    type_resolution_status = Column(String(20), nullable=False, default="unknown", server_default="unknown", index=True)
+    type_inference_source = Column(String(50), nullable=True)
+    type_inference_confidence = Column(DECIMAL(4, 3), nullable=True)
     pending_booking_capacity = Column(Integer, nullable=False, default=5, server_default="5")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -40,3 +43,7 @@ class Asset(Base):
     project = relationship("SiteProject", back_populates="assets")
     bookings = relationship("SlotBooking", back_populates="asset")
     asset_type_rel = relationship("AssetType", back_populates="assets", foreign_keys=[canonical_type])
+
+    @property
+    def planning_ready(self) -> bool:
+        return bool(self.canonical_type) and (self.type_resolution_status or "unknown") in ASSET_TYPE_RESOLUTION_READY

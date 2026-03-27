@@ -6,7 +6,7 @@ from uuid import UUID
 from decimal import Decimal
 
 from .base import BaseSchema, TimestampSchema
-from .enums import AssetStatus
+from .enums import AssetStatus, AssetTypeResolutionStatus
 
 
 class AssetBase(BaseSchema):
@@ -41,6 +41,7 @@ class AssetCreate(AssetBase):
     """Asset creation schema"""
     project_id: UUID
     status: AssetStatus = AssetStatus.AVAILABLE
+    canonical_type: Optional[str] = Field(None, max_length=50)
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
 
@@ -148,6 +149,10 @@ class AssetResponse(AssetBase, TimestampSchema):
     project_id: UUID
     status: AssetStatus
     canonical_type: Optional[str] = None
+    type_resolution_status: AssetTypeResolutionStatus = AssetTypeResolutionStatus.UNKNOWN
+    type_inference_source: Optional[str] = None
+    type_inference_confidence: Optional[Decimal] = Field(None, ge=0, le=1)
+    planning_ready: bool = False
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
     pending_booking_capacity: int = 5
@@ -160,6 +165,8 @@ class AssetBriefResponse(BaseSchema):
     name: str
     type: Optional[str] = None
     canonical_type: Optional[str] = None
+    type_resolution_status: AssetTypeResolutionStatus = AssetTypeResolutionStatus.UNKNOWN
+    planning_ready: bool = False
     status: AssetStatus
     pending_booking_capacity: int = 5
 

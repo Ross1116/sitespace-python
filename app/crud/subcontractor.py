@@ -12,29 +12,75 @@ from ..models.user import User
 from ..schemas.subcontractor import SubcontractorCreate, SubcontractorUpdate
 
 from ..core.security import get_password_hash, normalize_email as _normalize_email, verify_password
-from ..schemas.enums import BookingStatus, ProjectStatus
+from ..schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus, TradeSpecialty
+from ..services.metadata_confidence_service import (
+    confirmed_subcontractor_trade_resolution,
+    infer_subcontractor_trade_resolution,
+)
+
+
+def _normalize_explicit_trade_value(raw_value: Optional[object]) -> Optional[str]:
+    if raw_value is None:
+        return None
+    normalized = raw_value.value if hasattr(raw_value, "value") else str(raw_value)
+    normalized = normalized.strip().lower()
+    if normalized in {"", TradeSpecialty.GENERAL.value, TradeSpecialty.OTHER.value}:
+        return None
+    return normalized
+
+
+def _normalize_trade_resolution_status_value(raw_value: Optional[object]) -> Optional[str]:
+    if raw_value is None:
+        return None
+    normalized = raw_value.value if hasattr(raw_value, "value") else str(raw_value)
+    normalized = normalized.strip().lower()
+    return normalized or None
+
+
+def _planning_ready_filter(planning_ready: Optional[bool]):
+    if planning_ready is True:
+        return (
+            Subcontractor.trade_specialty.isnot(None),
+            Subcontractor.trade_resolution_status == TradeResolutionStatus.CONFIRMED.value,
+        )
+    if planning_ready is False:
+        return (
+            or_(
+                Subcontractor.trade_specialty.is_(None),
+                Subcontractor.trade_resolution_status.is_(None),
+                Subcontractor.trade_resolution_status != TradeResolutionStatus.CONFIRMED.value,
+            ),
+        )
+    return None
 
 
 def create_subcontractor(db: Session, subcontractor_data: SubcontractorCreate) -> Subcontractor:
     """Create a new subcontractor"""
     # Hash the password
     hashed_password = get_password_hash(subcontractor_data.password)
+    normalized_email = _normalize_email(subcontractor_data.email)
     
-    trade_value = None
-    if subcontractor_data.trade_specialty:
-        if hasattr(subcontractor_data.trade_specialty, 'value'):
-            trade_value = subcontractor_data.trade_specialty.value
-        else:
-            trade_value = str(subcontractor_data.trade_specialty)
-    
+    trade_value = _normalize_explicit_trade_value(subcontractor_data.trade_specialty)
+    if trade_value:
+        resolution = confirmed_subcontractor_trade_resolution(trade_value)
+    else:
+        resolution = infer_subcontractor_trade_resolution(
+            company_name=subcontractor_data.company_name,
+            email=normalized_email,
+        )
+
     # Create subcontractor instance
     db_subcontractor = Subcontractor(
-        email=_normalize_email(subcontractor_data.email),
+        email=normalized_email,
         password_hash=hashed_password,
         first_name=subcontractor_data.first_name,
         last_name=subcontractor_data.last_name,
         company_name=subcontractor_data.company_name,
-        trade_specialty=trade_value,
+        trade_specialty=resolution.trade_specialty,
+        suggested_trade_specialty=resolution.suggested_trade_specialty,
+        trade_resolution_status=resolution.status,
+        trade_inference_source=resolution.source,
+        trade_inference_confidence=resolution.confidence,
         phone=subcontractor_data.phone
     )
     
@@ -81,17 +127,34 @@ def get_all_subcontractors(
     skip: int = 0,
     limit: int = 100,
     is_active: Optional[bool] = None,
-    trade_specialty: Optional[str] = None
+    trade_specialty: Optional[str] = None,
+    trade_resolution_status: Optional[str] = None,
+    planning_ready: Optional[bool] = None,
 ) -> dict:
     """Get all subcontractors with pagination and filters"""
     query = db.query(Subcontractor)
+    normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+    normalized_trade_resolution_status = _normalize_trade_resolution_status_value(trade_resolution_status)
+    planning_ready_predicate = _planning_ready_filter(planning_ready)
     
     # Apply filters
     if is_active is not None:
         query = query.filter(Subcontractor.is_active == is_active)
     
-    if trade_specialty:
-        query = query.filter(Subcontractor.trade_specialty == trade_specialty)
+    if trade_specialty is not None:
+        if normalized_trade_specialty is None:
+            query = query.filter(Subcontractor.trade_specialty.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
+
+    if trade_resolution_status is not None:
+        if normalized_trade_resolution_status is None:
+            query = query.filter(Subcontractor.trade_resolution_status.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_resolution_status == normalized_trade_resolution_status)
+
+    if planning_ready_predicate is not None:
+        query = query.filter(*planning_ready_predicate)
     
     # Get total count
     total = query.count()
@@ -122,11 +185,49 @@ def update_subcontractor(
     # Update only provided fields
     update_data = subcontractor_update.dict(exclude_unset=True)
     
+    email = update_data.get("email")
+    if email:
+        update_data["email"] = _normalize_email(email)
+
+    normalized_email = update_data.get("email", db_subcontractor.email)
+    current_status = db_subcontractor.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value
+
+    if "trade_specialty" in update_data:
+        trade_value = update_data["trade_specialty"]
+        if trade_value:
+            normalized_trade = _normalize_explicit_trade_value(trade_value)
+            update_data["trade_specialty"] = normalized_trade
+            if normalized_trade:
+                resolution = confirmed_subcontractor_trade_resolution(normalized_trade)
+            else:
+                resolution = infer_subcontractor_trade_resolution(
+                    company_name=update_data.get("company_name", db_subcontractor.company_name),
+                    email=normalized_email,
+                )
+                update_data["trade_specialty"] = resolution.trade_specialty
+        else:
+            resolution = infer_subcontractor_trade_resolution(
+                company_name=update_data.get("company_name", db_subcontractor.company_name),
+                email=normalized_email,
+            )
+            update_data["trade_specialty"] = resolution.trade_specialty
+
+        update_data["suggested_trade_specialty"] = resolution.suggested_trade_specialty
+        update_data["trade_resolution_status"] = resolution.status
+        update_data["trade_inference_source"] = resolution.source
+        update_data["trade_inference_confidence"] = resolution.confidence
+    elif any(field in update_data for field in ("company_name", "email")) and current_status != TradeResolutionStatus.CONFIRMED.value:
+        resolution = infer_subcontractor_trade_resolution(
+            company_name=update_data.get("company_name", db_subcontractor.company_name),
+            email=normalized_email,
+        )
+        update_data["trade_specialty"] = resolution.trade_specialty
+        update_data["suggested_trade_specialty"] = resolution.suggested_trade_specialty
+        update_data["trade_resolution_status"] = resolution.status
+        update_data["trade_inference_source"] = resolution.source
+        update_data["trade_inference_confidence"] = resolution.confidence
+
     for field, value in update_data.items():
-        if field == "trade_specialty" and value:
-            value = value.value if hasattr(value, 'value') else value
-        if field == "email" and value:
-            value = _normalize_email(value)
         setattr(db_subcontractor, field, value)
     
     db_subcontractor.updated_at = datetime.now(timezone.utc)
@@ -195,11 +296,16 @@ def search_subcontractors(
     search_term: Optional[str] = None,
     trade_specialty: Optional[str] = None,
     is_active: Optional[bool] = True,
+    trade_resolution_status: Optional[str] = None,
+    planning_ready: Optional[bool] = None,
     skip: int = 0,
     limit: int = 100
 ) -> dict:
     """Search subcontractors by various criteria"""
     query = db.query(Subcontractor)
+    normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+    normalized_trade_resolution_status = _normalize_trade_resolution_status_value(trade_resolution_status)
+    planning_ready_predicate = _planning_ready_filter(planning_ready)
     
     if search_term:
         escaped = search_term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -212,8 +318,20 @@ def search_subcontractors(
         )
         query = query.filter(search_filter)
     
-    if trade_specialty:
-        query = query.filter(Subcontractor.trade_specialty == trade_specialty)
+    if trade_specialty is not None:
+        if normalized_trade_specialty is None:
+            query = query.filter(Subcontractor.trade_specialty.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
+
+    if trade_resolution_status is not None:
+        if normalized_trade_resolution_status is None:
+            query = query.filter(Subcontractor.trade_resolution_status.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_resolution_status == normalized_trade_resolution_status)
+
+    if planning_ready_predicate is not None:
+        query = query.filter(*planning_ready_predicate)
     
     if is_active is not None:
         query = query.filter(Subcontractor.is_active == is_active)
@@ -503,9 +621,13 @@ def get_subcontractors_by_trade(
     limit: int = 100
 ) -> List[Subcontractor]:
     """Get all subcontractors with a specific trade specialty"""
-    query = db.query(Subcontractor).filter(
-        Subcontractor.trade_specialty == trade_specialty
-    )
+    normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+    query = db.query(Subcontractor)
+
+    if normalized_trade_specialty is None:
+        query = query.filter(Subcontractor.trade_specialty.is_(None))
+    else:
+        query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
     
     if is_active is not None:
         query = query.filter(Subcontractor.is_active == is_active)
@@ -532,8 +654,12 @@ def get_available_subcontractors_for_date(
     query = db.query(Subcontractor).filter(Subcontractor.is_active == True)
 
     # Filter by trade if specified
-    if trade_specialty:
-        query = query.filter(Subcontractor.trade_specialty == trade_specialty)
+    if trade_specialty is not None:
+        normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+        if normalized_trade_specialty is None:
+            query = query.filter(Subcontractor.trade_specialty.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
 
     if start_time and end_time:
         req_start = datetime.combine(check_date, start_time)
@@ -617,6 +743,8 @@ def get_subcontractors_for_manager(
     limit: int = 100,
     is_active: Optional[bool] = None,
     trade_specialty: Optional[str] = None,
+    trade_resolution_status: Optional[str] = None,
+    planning_ready: Optional[bool] = None,
     project_id: Optional[UUID] = None
 ) -> dict:
     """Get all subcontractors working on projects managed by a specific manager"""
@@ -638,6 +766,9 @@ def get_subcontractors_for_manager(
     
     # Build the query for subcontractors through projects
     query = db.query(Subcontractor).distinct()
+    normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+    normalized_trade_resolution_status = _normalize_trade_resolution_status_value(trade_resolution_status)
+    planning_ready_predicate = _planning_ready_filter(planning_ready)
     
     # Join through the association tables
     query = query.join(
@@ -656,8 +787,20 @@ def get_subcontractors_for_manager(
     if is_active is not None:
         query = query.filter(Subcontractor.is_active == is_active)
     
-    if trade_specialty:
-        query = query.filter(Subcontractor.trade_specialty == trade_specialty)
+    if trade_specialty is not None:
+        if normalized_trade_specialty is None:
+            query = query.filter(Subcontractor.trade_specialty.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
+
+    if trade_resolution_status is not None:
+        if normalized_trade_resolution_status is None:
+            query = query.filter(Subcontractor.trade_resolution_status.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_resolution_status == normalized_trade_resolution_status)
+
+    if planning_ready_predicate is not None:
+        query = query.filter(*planning_ready_predicate)
     
     total = query.count()
     subcontractors = query.order_by(Subcontractor.company_name.asc())\

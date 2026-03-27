@@ -31,16 +31,19 @@ from ..core.constants import (
     AI_WORK_PROFILE_MAX_TOKENS,
     WORK_PROFILE_ACTUAL_ERROR_FRACTION,
     WORK_PROFILE_AI_ERROR_FRACTION,
+    WORK_PROFILE_BASE_TOKENS,
     WORK_PROFILE_CONTEXT_VERSION,
     WORK_PROFILE_CORRECTION_MIN_SAMPLES,
     WORK_PROFILE_CORRECTION_RATE_THRESHOLD,
     WORK_PROFILE_CV_CONFIRMED,
     WORK_PROFILE_CV_TRUSTED,
     WORK_PROFILE_INFERENCE_VERSION,
+    WORK_PROFILE_MAX_TOKENS_CAP,
     WORK_PROFILE_MAX_NEW_CONTEXTS_PER_UPLOAD,
     WORK_PROFILE_MIN_HOURS,
     WORK_PROFILE_NORM_DIST_SUM_TOLERANCE,
     WORK_PROFILE_OPERATIONAL_UNIT,
+    WORK_PROFILE_TOKENS_PER_DAY,
 )
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
 from ..models.work_profile import (
@@ -1409,6 +1412,20 @@ def _work_profile_prompt_text() -> str:
     return prompt_path.read_text(encoding="utf-8").strip()
 
 
+def _work_profile_response_max_tokens(duration_days: int) -> int:
+    """
+    Size the completion budget for one normalized bucket per activity day.
+
+    The original fixed 768-token budget is enough for short activities but it
+    truncates long responses once the model has to emit dozens or hundreds of
+    numeric buckets. Keep the historical floor for short rows, then scale
+    linearly with duration while capping spend for extremely long activities.
+    """
+    duration_days = max(1, int(duration_days or 1))
+    estimated_tokens = WORK_PROFILE_BASE_TOKENS + (duration_days * WORK_PROFILE_TOKENS_PER_DAY)
+    return max(AI_WORK_PROFILE_MAX_TOKENS, min(WORK_PROFILE_MAX_TOKENS_CAP, estimated_tokens))
+
+
 def _posterior_hint_payload(profile: Optional[ItemContextProfile]) -> Optional[dict[str, float]]:
     if profile is None or profile.posterior_mean is None or profile.posterior_precision is None:
         return None
@@ -1546,6 +1563,7 @@ async def generate_work_profile_ai(
             f"{json.dumps(repair_errors, sort_keys=True)}"
         )
     user_message = json.dumps(request_payload, sort_keys=True)
+    response_max_tokens = _work_profile_response_max_tokens(duration_days)
 
     try:
         started = time.perf_counter()
@@ -1554,7 +1572,7 @@ async def generate_work_profile_ai(
             client,
             system_prompt,
             user_message,
-            max_tokens=AI_WORK_PROFILE_MAX_TOKENS,
+            max_tokens=response_max_tokens,
             timeout=float(settings.AI_TIMEOUT_WORK_PROFILE),
         )
         latency_ms = int((time.perf_counter() - started) * 1000)

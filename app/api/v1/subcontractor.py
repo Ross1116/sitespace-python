@@ -9,6 +9,7 @@ from ...core.database import get_db
 from ...core.security import get_current_active_user, create_password_reset_token, require_manager_or_admin, verify_password
 from ...core.email import send_subcontractor_invite_email 
 from ...crud import subcontractor as subcontractor_crud
+from ...models.subcontractor import Subcontractor
 from ...models.user import User
 from ...schemas.subcontractor import (
     SubcontractorCreate,
@@ -31,9 +32,21 @@ from ...core.constants import (
     UPCOMING_BOOKINGS_MAX_DAYS_AHEAD,
 )
 from ...schemas.base import MessageResponse
-from ...schemas.enums import BookingStatus, UserRole
+from ...schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus, UserRole
 
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
+
+
+def _validated_subcontractor_response(subcontractor: Any) -> SubcontractorResponse:
+    if isinstance(subcontractor, dict):
+        payload = dict(subcontractor)
+        if payload.get("trade_resolution_status") is None:
+            payload["trade_resolution_status"] = TradeResolutionStatus.UNKNOWN.value
+        return SubcontractorResponse.model_validate(payload)
+
+    if getattr(subcontractor, "trade_resolution_status", None) is None:
+        subcontractor.trade_resolution_status = TradeResolutionStatus.UNKNOWN.value
+    return SubcontractorResponse.model_validate(subcontractor)
 
 
 # ========================================================
@@ -46,6 +59,8 @@ def get_my_subcontractors(
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     project_id: Optional[UUID] = Query(None, description="Filter by specific project"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -62,7 +77,9 @@ def get_my_subcontractors(
             skip=skip,
             limit=limit,
             is_active=is_active,
-            trade_specialty=trade_specialty
+            trade_specialty=trade_specialty,
+            trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+            planning_ready=planning_ready,
         )
     elif user_role == UserRole.MANAGER:
         result = subcontractor_crud.get_subcontractors_for_manager(
@@ -72,6 +89,8 @@ def get_my_subcontractors(
             limit=limit,
             is_active=is_active,
             trade_specialty=trade_specialty,
+            trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+            planning_ready=planning_ready,
             project_id=project_id
         )
     else:
@@ -82,20 +101,7 @@ def get_my_subcontractors(
         )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -125,6 +131,8 @@ def get_manager_subcontractor_statistics(
 def search_subcontractors(
     search_term: Optional[str] = Query(None, description="Search in name, company, email"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     is_active: Optional[bool] = Query(True, description="Filter by active status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
@@ -140,26 +148,15 @@ def search_subcontractors(
         db,
         search_term=search_term,
         trade_specialty=trade_specialty,
+        trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+        planning_ready=planning_ready,
         is_active=is_active,
         skip=skip,
         limit=limit
     )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -188,20 +185,7 @@ def get_available_subcontractors(
         end_time=end_time
     )
     
-    return [
-        SubcontractorResponse(
-            id=s.id,
-            email=s.email,
-            first_name=s.first_name,
-            last_name=s.last_name,
-            company_name=s.company_name,
-            trade_specialty=s.trade_specialty,
-            phone=s.phone,
-            is_active=s.is_active,
-            created_at=s.created_at,
-            updated_at=s.updated_at
-        ) for s in available
-    ]
+    return [_validated_subcontractor_response(s) for s in available]
 
 @router.get("/by-trade/{trade_specialty}", response_model=List[SubcontractorResponse])
 def get_subcontractors_by_trade(
@@ -225,20 +209,7 @@ def get_subcontractors_by_trade(
         limit=limit
     )
     
-    return [
-        SubcontractorResponse(
-            id=s.id,
-            email=s.email,
-            first_name=s.first_name,
-            last_name=s.last_name,
-            company_name=s.company_name,
-            trade_specialty=s.trade_specialty,
-            phone=s.phone,
-            is_active=s.is_active,
-            created_at=s.created_at,
-            updated_at=s.updated_at
-        ) for s in subcontractors
-    ]
+    return [_validated_subcontractor_response(s) for s in subcontractors]
 
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
@@ -246,6 +217,8 @@ def get_all_subcontractors(
     limit: int = Query(SUBCONTRACTOR_PAGE_DEFAULT, ge=1, le=SUBCONTRACTOR_PAGE_MAX),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     trade_specialty: Optional[str] = Query(None, description="Filter by trade specialty"),
+    trade_resolution_status: Optional[TradeResolutionStatus] = Query(None, description="Filter by trade resolution status"),
+    planning_ready: Optional[bool] = Query(None, description="Filter by planning readiness"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -259,24 +232,13 @@ def get_all_subcontractors(
         skip=skip,
         limit=limit,
         is_active=is_active,
-        trade_specialty=trade_specialty
+        trade_specialty=trade_specialty,
+        trade_resolution_status=trade_resolution_status.value if trade_resolution_status else None,
+        planning_ready=planning_ready,
     )
     
     return SubcontractorListResponse(
-        subcontractors=[
-            SubcontractorResponse(
-                id=s.id,
-                email=s.email,
-                first_name=s.first_name,
-                last_name=s.last_name,
-                company_name=s.company_name,
-                trade_specialty=s.trade_specialty,
-                phone=s.phone,
-                is_active=s.is_active,
-                created_at=s.created_at,
-                updated_at=s.updated_at
-            ) for s in result["subcontractors"]
-        ],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -375,7 +337,7 @@ def update_subcontractor_me(
 def get_subcontractor(
     subcontractor_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: Union[User, Subcontractor] = Depends(get_current_active_user)
 ):
     subcontractor = subcontractor_crud.get_subcontractor_with_details(
         db, 
@@ -387,6 +349,43 @@ def get_subcontractor(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subcontractor not found"
         )
+
+    current_role = getattr(current_user, "role", None)
+    current_role_value = current_role.value if hasattr(current_role, "value") else str(current_role or "").lower()
+    current_subcontractor_id = getattr(current_user, "subcontractor_id", None)
+    is_self = (
+        isinstance(current_user, Subcontractor)
+        and current_user.id == subcontractor.id
+    ) or current_subcontractor_id == subcontractor.id
+    is_admin = isinstance(current_user, User) and current_role_value == UserRole.ADMIN.value
+    has_manager_access = (
+        isinstance(current_user, User)
+        and current_role_value == UserRole.MANAGER.value
+        and subcontractor_crud.check_manager_can_access_subcontractor(
+        db,
+        current_user.id,
+        subcontractor.id,
+        )
+    )
+
+    if not (is_self or is_admin or has_manager_access):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
+        )
+
+    current_assignments = [
+        ProjectAssignmentResponse(
+            project_id=project.id,
+            project_name=project.name,
+            project_location=project.location,
+            assigned_date=project.created_at.date(),
+            hourly_rate=None,
+            is_active=project.status == ProjectStatus.ACTIVE.value or project.status is None,
+        )
+        for project in subcontractor.assigned_projects
+        if project.status == ProjectStatus.ACTIVE.value or project.status is None
+    ]
     
     return SubcontractorDetailResponse(
         id=subcontractor.id,
@@ -395,16 +394,18 @@ def get_subcontractor(
         last_name=subcontractor.last_name,
         company_name=subcontractor.company_name,
         trade_specialty=subcontractor.trade_specialty,
+        suggested_trade_specialty=subcontractor.suggested_trade_specialty,
+        trade_resolution_status=subcontractor.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value,
+        trade_inference_source=subcontractor.trade_inference_source,
+        trade_inference_confidence=subcontractor.trade_inference_confidence,
+        planning_ready=subcontractor.planning_ready,
         phone=subcontractor.phone,
         is_active=subcontractor.is_active,
         created_at=subcontractor.created_at,
         updated_at=subcontractor.updated_at,
-        total_projects=len(subcontractor.assigned_projects),
-        active_projects=sum(1 for p in subcontractor.assigned_projects 
-                          if p.status == "active" or p.status is None),
+        active_projects_count=len(current_assignments),
         total_bookings=len(subcontractor.bookings),
-        upcoming_bookings=sum(1 for b in subcontractor.bookings
-                             if b.status == BookingStatus.CONFIRMED and b.booking_date >= date.today())
+        current_assignments=current_assignments,
     )
 
 @router.put("/{subcontractor_id}", response_model=SubcontractorResponse)
@@ -640,7 +641,7 @@ def get_subcontractor_projects(
     
     projects = []
     for project in subcontractor.assigned_projects[skip:skip + limit]:
-        if is_active is not None and (project.status == "active") != is_active:
+        if is_active is not None and (project.status == ProjectStatus.ACTIVE.value) != is_active:
             continue
             
         projects.append(ProjectAssignmentResponse(
@@ -649,7 +650,7 @@ def get_subcontractor_projects(
             project_location=project.location,
             assigned_date=project.created_at.date(),
             hourly_rate=None,
-            is_active=project.status == "active"
+            is_active=project.status == ProjectStatus.ACTIVE.value
         ))
     
     return projects

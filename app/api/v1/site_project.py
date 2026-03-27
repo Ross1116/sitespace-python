@@ -21,7 +21,8 @@ from ...schemas.site_project import (
     ProjectManagerCreate,
     ProjectSubcontractorCreate,
     ProjectSubcontractorUpdate,
-    ProjectStatisticsResponse
+    ProjectStatisticsResponse,
+    PlanningCompletenessResponse,
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole, ProjectStatus
@@ -29,6 +30,7 @@ from ...schemas.subcontractor import SubcontractorResponse
 from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
+from ...services.metadata_confidence_service import get_project_planning_completeness
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,34 @@ def get_project(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve project"
+        ) from exc
+
+
+@router.get("/{project_id}/planning-completeness", response_model=PlanningCompletenessResponse)
+def get_project_planning_readiness(
+    project_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> PlanningCompletenessResponse:
+    """Get planning metadata readiness for the next six weeks."""
+    try:
+        project = project_crud.get_project(db, project_id=project_id)
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        check_project_access(db, project_id, current_user)
+        completeness = get_project_planning_completeness(project_id=project_id, db=db)
+        return PlanningCompletenessResponse.model_validate(completeness)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to retrieve planning completeness")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve planning completeness",
         ) from exc
 
 

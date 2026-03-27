@@ -6,7 +6,7 @@ from uuid import UUID
 from decimal import Decimal
 
 from .base import BaseSchema, TimestampSchema
-from .enums import TradeSpecialty
+from .enums import TradeResolutionStatus, TradeSpecialty
 from .auth import NewPasswordConfirmationMixin, PasswordConfirmationMixin
 
 class SubcontractorBase(BaseSchema):
@@ -39,6 +39,11 @@ class SubcontractorPasswordUpdate(NewPasswordConfirmationMixin):
 class SubcontractorResponse(SubcontractorBase, TimestampSchema):
     """Subcontractor response schema"""
     id: UUID
+    suggested_trade_specialty: Optional[TradeSpecialty] = None
+    trade_resolution_status: TradeResolutionStatus = TradeResolutionStatus.UNKNOWN
+    trade_inference_source: Optional[str] = None
+    trade_inference_confidence: Optional[Decimal] = None
+    planning_ready: bool = False
     is_active: bool
 
 class ProjectAssignmentResponse(BaseSchema):
@@ -70,6 +75,9 @@ class SubcontractorBriefResponse(BaseSchema):
     last_name: str
     company_name: Optional[str]
     trade_specialty: Optional[TradeSpecialty]
+    suggested_trade_specialty: Optional[TradeSpecialty] = None
+    trade_resolution_status: TradeResolutionStatus = TradeResolutionStatus.UNKNOWN
+    planning_ready: bool = False
 
 class SubcontractorListResponse(BaseSchema):
     """Subcontractor list response"""

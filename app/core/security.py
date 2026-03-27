@@ -39,7 +39,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     
     to_encode.update({
         "exp": expire,
@@ -56,7 +56,7 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        expire = datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days)
     
     to_encode.update({
         "exp": expire,
@@ -69,7 +69,7 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
 
 def create_verification_token(email: str) -> str:
     """Create email verification token"""
-    expire = datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.email_verification_expire_hours)
     to_encode = {
         "email": normalize_email(email),
         "exp": expire,
@@ -80,7 +80,7 @@ def create_verification_token(email: str) -> str:
 
 def create_password_reset_token(email: str) -> str:
     """Create password reset token"""
-    expire = datetime.now(timezone.utc) + timedelta(hours=settings.PASSWORD_RESET_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.password_reset_expire_hours)
     to_encode = {
         "email": normalize_email(email),
         "exp": expire,

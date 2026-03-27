@@ -137,7 +137,7 @@ def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires_in=settings.access_token_expire_minutes * 60,
         user_id=entity.id,
         role=payload["role"]
     )
@@ -316,7 +316,7 @@ def forgot_password(
         message="If the email exists, password reset instructions have been sent",
         email=forgot_data.email,
         success=True,
-        expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
+        expires_in_minutes=settings.password_reset_expire_hours * 60
     )
 
 
@@ -496,6 +496,11 @@ def get_current_user_info(
             last_name=current_entity.last_name,
             company_name=current_entity.company_name,
             trade_specialty=current_entity.trade_specialty,
+            suggested_trade_specialty=current_entity.suggested_trade_specialty,
+            trade_resolution_status=current_entity.trade_resolution_status or "unknown",
+            trade_inference_source=current_entity.trade_inference_source,
+            trade_inference_confidence=current_entity.trade_inference_confidence,
+            planning_ready=current_entity.planning_ready,
             phone=current_entity.phone,
             is_active=current_entity.is_active,
         )

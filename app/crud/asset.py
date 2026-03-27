@@ -9,7 +9,13 @@ import re
 from ..models.asset import Asset
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
-from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
+from ..schemas.enums import (
+    AssetStatus,
+    AssetTypeResolutionStatus,
+    BookingAuditAction,
+    BookingStatus,
+    UserRole,
+)
 from ..schemas.asset import (
     AssetCreate, AssetUpdate, AssetTransfer,
     AssetDetailResponse, AssetAvailabilityCheck,
@@ -18,7 +24,10 @@ from ..schemas.asset import (
     ImpactedBookingSummary
 )
 from .booking_audit import log_booking_audit
-from ..services.ai_service import normalize_asset_type
+from ..services.metadata_confidence_service import (
+    confirmed_asset_type_resolution,
+    infer_asset_type_resolution,
+)
 
 # Precompiled pattern for HH:MM validation — used by _parse_time_string
 _TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -387,15 +396,24 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
     if asset.status == AssetStatus.RETIRED and (asset.maintenance_start_date or asset.maintenance_end_date):
         raise ValueError("Cannot set maintenance dates on a retired asset")
 
-    # Stage 3 — derive canonical_type from the raw type field
-    canonical = normalize_asset_type(asset.type or "") if asset.type else None
+    if asset.canonical_type:
+        resolution = confirmed_asset_type_resolution(asset.canonical_type)
+    else:
+        resolution = infer_asset_type_resolution(
+            raw_type=asset.type,
+            asset_name=asset.name,
+            asset_code=asset.asset_code,
+        )
 
     db_asset = Asset(
         project_id=asset.project_id,
         asset_code=asset.asset_code,
         name=asset.name,
         type=asset.type,
-        canonical_type=canonical,
+        canonical_type=resolution.canonical_type,
+        type_resolution_status=resolution.status,
+        type_inference_source=resolution.source,
+        type_inference_confidence=resolution.confidence,
         description=asset.description,
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,
@@ -446,6 +464,8 @@ def get_assets_paginated(
     project_id: Optional[UUID] = None,
     status: Optional[AssetStatus] = None,
     asset_type: Optional[str] = None,
+    resolution_status: Optional[str] = None,
+    planning_ready: Optional[bool] = None,
     skip: int = 0,
     limit: int = 100
 ) -> Tuple[List[Asset], int]:
@@ -470,6 +490,32 @@ def get_assets_paginated(
 
     if asset_type:
         query = query.filter(Asset.type == asset_type)
+
+    if resolution_status:
+        query = query.filter(Asset.type_resolution_status == resolution_status)
+
+    if planning_ready is True:
+        query = query.filter(
+            Asset.canonical_type.isnot(None),
+            Asset.type_resolution_status.in_(
+                [
+                    AssetTypeResolutionStatus.INFERRED.value,
+                    AssetTypeResolutionStatus.CONFIRMED.value,
+                ]
+            ),
+        )
+    elif planning_ready is False:
+        query = query.filter(
+            or_(
+                Asset.canonical_type.is_(None),
+                Asset.type_resolution_status.notin_(
+                    [
+                        AssetTypeResolutionStatus.INFERRED.value,
+                        AssetTypeResolutionStatus.CONFIRMED.value,
+                    ]
+                ),
+            )
+        )
 
     # Total is accurate because _bulk_resolve_maintenance already
     # corrected statuses across the entire table.
@@ -552,6 +598,11 @@ def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailRespons
         asset_code=asset.asset_code,
         name=asset.name,
         type=asset.type,
+        canonical_type=asset.canonical_type,
+        type_resolution_status=asset.type_resolution_status or AssetTypeResolutionStatus.UNKNOWN.value,
+        type_inference_source=asset.type_inference_source,
+        type_inference_confidence=asset.type_inference_confidence,
+        planning_ready=asset.planning_ready,
         description=asset.description,
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,
@@ -643,11 +694,32 @@ def update_asset(
             actor_role=actor_role,
         )
 
-    # Stage 3 — re-derive canonical_type when type changes, unless
-    # the caller explicitly provided canonical_type in the same request.
-    if "type" in update_data and "canonical_type" not in update_data:
-        new_type = update_data["type"]
-        update_data["canonical_type"] = normalize_asset_type(new_type or "") if new_type else None
+    raw_type = update_data.get("type", db_asset.type)
+    asset_name = update_data.get("name", db_asset.name)
+    asset_code = update_data.get("asset_code", db_asset.asset_code)
+
+    if "canonical_type" in update_data and update_data["canonical_type"]:
+        resolution = confirmed_asset_type_resolution(update_data["canonical_type"])
+        update_data["canonical_type"] = resolution.canonical_type
+        update_data["type_resolution_status"] = resolution.status
+        update_data["type_inference_source"] = resolution.source
+        update_data["type_inference_confidence"] = resolution.confidence
+    elif (
+        "canonical_type" in update_data
+        and update_data["canonical_type"] is None
+    ) or any(field in update_data for field in ("type", "name", "asset_code")):
+        if (db_asset.type_resolution_status or AssetTypeResolutionStatus.UNKNOWN.value) == AssetTypeResolutionStatus.CONFIRMED.value and "canonical_type" not in update_data:
+            pass
+        else:
+            resolution = infer_asset_type_resolution(
+                raw_type=raw_type,
+                asset_name=asset_name,
+                asset_code=asset_code,
+            )
+            update_data["canonical_type"] = resolution.canonical_type
+            update_data["type_resolution_status"] = resolution.status
+            update_data["type_inference_source"] = resolution.source
+            update_data["type_inference_confidence"] = resolution.confidence
 
     for field, value in update_data.items():
         setattr(db_asset, field, value)

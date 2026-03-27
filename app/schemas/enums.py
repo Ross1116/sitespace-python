@@ -38,6 +38,24 @@ class TradeSpecialty(str, Enum):
     GENERAL = "general"
     OTHER = "other"
 
+class AssetTypeResolutionStatus(str, Enum):
+    UNKNOWN = "unknown"
+    INFERRED = "inferred"
+    CONFIRMED = "confirmed"
+
+class TradeResolutionStatus(str, Enum):
+    UNKNOWN = "unknown"
+    SUGGESTED = "suggested"
+    CONFIRMED = "confirmed"
+
+
+ASSET_TYPE_RESOLUTION_READY: frozenset[str] = frozenset(
+    {
+        AssetTypeResolutionStatus.INFERRED.value,
+        AssetTypeResolutionStatus.CONFIRMED.value,
+    }
+)
+
 class BookingAuditAction(str, Enum):
     CREATED = "created"
     APPROVED = "approved"

@@ -4,7 +4,9 @@ import math
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core.constants import AI_WORK_PROFILE_MAX_TOKENS, WORK_PROFILE_MAX_TOKENS_CAP
 from app.services.work_profile_service import (
+    _work_profile_response_max_tokens,
     build_default_profile,
     generate_work_profile_ai,
     resolve_work_profile,
@@ -104,6 +106,37 @@ class TestWorkProfileAIHardening:
 
         assert result is not None
         assert result["confidence"] <= 0.55
+
+    def test_generate_work_profile_ai_scales_token_budget_for_long_durations(self):
+        duration_days = 240
+        response = json.dumps(
+            {
+                "total_hours": 12.0,
+                "normalized_distribution": [1.0] + ([0.0] * (duration_days - 1)),
+                "confidence": 0.7,
+            }
+        )
+
+        with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 144)) as call_api, \
+             patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
+             patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"):
+            result = asyncio.run(
+                generate_work_profile_ai(
+                    activity_name="Long-duration logistics support",
+                    asset_type="loading_bay",
+                    duration_days=duration_days,
+                    max_hours_per_day=10.0,
+                )
+            )
+
+        assert result is not None
+        assert call_api.await_args.kwargs["max_tokens"] == _work_profile_response_max_tokens(duration_days)
+        assert call_api.await_args.kwargs["max_tokens"] > AI_WORK_PROFILE_MAX_TOKENS
+
+    def test_work_profile_response_max_tokens_respects_floor_and_cap(self):
+        assert _work_profile_response_max_tokens(1) == AI_WORK_PROFILE_MAX_TOKENS
+        assert _work_profile_response_max_tokens(500) == WORK_PROFILE_MAX_TOKENS_CAP
 
     def test_trusted_baseline_uses_asset_shaped_distribution(self):
         db = MagicMock()
