@@ -787,7 +787,10 @@ async def _call_api(
         raise RuntimeError("AI suppressed for this upload")
 
     await _acquire_provider_request_slot()
+    execution_context = _resolve_ai_execution_context(execution_context)
     try:
+        if execution_context is not None and execution_context.suppress_ai:
+            raise RuntimeError("AI suppressed for this upload")
         try:
             if _is_openai_client(client):
                 response = await asyncio.wait_for(
@@ -1007,46 +1010,54 @@ async def _detect_structure_real(
         timeout=float(settings.AI_TIMEOUT_STRUCTURE),
         execution_context=execution_context,
     )
-    data = _parse_json_response(text)
+    try:
+        data = _parse_json_response(text)
 
-    # Extract mapping, dropping null values
-    raw_mapping = data.get("column_mapping") or {}
-    column_mapping = {
-        k: str(v).strip()
-        for k, v in raw_mapping.items()
-        if v is not None and str(v).strip()
-    }
+        # Extract mapping, dropping null values
+        raw_mapping = data.get("column_mapping") or {}
+        column_mapping = {
+            k: str(v).strip()
+            for k, v in raw_mapping.items()
+            if v is not None and str(v).strip()
+        }
 
-    activities = _build_activities_from_rows(rows, column_mapping)
+        activities = _build_activities_from_rows(rows, column_mapping)
 
-    completeness_score = max(0, min(100, int(data.get("completeness_score") or 50)))
-    missing_fields: list[str] = list(data.get("missing_fields") or [])
+        completeness_score = max(0, min(100, int(data.get("completeness_score") or 50)))
+        missing_fields: list[str] = list(data.get("missing_fields") or [])
 
-    notes_parts: list[str] = []
-    if data.get("notes"):
-        notes_parts.append(str(data["notes"]))
-    if data.get("detected_tool") and str(data["detected_tool"]).lower() != "unknown":
-        notes_parts.append(f"Detected: {data['detected_tool']}")
-    if data.get("date_format_hint"):
-        notes_parts.append(f"Date format: {data['date_format_hint']}")
-    notes = " | ".join(notes_parts) if notes_parts else "AI structure detection complete."
+        notes_parts: list[str] = []
+        if data.get("notes"):
+            notes_parts.append(str(data["notes"]))
+        if data.get("detected_tool") and str(data["detected_tool"]).lower() != "unknown":
+            notes_parts.append(f"Detected: {data['detected_tool']}")
+        if data.get("date_format_hint"):
+            notes_parts.append(f"Date format: {data['date_format_hint']}")
+        notes = " | ".join(notes_parts) if notes_parts else "AI structure detection complete."
 
-    logger.info(
-        "Structure detection: completeness=%d, activities=%d, mapping_keys=%s",
-        completeness_score,
-        len(activities),
-        list(column_mapping.keys()),
-    )
+        logger.info(
+            "Structure detection: completeness=%d, activities=%d, mapping_keys=%s",
+            completeness_score,
+            len(activities),
+            list(column_mapping.keys()),
+        )
 
-    return StructureResult(
-        column_mapping=column_mapping,
-        activities=activities,
-        completeness_score=completeness_score,
-        missing_fields=missing_fields,
-        notes=notes,
-        ai_tokens_used=usage.total_tokens,
-        ai_cost_usd=usage.cost_usd,
-    )
+        return StructureResult(
+            column_mapping=column_mapping,
+            activities=activities,
+            completeness_score=completeness_score,
+            missing_fields=missing_fields,
+            notes=notes,
+            ai_tokens_used=usage.total_tokens,
+            ai_cost_usd=usage.cost_usd,
+        )
+    except Exception as exc:
+        logger.warning("AI structure response processing failed; using regex fallback: %s", exc)
+        fallback = _detect_structure_fallback(rows)
+        fallback.notes = f"{fallback.notes} AI structure response invalid; regex fallback used."
+        fallback.ai_tokens_used = usage.total_tokens
+        fallback.ai_cost_usd = usage.cost_usd
+        return fallback
 
 
 def _extract_partial_classifications(text: str) -> list[dict[str, str]]:
@@ -1715,8 +1726,13 @@ def keyword_classify_activity_name(
         return None
 
     padded_name = f" {normalized_name} "
-    for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if f" {keyword} " not in padded_name:
+    for keyword, asset_type in sorted(
+        _KEYWORD_MAP.items(),
+        key=lambda kv: len(_normalize_for_keyword_match(kv[0])),
+        reverse=True,
+    ):
+        normalized_keyword = _normalize_for_keyword_match(keyword)
+        if not normalized_keyword or f" {normalized_keyword} " not in padded_name:
             continue
         if valid_types and asset_type not in valid_types:
             continue

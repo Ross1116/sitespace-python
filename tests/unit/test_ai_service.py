@@ -8,9 +8,11 @@ import pytest
 from app.services.ai_service import (
     AIExecutionContext,
     _call_api,
+    _detect_structure_real,
     build_ai_usage,
     classify_assets,
     detect_structure,
+    keyword_classify_activity_name,
 )
 
 
@@ -196,6 +198,58 @@ class TestAISuppressionContext:
         assert len(result.classifications) == 1
         assert result.classifications[0].asset_type == "crane"
         assert result.fallback_used is True
+
+    def test_call_api_rechecks_suppression_after_waiting_for_provider_slot(self):
+        response = SimpleNamespace(
+            content=[SimpleNamespace(text='{"ok": true}')],
+            usage=SimpleNamespace(input_tokens=9, output_tokens=4),
+        )
+        client = SimpleNamespace(
+            messages=SimpleNamespace(create=AsyncMock(return_value=response))
+        )
+        execution_context = AIExecutionContext()
+
+        async def _acquire_and_suppress() -> None:
+            execution_context.suppress_ai = True
+
+        with patch("app.services.ai_service._is_openai_client", return_value=False), \
+             patch("app.services.ai_service._acquire_provider_request_slot", new=AsyncMock(side_effect=_acquire_and_suppress)) as acquire, \
+             patch("app.services.ai_service._release_provider_request_slot") as release, \
+             patch("app.services.ai_service.settings.AI_MODEL", "test-model"):
+            with pytest.raises(RuntimeError, match="AI suppressed for this upload"):
+                asyncio.run(
+                    _call_api(
+                        client,
+                        "system prompt",
+                        "user message",
+                        max_tokens=55,
+                        timeout=5.0,
+                        execution_context=execution_context,
+                    )
+                )
+
+        acquire.assert_awaited_once()
+        release.assert_called_once()
+        client.messages.create.assert_not_awaited()
+
+    async def test_detect_structure_real_preserves_usage_when_ai_response_is_invalid(self):
+        rows = [{"Task Name": "Excavate footing", "Start": "2026-03-27", "Finish": "2026-03-28"}]
+        usage = build_ai_usage(12, 8)
+
+        with patch("app.services.ai_service._get_async_client", return_value=object()), \
+             patch("app.services.ai_service._load_prompt", return_value="prompt"), \
+             patch("app.services.ai_service._call_api", new=AsyncMock(return_value=("not json", usage))):
+            result = await _detect_structure_real(rows)
+
+        assert result.activities
+        assert result.ai_tokens_used == usage.total_tokens
+        assert result.ai_cost_usd == usage.cost_usd
+        assert "regex fallback" in result.notes.lower()
+
+
+class TestKeywordNormalization:
+    def test_keyword_classification_normalizes_apostrophes_in_keywords(self):
+        assert keyword_classify_activity_name("Builder's hoist landing at level 4") == "hoist"
 
 
 class TestAiUsagePricing:
