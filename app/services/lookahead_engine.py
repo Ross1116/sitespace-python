@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sentry_sdk
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -25,7 +25,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..models.work_profile import ActivityWorkProfile
-from ..schemas.enums import BookingStatus
+from ..schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetTypeResolutionStatus, BookingStatus
 from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
     ANOMALY_DEMAND_SPIKE_THRESHOLD,
@@ -357,7 +357,7 @@ def _compute_booked_by_week_asset(
     db: Session,
     project_id: uuid.UUID,
     tz: ZoneInfo,
-) -> dict[tuple[date, str], float]:
+) -> tuple[dict[tuple[date, str], float], dict[str, int]]:
     """Query active bookings for a project and bucket booked hours by (week, asset_type)."""
     booking_rows = (
         db.query(SlotBooking, Asset)
@@ -372,10 +372,12 @@ def _compute_booked_by_week_asset(
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     _warned_unknown_types: set[str] = set()
     active_types = get_active_asset_types(db)
+    excluded_booking_count = 0
 
     for booking, asset in booking_rows:
         raw_attempted = asset.type or (asset.name or "")
         if not asset_is_planning_ready(asset):
+            excluded_booking_count += 1
             if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
                 logger.warning(
                     "Asset '%s' has unresolved planning type; booking %s will not count toward lookahead coverage.",
@@ -393,6 +395,7 @@ def _compute_booked_by_week_asset(
 
         asset_type = asset.canonical_type
         if asset_type is None or asset_type not in active_types:
+            excluded_booking_count += 1
             if raw_attempted and len(_warned_unknown_types) < 5 and raw_attempted not in _warned_unknown_types:
                 logger.warning(
                     "Asset type '%s' not in allowed set; skipping lookahead coverage for booking %s.",
@@ -427,7 +430,7 @@ def _compute_booked_by_week_asset(
                 booked_by_week_asset[(week, asset_type)] += segment_hours
             segment_start = segment_end
 
-    return booked_by_week_asset
+    return booked_by_week_asset, {"excluded_booking_count": excluded_booking_count}
 
 
 def _severity_score(demand_hours: float, gap_hours: float) -> float:
@@ -699,7 +702,21 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         tz = ZoneInfo("Australia/Adelaide")
 
     demand_by_week_asset, current_mapping_set, low_confidence_buckets, bucket_flags = _compute_demand_by_week_asset(db, latest_upload.id)
-    booked_by_week_asset = _compute_booked_by_week_asset(db, project_id, tz)
+    booked_by_week_asset, booking_diagnostics = _compute_booked_by_week_asset(db, project_id, tz)
+    planning_ready_asset_filter = and_(
+        func.coalesce(Asset.type_resolution_status, AssetTypeResolutionStatus.UNKNOWN.value).in_(
+            tuple(ASSET_TYPE_RESOLUTION_READY)
+        ),
+        Asset.canonical_type.isnot(None),
+        Asset.canonical_type != "",
+    )
+    non_planning_ready_asset_count = int(
+        db.query(func.count(Asset.id))
+        .filter(Asset.project_id == project_id)
+        .filter(~planning_ready_asset_filter)
+        .scalar()
+        or 0
+    )
 
     all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
     rows: list[ComputedLookaheadRow] = [
@@ -812,6 +829,10 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "activity_count": activity_count,
         "rows": snapshot_rows,
+        "diagnostics": {
+            "non_planning_ready_asset_count": non_planning_ready_asset_count,
+            "excluded_booking_count": int(booking_diagnostics.get("excluded_booking_count", 0)),
+        },
         "mapping_set": [
             {"activity_id": activity_id, "asset_type": asset_type}
             for activity_id, asset_type in sorted(current_mapping_set)

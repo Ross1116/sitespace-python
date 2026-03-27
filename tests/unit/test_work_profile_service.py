@@ -23,6 +23,8 @@ import math
 import uuid
 import pytest
 from sqlalchemy.exc import IntegrityError
+
+from app.services.ai_service import build_ai_usage
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 from app.services.work_profile_service import (
@@ -790,7 +792,7 @@ class TestResolveWorkProfile:
         )
 
         with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
-             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 123)) as call_api, \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, build_ai_usage(70, 53))) as call_api, \
              patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
              patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"), \
              patch("app.services.work_profile_service.settings.AI_TIMEOUT_WORK_PROFILE", 25):

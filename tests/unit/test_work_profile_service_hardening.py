@@ -11,6 +11,7 @@ from app.services.work_profile_service import (
     generate_work_profile_ai,
     resolve_work_profile,
 )
+from app.services.ai_service import AIExecutionContext, build_ai_usage
 
 
 class TestDefaultProfileHardening:
@@ -52,6 +53,25 @@ class TestDefaultProfileHardening:
 
 
 class TestWorkProfileAIHardening:
+    def test_generate_work_profile_ai_returns_none_when_execution_context_is_suppressed(self):
+        execution_context = AIExecutionContext(suppress_ai=True, quota_exhausted=True)
+
+        with patch("app.services.work_profile_service._call_api", new_callable=AsyncMock) as call_api, \
+             patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
+             patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"):
+            result = asyncio.run(
+                generate_work_profile_ai(
+                    activity_name="Pour slab",
+                    asset_type="concrete_pump",
+                    duration_days=3,
+                    max_hours_per_day=10.0,
+                    execution_context=execution_context,
+                )
+            )
+
+        assert result is None
+        call_api.assert_not_called()
+
     def test_generate_work_profile_ai_includes_context_and_prior(self):
         response = json.dumps(
             {
@@ -62,7 +82,7 @@ class TestWorkProfileAIHardening:
         )
 
         with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
-             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 55)), \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, build_ai_usage(34, 21))), \
              patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
              patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"):
             result = asyncio.run(
@@ -91,7 +111,7 @@ class TestWorkProfileAIHardening:
         )
 
         with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
-             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 21)), \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, build_ai_usage(12, 9))), \
              patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
              patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"):
             result = asyncio.run(
@@ -118,7 +138,7 @@ class TestWorkProfileAIHardening:
         )
 
         with patch("app.services.work_profile_service._get_async_client", return_value=object()), \
-             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, 144)) as call_api, \
+             patch("app.services.work_profile_service._call_api", new_callable=AsyncMock, return_value=(response, build_ai_usage(80, 64))) as call_api, \
              patch("app.services.work_profile_service.settings.AI_ENABLED", True), \
              patch("app.services.work_profile_service.settings.AI_API_KEY", "test-key"):
             result = asyncio.run(

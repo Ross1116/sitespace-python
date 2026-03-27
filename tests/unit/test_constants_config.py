@@ -146,6 +146,8 @@ class TestConfigDefaults:
         assert hasattr(settings, "AI_TIMEOUT_CLASSIFY")
         assert hasattr(settings, "AI_TIMEOUT_WORK_PROFILE")
         assert hasattr(settings, "AI_UPLOAD_COST_BUDGET_USD")
+        assert hasattr(settings, "AI_INPUT_COST_PER_MILLION_USD")
+        assert hasattr(settings, "AI_OUTPUT_COST_PER_MILLION_USD")
         assert hasattr(settings, "NIGHTLY_LOOKAHEAD_HOUR")
         assert hasattr(settings, "NIGHTLY_LOOKAHEAD_MINUTE")
         assert hasattr(settings, "NIGHTLY_LOOKAHEAD_TIMEZONE")
@@ -160,6 +162,8 @@ class TestConfigDefaults:
         monkeypatch.delenv("AI_TIMEOUT_CLASSIFY", raising=False)
         monkeypatch.delenv("AI_TIMEOUT_WORK_PROFILE", raising=False)
         monkeypatch.delenv("AI_UPLOAD_COST_BUDGET_USD", raising=False)
+        monkeypatch.delenv("AI_INPUT_COST_PER_MILLION_USD", raising=False)
+        monkeypatch.delenv("AI_OUTPUT_COST_PER_MILLION_USD", raising=False)
         monkeypatch.delenv("NIGHTLY_LOOKAHEAD_HOUR", raising=False)
         monkeypatch.delenv("NIGHTLY_LOOKAHEAD_MINUTE", raising=False)
         monkeypatch.delenv("NIGHTLY_LOOKAHEAD_TIMEZONE", raising=False)
@@ -171,6 +175,8 @@ class TestConfigDefaults:
         assert loaded_settings.AI_TIMEOUT_CLASSIFY == 30
         assert loaded_settings.AI_TIMEOUT_WORK_PROFILE == 25
         assert loaded_settings.AI_UPLOAD_COST_BUDGET_USD == 5.0
+        assert loaded_settings.AI_INPUT_COST_PER_MILLION_USD is None
+        assert loaded_settings.AI_OUTPUT_COST_PER_MILLION_USD is None
         assert loaded_settings.NIGHTLY_LOOKAHEAD_HOUR == 18
         assert loaded_settings.NIGHTLY_LOOKAHEAD_MINUTE == 30
         assert loaded_settings.NIGHTLY_LOOKAHEAD_TIMEZONE == "Australia/Adelaide"

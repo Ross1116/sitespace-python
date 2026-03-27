@@ -237,6 +237,22 @@ class WorkProfileAILog(Base):
         Index("ix_work_profile_ai_logs_activity_id", "activity_id"),
         Index("ix_work_profile_ai_logs_item_id", "item_id"),
         Index("ix_work_profile_ai_logs_context_hash", "context_hash"),
+        CheckConstraint(
+            "input_tokens IS NULL OR input_tokens >= 0",
+            name="ck_work_profile_ai_logs_input_tokens_nonneg",
+        ),
+        CheckConstraint(
+            "output_tokens IS NULL OR output_tokens >= 0",
+            name="ck_work_profile_ai_logs_output_tokens_nonneg",
+        ),
+        CheckConstraint(
+            "tokens_used IS NULL OR tokens_used >= 0",
+            name="ck_work_profile_ai_logs_tokens_used_nonneg",
+        ),
+        CheckConstraint(
+            "cost_usd IS NULL OR cost_usd >= 0",
+            name="ck_work_profile_ai_logs_cost_usd_nonneg",
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -262,7 +278,10 @@ class WorkProfileAILog(Base):
     validation_errors_json = Column(JSONB, nullable=True)
     fallback_used = Column(Boolean, nullable=False, default=False, server_default="false")
     retry_count = Column(SmallInteger, nullable=False, default=0, server_default="0")
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
     tokens_used = Column(Integer, nullable=True)
+    cost_usd = Column(Numeric(12, 6), nullable=True)
     latency_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
