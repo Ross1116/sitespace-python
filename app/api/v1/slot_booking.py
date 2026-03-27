@@ -805,6 +805,12 @@ def update_booking(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.details if e.details is not None else str(e)
         ) from e
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        ) from e
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -884,12 +890,24 @@ def update_booking_status(
         
     except HTTPException:
         raise
-    except Exception:
+    except booking_crud.BookingValidationError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.details if e.details is not None else str(e)
+        ) from e
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        ) from e
+    except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update booking status"
-        )
+        ) from e
 
 
 @router.delete("/{booking_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)

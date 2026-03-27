@@ -37,6 +37,18 @@ from ...schemas.enums import BookingStatus, ProjectStatus, TradeResolutionStatus
 router = APIRouter(prefix="/subcontractors", tags=["Subcontractors"])
 
 
+def _validated_subcontractor_response(subcontractor: Any) -> SubcontractorResponse:
+    if isinstance(subcontractor, dict):
+        payload = dict(subcontractor)
+        if payload.get("trade_resolution_status") is None:
+            payload["trade_resolution_status"] = TradeResolutionStatus.UNKNOWN.value
+        return SubcontractorResponse.model_validate(payload)
+
+    if getattr(subcontractor, "trade_resolution_status", None) is None:
+        setattr(subcontractor, "trade_resolution_status", TradeResolutionStatus.UNKNOWN.value)
+    return SubcontractorResponse.model_validate(subcontractor)
+
+
 # ========================================================
 # LIST & SEARCH ROUTES
 # ========================================================
@@ -89,7 +101,7 @@ def get_my_subcontractors(
         )
     
     return SubcontractorListResponse(
-        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -144,7 +156,7 @@ def search_subcontractors(
     )
     
     return SubcontractorListResponse(
-        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -173,7 +185,7 @@ def get_available_subcontractors(
         end_time=end_time
     )
     
-    return [SubcontractorResponse.model_validate(s) for s in available]
+    return [_validated_subcontractor_response(s) for s in available]
 
 @router.get("/by-trade/{trade_specialty}", response_model=List[SubcontractorResponse])
 def get_subcontractors_by_trade(
@@ -197,7 +209,7 @@ def get_subcontractors_by_trade(
         limit=limit
     )
     
-    return [SubcontractorResponse.model_validate(s) for s in subcontractors]
+    return [_validated_subcontractor_response(s) for s in subcontractors]
 
 @router.get("/", response_model=SubcontractorListResponse)
 def get_all_subcontractors(
@@ -226,7 +238,7 @@ def get_all_subcontractors(
     )
     
     return SubcontractorListResponse(
-        subcontractors=[SubcontractorResponse.model_validate(s) for s in result["subcontractors"]],
+        subcontractors=[_validated_subcontractor_response(s) for s in result["subcontractors"]],
         total=result["total"],
         skip=result["skip"],
         limit=result["limit"],
@@ -346,10 +358,14 @@ def get_subcontractor(
         and current_user.id == subcontractor.id
     ) or current_subcontractor_id == subcontractor.id
     is_admin = isinstance(current_user, User) and current_role_value == UserRole.ADMIN.value
-    has_manager_access = isinstance(current_user, User) and subcontractor_crud.check_manager_can_access_subcontractor(
+    has_manager_access = (
+        isinstance(current_user, User)
+        and current_role_value == UserRole.MANAGER.value
+        and subcontractor_crud.check_manager_can_access_subcontractor(
         db,
         current_user.id,
         subcontractor.id,
+        )
     )
 
     if not (is_self or is_admin or has_manager_access):

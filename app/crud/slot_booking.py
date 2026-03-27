@@ -681,12 +681,16 @@ def update_booking(
     target_start_time = update_data.get('start_time', booking.start_time)
     target_end_time = update_data.get('end_time', booking.end_time)
     target_status = update_data.get('status', booking.status)
-    requires_slot_validation = (
+    status_changed = target_status != booking.status
+    other_changes = (
         target_asset_id != booking.asset_id
         or target_date != booking.booking_date
         or target_start_time != booking.start_time
         or target_end_time != booking.end_time
-        or target_status != booking.status
+    )
+    requires_slot_validation = other_changes or (
+        status_changed
+        and target_status not in {BookingStatus.CANCELLED, BookingStatus.DENIED, BookingStatus.COMPLETED}
     )
 
     if requires_slot_validation:
@@ -810,6 +814,12 @@ def update_booking_status(
     old_status = booking.status
 
     # --- Confirmation guard + auto-deny (atomic on locked rows) ---
+    if new_status == BookingStatus.CONFIRMED and old_status != BookingStatus.CONFIRMED:
+        asset = db.query(Asset).filter(Asset.id == booking_asset_id).first()
+        if not asset:
+            raise BookingValidationError(f"Asset with id {booking_asset_id} not found")
+        _ensure_asset_planning_ready(asset)
+
     if new_status == BookingStatus.CONFIRMED and old_status == BookingStatus.PENDING:
         active_conflict = next(
             (
@@ -819,7 +829,7 @@ def update_booking_status(
             None,
         )
         if active_conflict:
-            raise ValueError(
+            raise BookingValidationError(
                 "Cannot confirm: a confirmed booking already exists for this time slot"
             )
 

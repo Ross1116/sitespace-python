@@ -622,9 +622,13 @@ def get_subcontractors_by_trade(
     limit: int = 100
 ) -> List[Subcontractor]:
     """Get all subcontractors with a specific trade specialty"""
-    query = db.query(Subcontractor).filter(
-        Subcontractor.trade_specialty == trade_specialty
-    )
+    normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+    query = db.query(Subcontractor)
+
+    if normalized_trade_specialty is None:
+        query = query.filter(Subcontractor.trade_specialty.is_(None))
+    else:
+        query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
     
     if is_active is not None:
         query = query.filter(Subcontractor.is_active == is_active)
@@ -651,8 +655,12 @@ def get_available_subcontractors_for_date(
     query = db.query(Subcontractor).filter(Subcontractor.is_active == True)
 
     # Filter by trade if specified
-    if trade_specialty:
-        query = query.filter(Subcontractor.trade_specialty == trade_specialty)
+    if trade_specialty is not None:
+        normalized_trade_specialty = _normalize_explicit_trade_value(trade_specialty)
+        if normalized_trade_specialty is None:
+            query = query.filter(Subcontractor.trade_specialty.is_(None))
+        else:
+            query = query.filter(Subcontractor.trade_specialty == normalized_trade_specialty)
 
     if start_time and end_time:
         req_start = datetime.combine(check_date, start_time)

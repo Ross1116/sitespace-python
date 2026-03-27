@@ -137,7 +137,7 @@ def build_token_response(entity: Union[User, Subcontractor]) -> TokenResponse:
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires_in=settings.access_token_expire_minutes * 60,
         user_id=entity.id,
         role=payload["role"]
     )
@@ -316,7 +316,7 @@ def forgot_password(
         message="If the email exists, password reset instructions have been sent",
         email=forgot_data.email,
         success=True,
-        expires_in_minutes=settings.PASSWORD_RESET_EXPIRE_HOURS * 60
+        expires_in_minutes=settings.password_reset_expire_hours * 60
     )
 
 

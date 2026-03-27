@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     jwt_expiration_ms: int = Field(86400000, validation_alias="JWT_EXPIRATION_MS")
 
     # Token expiration settings
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(30, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS")
-    EMAIL_VERIFICATION_EXPIRE_HOURS: int = Field(24, validation_alias="EMAIL_VERIFICATION_EXPIRE_HOURS")
-    PASSWORD_RESET_EXPIRE_HOURS: int = Field(1, validation_alias="PASSWORD_RESET_EXPIRE_HOURS")
+    access_token_expire_minutes: int = Field(30, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    refresh_token_expire_days: int = Field(7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    email_verification_expire_hours: int = Field(24, validation_alias="EMAIL_VERIFICATION_EXPIRE_HOURS")
+    password_reset_expire_hours: int = Field(1, validation_alias="PASSWORD_RESET_EXPIRE_HOURS")
 
     # App
     secret_key: str = Field("", validation_alias="SECRET_KEY")
@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     @property
     def effective_cors_origins(self) -> list[str]:
+        # Defensive normalization is intentional: settings validators can be bypassed
+        # when default_factory provides a list, and we still append debug origins below.
         origins = [
             normalized
             for origin in self.cors_origins
