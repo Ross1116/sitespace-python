@@ -17,6 +17,24 @@ def test_normalize_completeness_notes_includes_stable_defaults():
     assert notes["excluded_booking_count"] == 0
 
 
+def test_normalize_completeness_notes_parses_strings_safely():
+    notes = _normalize_completeness_notes(
+        {
+            "missing_fields": "start_date, end_date",
+            "notes": None,
+            "ai_quota_exhausted": "false",
+            "classification_ai_suppressed": "1",
+            "work_profile_ai_suppressed": "no",
+        }
+    )
+
+    assert notes["missing_fields"] == ["start_date", "end_date"]
+    assert notes["notes"] == ""
+    assert notes["ai_quota_exhausted"] is False
+    assert notes["classification_ai_suppressed"] is True
+    assert notes["work_profile_ai_suppressed"] is False
+
+
 def test_serialize_mapping_includes_item_id():
     mapping = SimpleNamespace(
         id=uuid4(),

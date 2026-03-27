@@ -10,9 +10,11 @@ GET  /api/programmes/{upload_id}/diff         — diff vs previous version
 
 from __future__ import annotations
 
+import ast
 import asyncio
-import uuid
+import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -108,15 +110,45 @@ def _normalize_completeness_notes(notes: dict | None) -> dict:
     if isinstance(notes, dict):
         normalized.update(notes)
 
-    normalized["missing_fields"] = list(normalized.get("missing_fields") or [])
-    normalized["notes"] = str(normalized.get("notes") or "")
+    def _normalize_missing_fields(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [item.strip() for item in (str(v) for v in value) if item.strip()]
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(raw)
+                except (ValueError, SyntaxError, json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(parsed, list):
+                    return [item.strip() for item in (str(v) for v in parsed) if item.strip()]
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return []
+
+    def _normalize_flag(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value == 1
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes"}:
+                return True
+            if lowered in {"0", "false", "no", ""}:
+                return False
+        return False
+
+    normalized["missing_fields"] = _normalize_missing_fields(normalized.get("missing_fields"))
+    normalized["notes"] = "" if normalized.get("notes") is None else str(normalized.get("notes"))
 
     for key in (
         "ai_quota_exhausted",
         "classification_ai_suppressed",
         "work_profile_ai_suppressed",
     ):
-        normalized[key] = bool(normalized.get(key))
+        normalized[key] = _normalize_flag(normalized.get(key))
 
     for key in (
         "unclassified_mapping_count",

@@ -21,10 +21,12 @@ in a degraded commit rather than a silent failure.
 from __future__ import annotations
 
 import asyncio
+import ast
 import csv
 import hashlib
 import importlib
 import io
+import json
 import logging
 import threading
 import uuid
@@ -84,19 +86,53 @@ _COMPLETENESS_NOTES_DEFAULTS: dict[str, Any] = {
 
 
 def _normalize_completeness_notes(existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _normalize_missing_fields(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(raw)
+                except (ValueError, SyntaxError, json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return []
+
+    def _normalize_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value) == 1
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes"}:
+                return True
+            if normalized in {"0", "false", "no", ""}:
+                return False
+            try:
+                return int(normalized) == 1
+            except ValueError:
+                return False
+        return False
+
     notes = dict(_COMPLETENESS_NOTES_DEFAULTS)
     if isinstance(existing, dict):
         notes.update(existing)
 
-    notes["missing_fields"] = list(notes.get("missing_fields") or [])
-    notes["notes"] = str(notes.get("notes") or "")
+    notes["missing_fields"] = _normalize_missing_fields(notes.get("missing_fields"))
+    notes["notes"] = "" if notes.get("notes") is None else str(notes.get("notes"))
 
     for key in (
         "ai_quota_exhausted",
         "classification_ai_suppressed",
         "work_profile_ai_suppressed",
     ):
-        notes[key] = bool(notes.get(key))
+        notes[key] = _normalize_bool(notes.get(key))
 
     for key in (
         "unclassified_mapping_count",
@@ -584,7 +620,8 @@ async def _run(upload_id: str, db: Session) -> None:
             return
         notes_dict = _normalize_completeness_notes(upload.completeness_notes)
         notes_dict["work_profile_degraded_reasons"] = ["materialization_failed"]
-        notes_dict["work_profile_ai_suppressed"] = True
+        if ai_execution_context.quota_exhausted or ai_execution_context.suppress_ai:
+            notes_dict["work_profile_ai_suppressed"] = True
         notes_dict["ai_quota_exhausted"] = ai_execution_context.quota_exhausted
         upload.completeness_notes = _normalize_completeness_notes(notes_dict)
         upload.status = "degraded"

@@ -12,6 +12,7 @@ class ProgrammeUpload(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "version_number", name="uq_programme_upload_project_version"),
         CheckConstraint("work_days_per_week BETWEEN 1 AND 7", name="ck_programme_uploads_work_days"),
+        CheckConstraint("ai_cost_usd IS NULL OR ai_cost_usd >= 0", name="ck_programme_uploads_ai_cost_usd_nonneg"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

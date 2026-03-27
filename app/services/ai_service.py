@@ -1339,23 +1339,8 @@ async def _classify_assets_real(
             for i in range(0, len(deduped_candidates), BATCH_SIZE)
         ]
 
-        if execution_context is not None:
+        if execution_context is not None and execution_context.suppress_ai:
             batch_results = []
-            for batch in batches:
-                if execution_context.suppress_ai:
-                    break
-                try:
-                    batch_results.append(
-                        await _classify_batch(
-                            batch,
-                            system_prompt,
-                            client,
-                            execution_context=execution_context,
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning("Batch classification task failed: %s", exc)
-                    batch_results.append(exc)
         else:
             batch_tasks = [
                 _classify_batch(
@@ -1381,6 +1366,8 @@ async def _classify_assets_real(
             else:
                 batch_results = []
                 for task in batch_tasks:
+                    if execution_context is not None and execution_context.suppress_ai:
+                        break
                     try:
                         batch_results.append(await task)
                     except Exception as exc:
@@ -1651,7 +1638,7 @@ _KEYWORD_MAP: dict[str, str] = {
 # Generalized deterministic keyword map used by all no-credit fallbacks.
 # This intentionally favors broad, reusable construction patterns over
 # project-specific literals so it remains stable across uploads.
-_KEYWORD_MAP = {
+_KEYWORD_MAP.update({
     "tower crane": "crane",
     "mobile crane": "crane",
     "crawler crane": "crane",
@@ -1708,7 +1695,7 @@ _KEYWORD_MAP = {
     "smooth drum roller": "compactor",
     "compactor": "compactor",
     "roller": "compactor",
-}
+})
 
 
 def _normalize_for_keyword_match(name: str) -> str:

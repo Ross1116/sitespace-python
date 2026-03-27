@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sentry_sdk
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -25,7 +25,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..models.work_profile import ActivityWorkProfile
-from ..schemas.enums import BookingStatus
+from ..schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetTypeResolutionStatus, BookingStatus
 from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
     ANOMALY_DEMAND_SPIKE_THRESHOLD,
@@ -703,9 +703,19 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
 
     demand_by_week_asset, current_mapping_set, low_confidence_buckets, bucket_flags = _compute_demand_by_week_asset(db, latest_upload.id)
     booked_by_week_asset, booking_diagnostics = _compute_booked_by_week_asset(db, project_id, tz)
-    project_assets = db.query(Asset).filter(Asset.project_id == project_id).all()
-    non_planning_ready_asset_count = sum(
-        1 for asset in project_assets if not asset_is_planning_ready(asset)
+    planning_ready_asset_filter = and_(
+        func.coalesce(Asset.type_resolution_status, AssetTypeResolutionStatus.UNKNOWN.value).in_(
+            tuple(ASSET_TYPE_RESOLUTION_READY)
+        ),
+        Asset.canonical_type.isnot(None),
+        Asset.canonical_type != "",
+    )
+    non_planning_ready_asset_count = int(
+        db.query(func.count(Asset.id))
+        .filter(Asset.project_id == project_id)
+        .filter(~planning_ready_asset_filter)
+        .scalar()
+        or 0
     )
 
     all_keys = sorted(set(demand_by_week_asset.keys()) | set(booked_by_week_asset.keys()))
