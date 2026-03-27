@@ -1,8 +1,12 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.api.v1.programmes import _normalize_completeness_notes, _serialize_mapping
+from app.api.v1.programmes import (
+    _build_suggested_booking_dates,
+    _normalize_completeness_notes,
+    _serialize_mapping,
+)
 
 
 def test_normalize_completeness_notes_includes_stable_defaults():
@@ -56,3 +60,44 @@ def test_serialize_mapping_includes_item_id():
     assert response.item_id == item_id
     assert response.activity_name == "Install precast wall panels"
     assert response.asset_type == "crane"
+
+
+def test_build_suggested_booking_dates_includes_daily_gap_and_ignores_cancelled_bookings():
+    week_start = date(2026, 3, 30)
+    linked_bookings = [
+        SimpleNamespace(
+            booking_date=date(2026, 4, 1),
+            start_time=time(8, 0),
+            end_time=time(12, 0),
+            status="confirmed",
+        ),
+        SimpleNamespace(
+            booking_date=date(2026, 4, 1),
+            start_time=time(13, 0),
+            end_time=time(15, 0),
+            status="cancelled",
+        ),
+    ]
+
+    suggestions = _build_suggested_booking_dates(
+        effective_week_start=week_start,
+        distribution_result={
+            "work_dates": [
+                date(2026, 4, 1),
+                date(2026, 4, 2),
+            ],
+            "distribution": [8.0, 2.5],
+        },
+        linked_bookings=linked_bookings,
+        default_start_time="08:00",
+        default_end_time="16:00",
+    )
+
+    assert [entry.date for entry in suggestions] == ["2026-04-01", "2026-04-02"]
+    assert suggestions[0].demand_hours == 8.0
+    assert suggestions[0].booked_hours == 4.0
+    assert suggestions[0].gap_hours == 4.0
+    assert suggestions[0].hours == 4.0
+    assert suggestions[1].demand_hours == 2.5
+    assert suggestions[1].booked_hours == 0.0
+    assert suggestions[1].gap_hours == 2.5

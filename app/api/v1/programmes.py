@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
@@ -39,23 +39,27 @@ from ...models.slot_booking import SlotBooking
 from ...models.stored_file import StoredFile
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
+from ...models.work_profile import ActivityWorkProfile
 from ...schemas.asset import AssetAvailabilityCheck
 from ...schemas.programme import (
     ActivityBookingContextAssetCandidate,
     ActivityBookingGroupSummary,
     ActivityMappingResponse,
+    LinkedBookingGroupSummary,
     MappingCorrectionRequest,
     ProgrammeActivityItem,
     ProgrammeActivityBookingContextResponse,
+    ProgrammeActivitySuggestedBookingDate,
     ProgrammeDiff,
     ProgrammeUploadAccepted,
     ProgrammeUploadStatus,
     ProgrammeVersionSummary,
 )
-from ...schemas.enums import UserRole
+from ...schemas.enums import BookingStatus, UserRole
 from ...utils.storage import storage
 from ...utils.programme_notes import normalize_programme_completeness_notes
 from ...services.metadata_confidence_service import asset_is_planning_ready
+from ...services.lookahead_engine import resolve_activity_distribution
 from ...services.process_programme import preflight_validate, process_programme
 
 logger = logging.getLogger(__name__)
@@ -139,6 +143,94 @@ def _iter_working_dates(start_date: date | None, end_date: date | None, work_day
             days.append(current)
         current += timedelta(days=1)
     return days
+
+
+def _hours_between_times(start_time: time | None, end_time: time | None) -> float:
+    if start_time is None or end_time is None:
+        return 0.0
+    start_dt = datetime.combine(date.min, start_time)
+    end_dt = datetime.combine(date.min, end_time)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+    return max((end_dt - start_dt).total_seconds() / 3600.0, 0.0)
+
+
+def _is_active_linked_booking(booking) -> bool:
+    status = getattr(booking, "status", None)
+    if status is None:
+        return False
+    if hasattr(status, "value"):
+        status_value = str(status.value).strip().lower()
+    else:
+        status_value = str(status).strip().lower()
+    return status_value not in {
+        BookingStatus.CANCELLED.value,
+        BookingStatus.DENIED.value,
+    }
+
+
+def _isoformat_datetime(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _build_suggested_booking_dates(
+    *,
+    effective_week_start: date | None,
+    distribution_result: dict[str, object] | None,
+    linked_bookings: list,
+    default_start_time: str,
+    default_end_time: str,
+) -> list[ProgrammeActivitySuggestedBookingDate]:
+    if effective_week_start is None or distribution_result is None:
+        return []
+
+    week_end = effective_week_start + timedelta(days=6)
+    booked_hours_by_date: dict[str, float] = {}
+    for booking in linked_bookings:
+        if not _is_active_linked_booking(booking):
+            continue
+        booking_date = getattr(booking, "booking_date", None)
+        if booking_date is None:
+            continue
+        booking_date_key = booking_date.isoformat() if hasattr(booking_date, "isoformat") else str(booking_date)
+        booked_hours_by_date[booking_date_key] = round(
+            booked_hours_by_date.get(booking_date_key, 0.0)
+            + _hours_between_times(getattr(booking, "start_time", None), getattr(booking, "end_time", None)),
+            4,
+        )
+
+    suggestions: list[ProgrammeActivitySuggestedBookingDate] = []
+    for working_date, demand_hours in zip(
+        distribution_result["work_dates"],
+        distribution_result["distribution"],
+        strict=True,
+    ):
+        if not isinstance(working_date, date):
+            continue
+        if not (effective_week_start <= working_date <= week_end):
+            continue
+
+        date_key = working_date.isoformat()
+        demand_value = round(float(demand_hours), 4)
+        booked_value = round(booked_hours_by_date.get(date_key, 0.0), 4)
+        gap_value = round(max(demand_value - booked_value, 0.0), 4)
+        suggestions.append(
+            ProgrammeActivitySuggestedBookingDate(
+                date=date_key,
+                start_time=default_start_time,
+                end_time=default_end_time,
+                hours=gap_value,
+                demand_hours=demand_value,
+                booked_hours=booked_value,
+                gap_hours=gap_value,
+            )
+        )
+
+    return suggestions
 
 
 # ---------------------------------------------------------------------------
@@ -523,30 +615,42 @@ def get_activity_booking_context(
     if mapping is None or not mapping.asset_type:
         raise HTTPException(status_code=409, detail="Activity does not have a resolved asset type.")
 
-    normalized_week_start = _normalize_week_start(selected_week_start)
-    working_dates = _iter_working_dates(
-        activity.start_date,
-        activity.end_date,
-        _resolve_work_days_per_week(upload),
+    profile = (
+        db.query(ActivityWorkProfile)
+        .filter(ActivityWorkProfile.activity_id == activity_id)
+        .one_or_none()
     )
 
-    if normalized_week_start is not None:
-        week_end = normalized_week_start + timedelta(days=6)
-        suggested_bulk_dates = [
-            working_date
-            for working_date in working_dates
-            if normalized_week_start <= working_date <= week_end
-        ]
-        default_date = suggested_bulk_dates[0] if suggested_bulk_dates else activity.start_date
-    else:
-        suggested_bulk_dates = []
-        default_date = activity.start_date
-
+    requested_week_start = _normalize_week_start(selected_week_start)
     booking_group = (
         db.query(ActivityBookingGroup)
         .filter(ActivityBookingGroup.programme_activity_id == activity_id)
         .first()
     )
+
+    working_dates = _iter_working_dates(
+        activity.start_date,
+        activity.end_date,
+        _resolve_work_days_per_week(upload),
+    )
+    default_week_start = (
+        requested_week_start
+        or _normalize_week_start(booking_group.selected_week_start if booking_group else None)
+        or _normalize_week_start(activity.start_date)
+    )
+
+    if default_week_start is not None:
+        week_end = default_week_start + timedelta(days=6)
+        suggested_work_dates = [
+            working_date
+            for working_date in working_dates
+            if default_week_start <= working_date <= week_end
+        ]
+        default_date = suggested_work_dates[0] if suggested_work_dates else activity.start_date
+    else:
+        suggested_work_dates = []
+        default_date = activity.start_date
+
     linked_booking_ids = []
     if booking_group is not None:
         linked_booking_ids = [
@@ -563,6 +667,49 @@ def get_activity_booking_context(
         booking_crud.get_booking_detail(db, booking_id)
         for booking_id in linked_booking_ids
     ]
+    linked_bookings = [booking for booking in linked_bookings if booking is not None]
+
+    distribution_result = resolve_activity_distribution(
+        db,
+        mapping=mapping,
+        activity=activity,
+        upload=upload,
+        profile=profile,
+    )
+
+    default_start_time = "08:00"
+    default_end_time = "16:00"
+    suggested_bulk_dates = _build_suggested_booking_dates(
+        effective_week_start=default_week_start,
+        distribution_result=distribution_result,
+        linked_bookings=linked_bookings,
+        default_start_time=default_start_time,
+        default_end_time=default_end_time,
+    )
+
+    total_booked_hours = round(
+        sum(
+            _hours_between_times(
+                getattr(booking, "start_time", None),
+                getattr(booking, "end_time", None),
+            )
+            for booking in linked_bookings
+            if _is_active_linked_booking(booking)
+        ),
+        2,
+    )
+    last_booking_at = max(
+        (
+            value
+            for booking in linked_bookings
+            for value in (
+                _isoformat_datetime(getattr(booking, "updated_at", None)),
+                _isoformat_datetime(getattr(booking, "created_at", None)),
+            )
+            if value
+        ),
+        default=None,
+    )
 
     candidate_assets_query = (
         db.query(Asset)
@@ -613,12 +760,16 @@ def get_activity_booking_context(
         activity_name=activity.name,
         start_date=activity.start_date.isoformat() if activity.start_date else None,
         end_date=activity.end_date.isoformat() if activity.end_date else None,
+        level_name=activity.level_name,
+        zone_name=activity.zone_name,
         expected_asset_type=str(mapping.asset_type).strip().lower(),
-        selected_week_start=normalized_week_start.isoformat() if normalized_week_start else None,
+        selected_week_start=default_week_start.isoformat() if default_week_start else None,
+        default_week_start=default_week_start.isoformat() if default_week_start else None,
         default_date=default_date.isoformat() if default_date else None,
-        default_start_time="08:00",
-        default_end_time="16:00",
-        suggested_bulk_dates=[bulk_date.isoformat() for bulk_date in suggested_bulk_dates],
+        default_booking_date=default_date.isoformat() if default_date else None,
+        default_start_time=default_start_time,
+        default_end_time=default_end_time,
+        suggested_bulk_dates=suggested_bulk_dates,
         booking_group=(
             ActivityBookingGroupSummary(
                 id=booking_group.id,
@@ -636,7 +787,26 @@ def get_activity_booking_context(
             if booking_group
             else None
         ),
-        linked_bookings=[booking for booking in linked_bookings if booking is not None],
+        linked_booking_group=(
+            LinkedBookingGroupSummary(
+                booking_group_id=booking_group.id,
+                programme_activity_id=booking_group.programme_activity_id,
+                expected_asset_type=booking_group.expected_asset_type,
+                selected_week_start=(
+                    booking_group.selected_week_start.isoformat()
+                    if booking_group.selected_week_start
+                    else None
+                ),
+                origin_source=booking_group.origin_source,
+                is_modified=booking_group.is_modified,
+                booking_count=len(linked_booking_ids),
+                total_booked_hours=total_booked_hours,
+                last_booking_at=last_booking_at,
+            )
+            if booking_group
+            else None
+        ),
+        linked_bookings=linked_bookings,
         candidate_assets=candidate_assets,
     )
 
