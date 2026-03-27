@@ -195,9 +195,9 @@ class ActivityBookingGroup(Base):
     selected_week_start = Column(Date, nullable=True)
     origin_source = Column(String(20), nullable=False)
     is_modified = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Cross-actor snapshot ID (user or subcontractor); intentionally no FK.
     created_by = Column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -211,7 +211,6 @@ class ActivityBookingGroup(Base):
 
     project = relationship("SiteProject", foreign_keys=[project_id])
     activity = relationship("ProgrammeActivity", foreign_keys=[programme_activity_id])
-    creator = relationship("User", foreign_keys=[created_by])
     bookings = relationship("SlotBooking", back_populates="booking_group")
 
     def __repr__(self) -> str:

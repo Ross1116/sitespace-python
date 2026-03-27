@@ -40,7 +40,6 @@ def upgrade() -> None:
             "origin_source IN ('activity_row', 'lookahead_week_row')",
             name="ck_activity_booking_groups_origin_source",
         ),
-        sa.ForeignKeyConstraint(["created_by"], ["users.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["programme_activity_id"], ["programme_activities.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["project_id"], ["site_projects.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),

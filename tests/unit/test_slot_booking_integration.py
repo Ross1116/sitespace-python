@@ -1,6 +1,6 @@
 from datetime import date, datetime, time, timezone
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import uuid4, uuid4 as make_uuid
 from unittest.mock import MagicMock
 
 from app.crud.slot_booking import (
@@ -40,6 +40,35 @@ def test_mark_matching_lookahead_notifications_acted_marks_matching_rows():
     assert notification.status == "acted"
     assert notification.booking_id == booking.id
     assert notification.acted_at is not None
+
+
+def test_mark_matching_lookahead_notifications_acted_coerces_non_string_canonical_type():
+    booking = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        subcontractor_id=uuid4(),
+        booking_date=date(2026, 3, 30),
+        status=BookingStatus.CONFIRMED,
+        asset_id=uuid4(),
+    )
+    asset = SimpleNamespace(canonical_type=make_uuid(), type_resolution_status="confirmed")
+    notification = SimpleNamespace(
+        id=uuid4(),
+        status="pending",
+        acted_at=None,
+        booking_id=None,
+    )
+
+    query = MagicMock()
+    query.filter.return_value = query
+    query.all.return_value = [notification]
+    db = MagicMock()
+    db.query.return_value = query
+
+    acted_ids = _mark_matching_lookahead_notifications_acted(db, booking, asset=asset)
+
+    assert acted_ids == [notification.id]
+    assert notification.status == "acted"
 
 
 def test_mark_matching_lookahead_notifications_acted_skips_non_confirmed_bookings():
@@ -163,3 +192,27 @@ def test_mark_booking_group_modified_if_needed_marks_date_drift():
     )
 
     assert booking_group.is_modified is True
+
+
+def test_mark_booking_group_modified_if_needed_handles_non_string_asset_types():
+    booking_group = SimpleNamespace(expected_asset_type=make_uuid(), is_modified=False)
+    subcontractor_id = uuid4()
+    booking = SimpleNamespace(
+        booking_date=date(2026, 3, 30),
+        start_time=time(7, 0),
+        end_time=time(11, 0),
+        subcontractor_id=subcontractor_id,
+    )
+
+    _mark_booking_group_modified_if_needed(
+        booking_group,
+        booking=booking,
+        previous_date=booking.booking_date,
+        previous_start_time=booking.start_time,
+        previous_end_time=booking.end_time,
+        previous_subcontractor_id=subcontractor_id,
+        previous_asset_type=booking_group.expected_asset_type,
+        current_asset_type=booking_group.expected_asset_type,
+    )
+
+    assert booking_group.is_modified is False

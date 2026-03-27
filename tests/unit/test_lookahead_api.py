@@ -80,6 +80,7 @@ def test_get_fresh_snapshot_recalculates_when_booking_is_newer(monkeypatch):
     stale_snapshot = SimpleNamespace(
         programme_upload_id=degraded_upload.id,
         created_at=datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
+        data={"generated_at": "2026-03-27T08:00:00+00:00"},
     )
 
     def _first_result(filters):
@@ -108,6 +109,42 @@ def test_get_fresh_snapshot_recalculates_when_booking_is_newer(monkeypatch):
 
     assert snapshot is refreshed_snapshot
     calc_mock.assert_called_once_with(project_id, db)
+
+
+def test_get_fresh_snapshot_uses_generated_at_to_avoid_repeated_recalculation(monkeypatch):
+    project_id = uuid4()
+    degraded_upload = SimpleNamespace(id=uuid4())
+    refreshed_snapshot = SimpleNamespace(
+        programme_upload_id=degraded_upload.id,
+        created_at=datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
+        data={"generated_at": "2026-03-27T10:00:00+00:00"},
+    )
+
+    def _first_result(filters):
+        has_project_filter = ("eq", "project_id", project_id) in filters
+        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
+        if has_project_filter and has_status_filter:
+            return degraded_upload
+        return None
+
+    db = MagicMock()
+    db.query.return_value = _FakeQuery(_first_result)
+
+    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: refreshed_snapshot)
+    monkeypatch.setattr(
+        lookahead,
+        "get_latest_booking_update_for_project",
+        lambda project_id, db: datetime(2026, 3, 27, 9, 0, tzinfo=timezone.utc),
+    )
+
+    calc_mock = MagicMock()
+    monkeypatch.setattr(lookahead, "calculate_lookahead_for_project", calc_mock)
+
+    snapshot = lookahead._get_fresh_snapshot(project_id, db)
+
+    assert snapshot is refreshed_snapshot
+    calc_mock.assert_not_called()
 
 
 def test_get_lookahead_empty_state_mentions_processed_programme(monkeypatch):
@@ -176,3 +213,26 @@ def test_get_lookahead_week_activities_normalizes_week_start(monkeypatch):
         asset_type="Crane",
         db=db,
     )
+
+
+def test_get_lookahead_week_activities_empty_state_normalizes_week_start(monkeypatch):
+    project_id = uuid4()
+    db = MagicMock()
+    user = SimpleNamespace(id=uuid4(), role="manager")
+    project = SimpleNamespace(managers=[user])
+
+    monkeypatch.setattr(lookahead, "_check_project_exists", lambda project_id, db: project)
+    monkeypatch.setattr(lookahead, "_check_manager_project_access", lambda project, current_user: None)
+    monkeypatch.setattr(lookahead, "_get_fresh_snapshot", lambda project_id, db: None)
+
+    response = lookahead.get_lookahead_week_activities(
+        project_id,
+        week_start=date(2026, 4, 1),
+        asset_type="Crane",
+        db=db,
+        _=user,
+    )
+
+    assert response.week_start == "2026-03-30"
+    assert response.asset_type == "crane"
+    assert response.activities == []

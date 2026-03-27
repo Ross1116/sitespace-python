@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -54,6 +54,27 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
 
+def _snapshot_refreshed_at(snapshot) -> datetime | None:
+    if snapshot is None:
+        return None
+
+    generated_at = None
+    if getattr(snapshot, "data", None):
+        generated_at = snapshot.data.get("generated_at")
+    if isinstance(generated_at, str):
+        try:
+            parsed = datetime.fromisoformat(generated_at)
+        except ValueError:
+            parsed = None
+        else:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed is not None:
+            return parsed
+
+    return getattr(snapshot, "created_at", None)
+
+
 def _get_fresh_snapshot(project_id: UUID, db: Session):
     """Return the current snapshot, recalculating if it is stale relative to the latest processed upload."""
     from ...models.programme import ProgrammeUpload
@@ -71,11 +92,11 @@ def _get_fresh_snapshot(project_id: UUID, db: Session):
         return None
     snapshot = get_latest_snapshot(project_id, db)
     latest_booking_update = get_latest_booking_update_for_project(project_id, db)
+    snapshot_refreshed_at = _snapshot_refreshed_at(snapshot)
     booking_is_newer = bool(
-        snapshot
-        and snapshot.created_at
+        snapshot_refreshed_at
         and latest_booking_update
-        and latest_booking_update > snapshot.created_at
+        and latest_booking_update > snapshot_refreshed_at
     )
     if not snapshot or snapshot.programme_upload_id != latest_upload.id or booking_is_newer:
         snapshot = calculate_lookahead_for_project(project_id, db)
@@ -225,17 +246,17 @@ def get_lookahead_week_activities(
 ) -> LookaheadActivitiesResponse:
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
+    normalized_week_start = week_start - timedelta(days=week_start.weekday())
 
     snapshot = _get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadActivitiesResponse(
             project_id=project_id,
-            week_start=(week_start.isoformat()),
+            week_start=normalized_week_start.isoformat(),
             asset_type=asset_type.strip().lower(),
             activities=[],
         )
 
-    normalized_week_start = week_start - timedelta(days=week_start.weekday())
     candidates = get_weekly_activity_candidates(
         project_id=project_id,
         week_start=normalized_week_start,

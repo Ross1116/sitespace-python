@@ -233,6 +233,8 @@ def update_asset(
             )
 
         check_asset_view_access(db, asset.project_id, current_user)
+        previous_status = asset.status
+        previous_canonical_type = asset.canonical_type
 
         try:
             actor_role = (
@@ -254,7 +256,9 @@ def update_asset(
             actor_role=actor_role,
             confirm_booking_denials=confirm_booking_denials,
         )
-        if confirm_booking_denials:
+        canonical_type_changed = updated_asset.canonical_type != previous_canonical_type
+        status_changed = updated_asset.status != previous_status
+        if confirm_booking_denials or canonical_type_changed or status_changed:
             refresh_lookahead_after_project_change(updated_asset.project_id)
         return AssetResponse.model_validate(updated_asset)
     except asset_crud.AssetStatusChangeConfirmationRequired as e:
@@ -325,10 +329,13 @@ def transfer_asset(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
-        if transfer.update_bookings and old_project_id:
-            refresh_lookahead_after_project_change(old_project_id)
-            if transferred_asset.project_id != old_project_id:
-                refresh_lookahead_after_project_change(transferred_asset.project_id)
+        projects_to_refresh = {
+            project_id
+            for project_id in [old_project_id, transferred_asset.project_id]
+            if project_id is not None
+        }
+        for project_id in projects_to_refresh:
+            refresh_lookahead_after_project_change(project_id)
         return AssetResponse.model_validate(transferred_asset)
     except HTTPException:
         raise

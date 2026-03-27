@@ -37,6 +37,7 @@ from ..schemas.slot_booking import (
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
 from .asset import sync_maintenance_status
 from ..services.metadata_confidence_service import asset_is_planning_ready
+from ..services.lookahead_engine import build_eligible_activity_mapping_filters
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,13 @@ def _normalize_selected_week_start(selected_week_start: Optional[date]) -> Optio
     return selected_week_start - timedelta(days=selected_week_start.weekday())
 
 
+def _normalize_asset_type_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
 def _get_activity_expected_asset_type(
     db: Session,
     programme_activity_id: UUID,
@@ -113,9 +121,10 @@ def _get_activity_expected_asset_type(
 
     mapping = (
         db.query(ActivityAssetMapping)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .filter(
             ActivityAssetMapping.programme_activity_id == programme_activity_id,
-            ActivityAssetMapping.asset_type.isnot(None),
+            *build_eligible_activity_mapping_filters(),
         )
         .order_by(
             ActivityAssetMapping.manually_corrected.desc(),
@@ -127,7 +136,7 @@ def _get_activity_expected_asset_type(
     if mapping is None or not mapping.asset_type:
         raise BookingValidationError("Programme activity does not have a resolved asset type")
 
-    return activity, upload, str(mapping.asset_type).strip().lower()
+    return activity, upload, _normalize_asset_type_value(mapping.asset_type) or ""
 
 
 def _get_or_create_activity_booking_group(
@@ -182,12 +191,22 @@ def _mark_booking_group_modified_if_needed(
     if booking_group is None or booking_group.is_modified:
         return
 
-    expected_asset_type = (booking_group.expected_asset_type or "").strip().lower() or None
+    expected_asset_type = _normalize_asset_type_value(booking_group.expected_asset_type)
     date_changed = booking.booking_date != previous_date
     time_changed = booking.start_time != previous_start_time or booking.end_time != previous_end_time
     subcontractor_changed = booking.subcontractor_id != previous_subcontractor_id
-    type_drift = bool(current_asset_type and expected_asset_type and current_asset_type != expected_asset_type)
-    previous_type_drift = bool(previous_asset_type and expected_asset_type and previous_asset_type != expected_asset_type)
+    normalized_previous_asset_type = _normalize_asset_type_value(previous_asset_type)
+    normalized_current_asset_type = _normalize_asset_type_value(current_asset_type)
+    type_drift = bool(
+        normalized_current_asset_type
+        and expected_asset_type
+        and normalized_current_asset_type != expected_asset_type
+    )
+    previous_type_drift = bool(
+        normalized_previous_asset_type
+        and expected_asset_type
+        and normalized_previous_asset_type != expected_asset_type
+    )
 
     if date_changed or time_changed or subcontractor_changed or (type_drift and not previous_type_drift):
         booking_group.is_modified = True
@@ -207,7 +226,7 @@ def _mark_matching_lookahead_notifications_acted(
     if resolved_asset is None or not asset_is_planning_ready(resolved_asset):
         return []
 
-    asset_type = (resolved_asset.canonical_type or "").strip().lower()
+    asset_type = _normalize_asset_type_value(resolved_asset.canonical_type)
     if not asset_type:
         return []
 
@@ -561,7 +580,8 @@ def create_booking(
     if (
         booking_group is not None
         and booking_group.expected_asset_type
-        and (asset.canonical_type or "").strip().lower() != (booking_group.expected_asset_type or "").strip().lower()
+        and _normalize_asset_type_value(asset.canonical_type)
+        != _normalize_asset_type_value(booking_group.expected_asset_type)
     ):
         booking_group.is_modified = True
 
@@ -730,7 +750,8 @@ def create_bulk_bookings(
             if (
                 booking_group is not None
                 and booking_group.expected_asset_type
-                and (asset.canonical_type or "").strip().lower() != (booking_group.expected_asset_type or "").strip().lower()
+                and _normalize_asset_type_value(asset.canonical_type)
+                != _normalize_asset_type_value(booking_group.expected_asset_type)
             ):
                 booking_group.is_modified = True
 
@@ -913,8 +934,8 @@ def update_booking(
     target_end_time = update_data.get('end_time', booking.end_time)
     previous_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
     previous_asset_type = (
-        (previous_asset.canonical_type or "").strip().lower()
-        if previous_asset and previous_asset.canonical_type
+        _normalize_asset_type_value(previous_asset.canonical_type)
+        if previous_asset
         else None
     )
     target_status = update_data.get('status', booking.status)
@@ -1011,8 +1032,8 @@ def update_booking(
         )
     current_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
     current_asset_type = (
-        (current_asset.canonical_type or "").strip().lower()
-        if current_asset and current_asset.canonical_type
+        _normalize_asset_type_value(current_asset.canonical_type)
+        if current_asset
         else None
     )
     _mark_booking_group_modified_if_needed(

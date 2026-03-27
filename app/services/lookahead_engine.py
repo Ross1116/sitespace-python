@@ -81,6 +81,33 @@ def _demand_level(hours: float) -> str:
     return "critical"
 
 
+def build_eligible_activity_mapping_filters() -> tuple[object, ...]:
+    """Return the shared eligibility predicates for lookahead-backed mappings.
+
+    Callers must join both ProgrammeActivity and ProgrammeUpload before applying
+    these predicates so the row-completeness filters match lookahead exactly.
+    """
+    return (
+        ActivityAssetMapping.asset_type.isnot(None),
+        or_(
+            ActivityAssetMapping.auto_committed.is_(True),
+            and_(
+                ActivityAssetMapping.manually_corrected.is_(True),
+                ActivityAssetMapping.source == "manual",
+                ActivityAssetMapping.auto_committed.is_(False),
+            ),
+        ),
+        or_(
+            ActivityAssetMapping.confidence.in_(["high", "medium"]),
+            ActivityAssetMapping.manually_corrected.is_(True),
+        ),
+        or_(
+            ProgrammeActivity.pct_complete.is_(None),
+            ProgrammeActivity.pct_complete < 100,
+        ),
+    )
+
+
 def _working_days_in_range(start: date, end: date, work_days_per_week: int) -> int:
     """Count working days (inclusive) in [start, end] for a given work_days_per_week.
 
@@ -936,22 +963,7 @@ def get_weekly_activity_candidates(
         .filter(
             ProgrammeUpload.id == latest_upload.id,
             ActivityAssetMapping.asset_type == normalized_asset_type,
-            or_(
-                ActivityAssetMapping.auto_committed.is_(True),
-                and_(
-                    ActivityAssetMapping.manually_corrected.is_(True),
-                    ActivityAssetMapping.source == "manual",
-                    ActivityAssetMapping.auto_committed.is_(False),
-                ),
-            ),
-            or_(
-                ActivityAssetMapping.confidence.in_(["high", "medium"]),
-                ActivityAssetMapping.manually_corrected.is_(True),
-            ),
-            or_(
-                ProgrammeActivity.pct_complete.is_(None),
-                ProgrammeActivity.pct_complete < 100,
-            ),
+            *build_eligible_activity_mapping_filters(),
         )
         .all()
     )

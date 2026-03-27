@@ -11,6 +11,12 @@ from .asset import AssetBriefResponse
 from .site_project import SiteProjectBriefResponse
 
 
+def _normalize_to_monday(value: Optional[date]) -> Optional[date]:
+    if value is None:
+        return None
+    return value - timedelta(days=value.weekday())
+
+
 class TimeSlot(BaseSchema):
     """Time slot validation"""
     start_time: time
@@ -62,9 +68,7 @@ class BookingCreate(BookingBase):
     @field_validator("selected_week_start")
     @classmethod
     def normalize_selected_week_start(cls, value: Optional[date]) -> Optional[date]:
-        if value is None:
-            return None
-        return value - timedelta(days=value.weekday())
+        return _normalize_to_monday(value)
 
 
 class BookingUpdate(BaseSchema):
@@ -269,9 +273,7 @@ class BulkBookingCreate(BaseSchema):
     @field_validator("selected_week_start")
     @classmethod
     def normalize_selected_week_start(cls, value: Optional[date]) -> Optional[date]:
-        if value is None:
-            return None
-        return value - timedelta(days=value.weekday())
+        return _normalize_to_monday(value)
     
     @model_validator(mode='after')
     def validate_time_slot(self) -> 'BulkBookingCreate':
