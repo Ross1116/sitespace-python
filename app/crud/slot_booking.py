@@ -1,6 +1,6 @@
 # crud/slot_booking.py
 import warnings
-from typing import Optional, List, Dict, Any, Tuple, Union
+from typing import Optional, List, Dict, Any, Set, Tuple, Union
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import and_, or_, func, case
@@ -413,7 +413,7 @@ def create_bulk_bookings(
             if a:
                 sync_maintenance_status(db, a)
 
-        seen_booking_pairs: set[tuple[UUID, date]] = set()
+        seen_booking_pairs: Set[Tuple[UUID, date]] = set()
 
         for asset_id in bulk_data.asset_ids:
             asset = db.query(Asset).filter(Asset.id == asset_id).first()

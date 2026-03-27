@@ -45,7 +45,7 @@ def _validated_subcontractor_response(subcontractor: Any) -> SubcontractorRespon
         return SubcontractorResponse.model_validate(payload)
 
     if getattr(subcontractor, "trade_resolution_status", None) is None:
-        setattr(subcontractor, "trade_resolution_status", TradeResolutionStatus.UNKNOWN.value)
+        subcontractor.trade_resolution_status = TradeResolutionStatus.UNKNOWN.value
     return SubcontractorResponse.model_validate(subcontractor)
 
 
@@ -641,7 +641,7 @@ def get_subcontractor_projects(
     
     projects = []
     for project in subcontractor.assigned_projects[skip:skip + limit]:
-        if is_active is not None and (project.status == "active") != is_active:
+        if is_active is not None and (project.status == ProjectStatus.ACTIVE.value) != is_active:
             continue
             
         projects.append(ProjectAssignmentResponse(
@@ -650,7 +650,7 @@ def get_subcontractor_projects(
             project_location=project.location,
             assigned_date=project.created_at.date(),
             hourly_rate=None,
-            is_active=project.status == "active"
+            is_active=project.status == ProjectStatus.ACTIVE.value
         ))
     
     return projects

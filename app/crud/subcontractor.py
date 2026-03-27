@@ -190,6 +190,7 @@ def update_subcontractor(
         update_data["email"] = _normalize_email(email)
 
     normalized_email = update_data.get("email", db_subcontractor.email)
+    current_status = db_subcontractor.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value
 
     if "trade_specialty" in update_data:
         trade_value = update_data["trade_specialty"]
@@ -215,9 +216,7 @@ def update_subcontractor(
         update_data["trade_resolution_status"] = resolution.status
         update_data["trade_inference_source"] = resolution.source
         update_data["trade_inference_confidence"] = resolution.confidence
-    elif any(field in update_data for field in ("company_name", "email")) and (
-        db_subcontractor.trade_resolution_status or TradeResolutionStatus.UNKNOWN.value
-    ) != TradeResolutionStatus.CONFIRMED.value:
+    elif any(field in update_data for field in ("company_name", "email")) and current_status != TradeResolutionStatus.CONFIRMED.value:
         resolution = infer_subcontractor_trade_resolution(
             company_name=update_data.get("company_name", db_subcontractor.company_name),
             email=normalized_email,

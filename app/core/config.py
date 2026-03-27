@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     jwt_expiration_ms: int = Field(86400000, validation_alias="JWT_EXPIRATION_MS")
 
     # Token expiration settings
-    access_token_expire_minutes: int = Field(30, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    refresh_token_expire_days: int = Field(7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS")
-    email_verification_expire_hours: int = Field(24, validation_alias="EMAIL_VERIFICATION_EXPIRE_HOURS")
-    password_reset_expire_hours: int = Field(1, validation_alias="PASSWORD_RESET_EXPIRE_HOURS")
+    access_token_expire_minutes: int = Field(30, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES", gt=0)
+    refresh_token_expire_days: int = Field(7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS", gt=0)
+    email_verification_expire_hours: int = Field(24, validation_alias="EMAIL_VERIFICATION_EXPIRE_HOURS", gt=0)
+    password_reset_expire_hours: int = Field(1, validation_alias="PASSWORD_RESET_EXPIRE_HOURS", gt=0)
 
     # App
     secret_key: str = Field("", validation_alias="SECRET_KEY")
@@ -57,6 +57,14 @@ class Settings(BaseSettings):
                 if (normalized := origin.strip().rstrip("/"))
             ]
         return value
+
+    @model_validator(mode="after")
+    def validate_production_database_url(self) -> "Settings":
+        if self.IS_PRODUCTION and "sqlite" in self.database_url.lower():
+            raise ValueError(
+                "Configuration error: DATABASE_URL must not use SQLite when IS_PRODUCTION=True."
+            )
+        return self
 
     @property
     def effective_cors_origins(self) -> list[str]:

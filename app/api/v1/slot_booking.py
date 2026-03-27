@@ -281,7 +281,7 @@ def create_booking(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=e.details if e.details is not None else str(e)
         ) from e
     except ValueError as e:
         db.rollback()
