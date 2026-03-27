@@ -9,6 +9,13 @@ from sqlalchemy.sql.elements import ColumnElement
 from collections import defaultdict
 
 from ..core.constants import BOOKING_MIN_SLOT_DURATION_MINUTES
+from ..models.lookahead import Notification
+from ..models.programme import (
+    ActivityAssetMapping,
+    ActivityBookingGroup,
+    ProgrammeActivity,
+    ProgrammeUpload,
+)
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
 from ..models.user import User
@@ -73,6 +80,162 @@ def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: U
 _ACTIVE_STATUSES = [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED]
 
 
+def _start_of_booking_week(booking_date: date) -> date:
+    return booking_date - timedelta(days=booking_date.weekday())
+
+
+def _normalize_selected_week_start(selected_week_start: Optional[date]) -> Optional[date]:
+    if selected_week_start is None:
+        return None
+    return selected_week_start - timedelta(days=selected_week_start.weekday())
+
+
+def _get_activity_expected_asset_type(
+    db: Session,
+    programme_activity_id: UUID,
+) -> tuple[ProgrammeActivity, ProgrammeUpload, str]:
+    activity = (
+        db.query(ProgrammeActivity)
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .filter(ProgrammeActivity.id == programme_activity_id)
+        .first()
+    )
+    if activity is None:
+        raise BookingValidationError("Programme activity not found")
+
+    upload = (
+        db.query(ProgrammeUpload)
+        .filter(ProgrammeUpload.id == activity.programme_upload_id)
+        .first()
+    )
+    if upload is None or upload.status not in {"committed", "degraded"}:
+        raise BookingValidationError("Programme activity is not available for booking")
+
+    mapping = (
+        db.query(ActivityAssetMapping)
+        .filter(
+            ActivityAssetMapping.programme_activity_id == programme_activity_id,
+            ActivityAssetMapping.asset_type.isnot(None),
+        )
+        .order_by(
+            ActivityAssetMapping.manually_corrected.desc(),
+            ActivityAssetMapping.corrected_at.desc().nulls_last(),
+            ActivityAssetMapping.created_at.desc(),
+        )
+        .first()
+    )
+    if mapping is None or not mapping.asset_type:
+        raise BookingValidationError("Programme activity does not have a resolved asset type")
+
+    return activity, upload, str(mapping.asset_type).strip().lower()
+
+
+def _get_or_create_activity_booking_group(
+    db: Session,
+    *,
+    project_id: UUID,
+    programme_activity_id: UUID,
+    selected_week_start: Optional[date],
+    created_by_id: UUID,
+) -> ActivityBookingGroup:
+    activity, upload, expected_asset_type = _get_activity_expected_asset_type(db, programme_activity_id)
+    if upload.project_id != project_id:
+        raise BookingValidationError("Programme activity does not belong to this project")
+
+    booking_group = (
+        db.query(ActivityBookingGroup)
+        .filter(ActivityBookingGroup.programme_activity_id == programme_activity_id)
+        .first()
+    )
+    if booking_group is None:
+        booking_group = ActivityBookingGroup(
+            project_id=project_id,
+            programme_activity_id=programme_activity_id,
+            expected_asset_type=expected_asset_type,
+            selected_week_start=_normalize_selected_week_start(selected_week_start),
+            origin_source="lookahead_week_row" if selected_week_start else "activity_row",
+            created_by=created_by_id,
+        )
+        db.add(booking_group)
+        db.flush()
+    else:
+        booking_group.project_id = project_id
+        booking_group.expected_asset_type = expected_asset_type
+        if booking_group.selected_week_start is None and selected_week_start is not None:
+            booking_group.selected_week_start = _normalize_selected_week_start(selected_week_start)
+        db.flush()
+
+    return booking_group
+
+
+def _mark_booking_group_modified_if_needed(
+    booking_group: ActivityBookingGroup | None,
+    *,
+    booking: SlotBooking,
+    previous_date: date,
+    previous_start_time: time,
+    previous_end_time: time,
+    previous_subcontractor_id: UUID | None,
+    previous_asset_type: str | None,
+    current_asset_type: str | None,
+) -> None:
+    if booking_group is None or booking_group.is_modified:
+        return
+
+    expected_asset_type = (booking_group.expected_asset_type or "").strip().lower() or None
+    date_changed = booking.booking_date != previous_date
+    time_changed = booking.start_time != previous_start_time or booking.end_time != previous_end_time
+    subcontractor_changed = booking.subcontractor_id != previous_subcontractor_id
+    type_drift = bool(current_asset_type and expected_asset_type and current_asset_type != expected_asset_type)
+    previous_type_drift = bool(previous_asset_type and expected_asset_type and previous_asset_type != expected_asset_type)
+
+    if date_changed or time_changed or subcontractor_changed or (type_drift and not previous_type_drift):
+        booking_group.is_modified = True
+
+
+def _mark_matching_lookahead_notifications_acted(
+    db: Session,
+    booking: SlotBooking,
+    *,
+    asset: Asset | None = None,
+) -> List[UUID]:
+    """Mark unresolved lookahead notifications as acted when a booking fulfills them."""
+    if booking.status != BookingStatus.CONFIRMED or booking.subcontractor_id is None:
+        return []
+
+    resolved_asset = asset or db.query(Asset).filter(Asset.id == booking.asset_id).first()
+    if resolved_asset is None or not asset_is_planning_ready(resolved_asset):
+        return []
+
+    asset_type = (resolved_asset.canonical_type or "").strip().lower()
+    if not asset_type:
+        return []
+
+    notifications = (
+        db.query(Notification)
+        .filter(
+            Notification.project_id == booking.project_id,
+            Notification.sub_id == booking.subcontractor_id,
+            Notification.asset_type == asset_type,
+            Notification.week_start == _start_of_booking_week(booking.booking_date),
+            Notification.trigger_type == "lookahead",
+            Notification.status.in_(["pending", "sent"]),
+        )
+        .all()
+    )
+
+    if not notifications:
+        return []
+
+    now = datetime.now(timezone.utc)
+    for notification in notifications:
+        notification.status = "acted"
+        notification.acted_at = now
+        notification.booking_id = booking.id
+
+    return [notification.id for notification in notifications]
+
+
 # ---------------------------------------------------------------------------
 # Response builder helpers
 # ---------------------------------------------------------------------------
@@ -88,16 +251,24 @@ def _build_booking_detail_response(
     ``competing_pending_count`` is only relevant for the single-booking detail
     view and defaults to 0 for list/calendar contexts.
     """
+    booking_group = getattr(booking, "booking_group", None)
+    group_activity = getattr(booking_group, "activity", None) if booking_group else None
     return BookingDetailResponse(
         id=booking.id,
         project_id=booking.project_id,
         manager_id=booking.manager_id,
         subcontractor_id=booking.subcontractor_id,
         asset_id=booking.asset_id,
+        booking_group_id=booking_group.id if booking_group else None,
+        programme_activity_id=group_activity.id if group_activity else None,
+        programme_activity_name=group_activity.name if group_activity else None,
+        expected_asset_type=booking_group.expected_asset_type if booking_group else None,
+        is_modified=bool(booking_group.is_modified) if booking_group else False,
         booking_date=booking.booking_date,
         start_time=booking.start_time,
         end_time=booking.end_time,
         status=booking.status,
+        source=booking.source,
         purpose=booking.purpose,
         notes=booking.notes,
         created_at=booking.created_at,
@@ -295,7 +466,9 @@ def create_booking(
     booking_data: BookingCreate,
     created_by_id: UUID,
     created_by_role: UserRole,
-    comment: Optional[str] = None
+    comment: Optional[str] = None,
+    source: Optional[str] = None,
+    booking_group_id: Optional[UUID] = None,
 ) -> SlotBooking:
     """
     Create a new booking in the database with role-based status.
@@ -335,18 +508,40 @@ def create_booking(
         project_id=booking_data.project_id,
     )
 
+    booking_group: ActivityBookingGroup | None = None
+    if booking_group_id is not None:
+        booking_group = (
+            db.query(ActivityBookingGroup)
+            .filter(ActivityBookingGroup.id == booking_group_id)
+            .first()
+        )
+        if booking_group is None:
+            raise BookingValidationError("Activity booking group not found")
+        if booking_group.project_id != booking_data.project_id:
+            raise BookingValidationError("Activity booking group does not belong to this project")
+    elif booking_data.programme_activity_id is not None:
+        booking_group = _get_or_create_activity_booking_group(
+            db,
+            project_id=booking_data.project_id,
+            programme_activity_id=booking_data.programme_activity_id,
+            selected_week_start=booking_data.selected_week_start,
+            created_by_id=created_by_id,
+        )
+
     # Create the booking
     db_booking = SlotBooking(
         project_id=booking_data.project_id,
         manager_id=manager_id,
         subcontractor_id=subcontractor_id,
         asset_id=booking_data.asset_id,
+        booking_group_id=booking_group.id if booking_group else None,
         booking_date=booking_data.booking_date,
         start_time=booking_data.start_time,
         end_time=booking_data.end_time,
         purpose=booking_data.purpose,
         notes=booking_data.notes,
-        status=booking_status
+        status=booking_status,
+        source=(source or "manual").strip().lower(),
     )
 
     db.add(db_booking)
@@ -363,6 +558,13 @@ def create_booking(
         comment=comment
     )
 
+    if (
+        booking_group is not None
+        and booking_group.expected_asset_type
+        and (asset.canonical_type or "").strip().lower() != (booking_group.expected_asset_type or "").strip().lower()
+    ):
+        booking_group.is_modified = True
+
     # If this booking is confirmed on creation (manager/admin), auto-deny
     # overlapping pending requests for the same slot.
     _auto_deny_competing_pending_bookings(
@@ -371,7 +573,8 @@ def create_booking(
         actor_id=created_by_id,
         actor_role=created_by_role,
     )
-    
+    _mark_matching_lookahead_notifications_acted(db, db_booking, asset=asset)
+
     db.commit()
     db.refresh(db_booking)
     
@@ -405,6 +608,16 @@ def create_bulk_bookings(
         provided_subcontractor_id=bulk_data.subcontractor_id,
         project_id=bulk_data.project_id,
     )
+
+    booking_group: ActivityBookingGroup | None = None
+    if bulk_data.programme_activity_id is not None:
+        booking_group = _get_or_create_activity_booking_group(
+            db,
+            project_id=bulk_data.project_id,
+            programme_activity_id=bulk_data.programme_activity_id,
+            selected_week_start=bulk_data.selected_week_start,
+            created_by_id=created_by_id,
+        )
     
     try:
         # Resolve maintenance status for all assets upfront (before any bookings are flushed)
@@ -485,17 +698,20 @@ def create_bulk_bookings(
             )
 
         for asset_id, booking_date in booking_requests:
+            asset = db.query(Asset).filter(Asset.id == asset_id).first()
             db_booking = SlotBooking(
                 project_id=bulk_data.project_id,
                 manager_id=manager_id,
                 subcontractor_id=subcontractor_id,
                 asset_id=asset_id,
+                booking_group_id=booking_group.id if booking_group else None,
                 booking_date=booking_date,
                 start_time=bulk_data.start_time,
                 end_time=bulk_data.end_time,
                 purpose=bulk_data.purpose,
                 notes=bulk_data.notes,
-                status=booking_status
+                status=booking_status,
+                source="manual",
             )
 
             db.add(db_booking)
@@ -511,6 +727,13 @@ def create_bulk_bookings(
                 comment=comment
             )
 
+            if (
+                booking_group is not None
+                and booking_group.expected_asset_type
+                and (asset.canonical_type or "").strip().lower() != (booking_group.expected_asset_type or "").strip().lower()
+            ):
+                booking_group.is_modified = True
+
             # If this booking is confirmed on creation (manager/admin),
             # auto-deny overlapping pending requests for the same slot.
             _auto_deny_competing_pending_bookings(
@@ -519,6 +742,7 @@ def create_bulk_bookings(
                 actor_id=created_by_id,
                 actor_role=created_by_role,
             )
+            _mark_matching_lookahead_notifications_acted(db, db_booking, asset=asset)
 
             bookings.append(db_booking)
 
@@ -541,7 +765,8 @@ def get_booking_with_details(db: Session, booking_id: UUID) -> Optional[SlotBook
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
         joinedload(SlotBooking.subcontractor),
-        joinedload(SlotBooking.asset)
+        joinedload(SlotBooking.asset),
+        joinedload(SlotBooking.booking_group).joinedload(ActivityBookingGroup.activity),
     ).filter(SlotBooking.id == booking_id).first()
 
 def _get_competing_pending_count(db: Session, booking: SlotBooking) -> int:
@@ -582,7 +807,8 @@ def get_bookings(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
         joinedload(SlotBooking.subcontractor),
-        joinedload(SlotBooking.asset)
+        joinedload(SlotBooking.asset),
+        joinedload(SlotBooking.booking_group).joinedload(ActivityBookingGroup.activity),
     )
     
     # Apply filters
@@ -668,6 +894,11 @@ def update_booking(
         subcontractor = db.query(Subcontractor).filter(Subcontractor.id == update_data['subcontractor_id']).first()
         if not subcontractor:
             raise ValueError(f"Subcontractor with id {update_data['subcontractor_id']} not found")
+        project = db.query(SiteProject).filter(SiteProject.id == booking.project_id).first()
+        if project and not any(str(s.id) == str(subcontractor.id) for s in project.subcontractors):
+            raise BookingValidationError(
+                f"Subcontractor {update_data['subcontractor_id']} is not assigned to project {booking.project_id}"
+            )
     
     if 'status' in update_data and isinstance(update_data['status'], str):
         raw_status = update_data['status']
@@ -680,6 +911,12 @@ def update_booking(
     target_date = update_data.get('booking_date', booking.booking_date)
     target_start_time = update_data.get('start_time', booking.start_time)
     target_end_time = update_data.get('end_time', booking.end_time)
+    previous_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
+    previous_asset_type = (
+        (previous_asset.canonical_type or "").strip().lower()
+        if previous_asset and previous_asset.canonical_type
+        else None
+    )
     target_status = update_data.get('status', booking.status)
     status_changed = target_status != booking.status
     other_changes = (
@@ -760,6 +997,33 @@ def update_booking(
         to_status=booking.status if 'status' in update_data else None,
         changes=changes,
         comment=comment
+    )
+
+    if old_values["status"] != BookingStatus.CONFIRMED and booking.status == BookingStatus.CONFIRMED:
+        _mark_matching_lookahead_notifications_acted(db, booking)
+
+    booking_group = None
+    if booking.booking_group_id:
+        booking_group = (
+            db.query(ActivityBookingGroup)
+            .filter(ActivityBookingGroup.id == booking.booking_group_id)
+            .first()
+        )
+    current_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
+    current_asset_type = (
+        (current_asset.canonical_type or "").strip().lower()
+        if current_asset and current_asset.canonical_type
+        else None
+    )
+    _mark_booking_group_modified_if_needed(
+        booking_group,
+        booking=booking,
+        previous_date=old_values["booking_date"],
+        previous_start_time=old_values["start_time"],
+        previous_end_time=old_values["end_time"],
+        previous_subcontractor_id=old_values["subcontractor_id"],
+        previous_asset_type=previous_asset_type,
+        current_asset_type=current_asset_type,
     )
     
     db.commit()
@@ -875,6 +1139,9 @@ def update_booking_status(
         to_status=new_status,
         comment=comment
     )
+
+    if old_status != BookingStatus.CONFIRMED and booking.status == BookingStatus.CONFIRMED:
+        _mark_matching_lookahead_notifications_acted(db, booking)
 
     db.commit()
     db.refresh(booking)
@@ -1094,7 +1361,8 @@ def get_user_upcoming_bookings(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
         joinedload(SlotBooking.subcontractor),
-        joinedload(SlotBooking.asset)
+        joinedload(SlotBooking.asset),
+        joinedload(SlotBooking.booking_group).joinedload(ActivityBookingGroup.activity),
     ).filter(
         user_filter,
         SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.COMPLETED]),
@@ -1127,7 +1395,8 @@ def get_calendar_view(
         joinedload(SlotBooking.project),
         joinedload(SlotBooking.manager),
         joinedload(SlotBooking.subcontractor),
-        joinedload(SlotBooking.asset)
+        joinedload(SlotBooking.asset),
+        joinedload(SlotBooking.booking_group).joinedload(ActivityBookingGroup.activity),
     )
     
     query = query.filter(

@@ -20,6 +20,7 @@ from ...schemas.asset import (
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import AssetStatus, AssetTypeResolutionStatus, UserRole
+from ...services.lookahead_engine import refresh_lookahead_after_project_change
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,8 @@ def update_asset(
             actor_role=actor_role,
             confirm_booking_denials=confirm_booking_denials,
         )
+        if confirm_booking_denials:
+            refresh_lookahead_after_project_change(updated_asset.project_id)
         return AssetResponse.model_validate(updated_asset)
     except asset_crud.AssetStatusChangeConfirmationRequired as e:
         raise HTTPException(
@@ -312,6 +315,8 @@ def transfer_asset(
 ):
     """Transfer asset to another project"""
     try:
+        existing_asset = asset_crud.get_asset(db, asset_id)
+        old_project_id = existing_asset.project_id if existing_asset else None
         transferred_asset = asset_crud.transfer_asset(
             db, asset_id, transfer, current_user.id
         )
@@ -320,6 +325,10 @@ def transfer_asset(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
+        if transfer.update_bookings and old_project_id:
+            refresh_lookahead_after_project_change(old_project_id)
+            if transferred_asset.project_id != old_project_id:
+                refresh_lookahead_after_project_change(transferred_asset.project_id)
         return AssetResponse.model_validate(transferred_asset)
     except HTTPException:
         raise

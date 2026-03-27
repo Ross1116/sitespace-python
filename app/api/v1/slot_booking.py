@@ -39,6 +39,7 @@ from app.core.constants import (
     UPCOMING_BOOKINGS_PAGE_MAX,
 )
 from app.core.email import notify_booking_change
+from app.services.lookahead_engine import refresh_lookahead_after_project_change
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -266,6 +267,7 @@ def create_booking(
         )
 
         notify_booking_change(db, booking.id, "created", user_id)
+        refresh_lookahead_after_project_change(booking.project_id)
 
         return booking_crud.get_booking_detail(db, booking.id)
         
@@ -398,6 +400,9 @@ def create_bulk_bookings(
 
         for b in bookings:
             notify_booking_change(db, b.id, "created", user_id)
+
+        if bookings:
+            refresh_lookahead_after_project_change(bookings[0].project_id)
 
         return [booking_crud.get_booking_detail(db, b.id) for b in bookings]
         
@@ -761,7 +766,7 @@ def update_booking(
         # Check for conflicts
         if any([booking_update.booking_date, booking_update.start_time, booking_update.end_time]):
             conflict_check = BookingConflictCheck(
-                asset_id=existing.asset_id,
+                asset_id=booking_update.asset_id or existing.asset_id,
                 booking_date=booking_update.booking_date or existing.booking_date,
                 start_time=booking_update.start_time or existing.start_time,
                 end_time=booking_update.end_time or existing.end_time,
@@ -794,6 +799,7 @@ def update_booking(
             k in update_fields for k in ("booking_date", "start_time", "end_time")
         ) else "updated"
         notify_booking_change(db, updated_booking.id, action, user_id)
+        refresh_lookahead_after_project_change(updated_booking.project_id)
 
         return booking_crud.get_booking_detail(db, updated_booking.id)
         
@@ -886,6 +892,8 @@ def update_booking_status(
         for denied_id in auto_denied_ids:
             notify_booking_change(db, denied_id, "denied", user_id)
 
+        refresh_lookahead_after_project_change(updated_booking.project_id)
+
         return booking_crud.get_booking_detail(db, updated_booking.id)
         
     except HTTPException:
@@ -975,6 +983,8 @@ def delete_booking(
         # Notify after successful soft-delete only
         if not delete_request.hard_delete:
             notify_booking_change(db, booking_id, "cancelled", user_id)
+
+        refresh_lookahead_after_project_change(booking.project_id)
 
         action = "permanently deleted" if delete_request.hard_delete else "cancelled"
         return MessageResponse(
@@ -1099,10 +1109,12 @@ def duplicate_booking(
             duplicate_data,
             created_by_id=user_id,
             created_by_role=user_role,
-            comment=duplicate_request.comment  # User-provided comment for audit
+            comment=duplicate_request.comment,  # User-provided comment for audit
+            booking_group_id=original.booking_group_id,
         )
 
         notify_booking_change(db, new_booking.id, "created", user_id)
+        refresh_lookahead_after_project_change(new_booking.project_id)
 
         return booking_crud.get_booking_detail(db, new_booking.id)
         

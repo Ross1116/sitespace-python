@@ -13,7 +13,13 @@ from .lookahead import (
     ProjectAlertPolicy,
     SubcontractorAssetTypeAssignment,
 )
-from .programme import ProgrammeUpload, ProgrammeActivity, ActivityAssetMapping, AISuggestionLog
+from .programme import (
+    ProgrammeUpload,
+    ProgrammeActivity,
+    ActivityAssetMapping,
+    ActivityBookingGroup,
+    AISuggestionLog,
+)
 from .item_identity import Item, ItemAlias, ItemIdentityEvent, ItemClassification, ItemClassificationEvent
 from .stored_file import StoredFile
 from .site_plan import SitePlan
@@ -36,6 +42,7 @@ __all__ = [
     "ProgrammeUpload",
     "ProgrammeActivity",
     "ActivityAssetMapping",
+    "ActivityBookingGroup",
     "AISuggestionLog",
     "Item",
     "ItemAlias",

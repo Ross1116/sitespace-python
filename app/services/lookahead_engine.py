@@ -21,7 +21,7 @@ from ..models.lookahead import (
     Notification,
     SubcontractorAssetTypeAssignment,
 )
-from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
+from ..models.programme import ActivityAssetMapping, ActivityBookingGroup, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..models.work_profile import ActivityWorkProfile
@@ -141,6 +141,97 @@ def _iter_weekly_activity_hours(
         week += timedelta(days=7)
 
     return buckets
+
+
+def _resolve_upload_work_days_per_week(upload: ProgrammeUpload) -> int:
+    raw_wdpw = upload.work_days_per_week
+    if raw_wdpw and 1 <= raw_wdpw <= 7:
+        return raw_wdpw
+    if raw_wdpw is not None:
+        logger.warning(
+            "upload %s has invalid work_days_per_week=%s; defaulting to 5",
+            upload.id,
+            raw_wdpw,
+        )
+    return 5
+
+
+def _resolve_activity_distribution(
+    db: Session,
+    *,
+    mapping: ActivityAssetMapping,
+    activity: ProgrammeActivity,
+    upload: ProgrammeUpload,
+    profile: ActivityWorkProfile | None,
+) -> dict[str, object] | None:
+    if not activity.start_date or not activity.end_date:
+        return None
+
+    work_days = _resolve_upload_work_days_per_week(upload)
+    work_dates = _iter_working_dates(activity.start_date, activity.end_date, work_days)
+    if not work_dates:
+        return None
+
+    max_hours_per_day = get_max_hours_for_type(db, mapping.asset_type)
+    low_confidence = bool(activity.row_confidence == "low")
+    repaired = False
+    missing_profile = profile is None
+    compressed_context = build_compressed_context(
+        activity.name,
+        level_name=activity.level_name,
+        zone_name=activity.zone_name,
+    )
+    _fallback_total, fallback_distribution, fallback_norm = build_default_profile(
+        mapping.asset_type,
+        len(work_dates),
+        max_hours_per_day,
+        compressed_context=compressed_context,
+    )
+
+    if profile is None:
+        distribution = fallback_distribution
+        low_confidence = True
+    else:
+        profile_distribution = [float(value) for value in list(profile.distribution_json)]
+        if len(profile_distribution) != len(work_dates):
+            distribution = derive_distribution(
+                fallback_norm,
+                float(profile.total_hours),
+                max_hours_per_day=max_hours_per_day,
+            )
+            low_confidence = True
+            repaired = True
+        elif any(value > max_hours_per_day for value in profile_distribution):
+            distribution = derive_distribution(
+                fallback_norm,
+                float(profile.total_hours),
+                max_hours_per_day=max_hours_per_day,
+            )
+            low_confidence = True
+            repaired = True
+        else:
+            distribution = profile_distribution
+            low_confidence = low_confidence or bool(profile.low_confidence_flag)
+
+    return {
+        "work_dates": work_dates,
+        "distribution": distribution,
+        "low_confidence": low_confidence,
+        "missing_profile": missing_profile,
+        "per_day_cap_repaired": repaired,
+    }
+
+
+def _get_latest_processed_upload(project_id: uuid.UUID, db: Session) -> ProgrammeUpload | None:
+    return (
+        db.query(ProgrammeUpload)
+        .filter(
+            ProgrammeUpload.project_id == project_id,
+            ProgrammeUpload.status.in_(["committed", "degraded"]),
+        )
+        .order_by(ProgrammeUpload.version_number.desc())
+        .first()
+    )
 
 
 def _compute_anomaly_flags(
@@ -274,60 +365,20 @@ def _compute_demand_by_week_asset(
         if not activity.start_date or not activity.end_date:
             continue
 
-        raw_wdpw = upload.work_days_per_week
-        if raw_wdpw and 1 <= raw_wdpw <= 7:
-            work_days = raw_wdpw
-        else:
-            if raw_wdpw is not None:
-                logger.warning(
-                    "upload %s has invalid work_days_per_week=%s; defaulting to 5",
-                    upload.id, raw_wdpw,
-                )
-            work_days = 5
-        work_dates = _iter_working_dates(activity.start_date, activity.end_date, work_days)
-        if not work_dates:
+        distribution_result = _resolve_activity_distribution(
+            db,
+            mapping=mapping,
+            activity=activity,
+            upload=upload,
+            profile=profile,
+        )
+        if distribution_result is None:
             continue
-
-        max_hours_per_day = get_max_hours_for_type(db, mapping.asset_type)
-        low_confidence = bool(activity.row_confidence == "low")
-        repaired = False
-        missing_profile = profile is None
-        compressed_context = build_compressed_context(
-            activity.name,
-            level_name=activity.level_name,
-            zone_name=activity.zone_name,
-        )
-        _fallback_total, fallback_distribution, fallback_norm = build_default_profile(
-            mapping.asset_type,
-            len(work_dates),
-            max_hours_per_day,
-            compressed_context=compressed_context,
-        )
-
-        if profile is None:
-            distribution = fallback_distribution
-            low_confidence = True
-        else:
-            profile_distribution = [float(value) for value in list(profile.distribution_json)]
-            if len(profile_distribution) != len(work_dates):
-                distribution = derive_distribution(
-                    fallback_norm,
-                    float(profile.total_hours),
-                    max_hours_per_day=max_hours_per_day,
-                )
-                low_confidence = True
-                repaired = True
-            elif any(value > max_hours_per_day for value in profile_distribution):
-                distribution = derive_distribution(
-                    fallback_norm,
-                    float(profile.total_hours),
-                    max_hours_per_day=max_hours_per_day,
-                )
-                low_confidence = True
-                repaired = True
-            else:
-                distribution = profile_distribution
-                low_confidence = low_confidence or bool(profile.low_confidence_flag)
+        work_dates = distribution_result["work_dates"]
+        distribution = distribution_result["distribution"]
+        low_confidence = bool(distribution_result["low_confidence"])
+        missing_profile = bool(distribution_result["missing_profile"])
+        repaired = bool(distribution_result["per_day_cap_repaired"])
 
         for activity_day, demand_hours in zip(work_dates, distribution, strict=True):
             key = (_week_start(activity_day), mapping.asset_type)
@@ -681,15 +732,7 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     if not project:
         return None
 
-    latest_upload = (
-        db.query(ProgrammeUpload)
-        .filter(
-            ProgrammeUpload.project_id == project_id,
-            ProgrammeUpload.status.in_(["committed", "degraded"]),
-        )
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
+    latest_upload = _get_latest_processed_upload(project_id, db)
     if not latest_upload:
         return None
 
@@ -861,6 +904,136 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
     db.commit()
     db.refresh(snapshot)
     return snapshot
+
+
+def get_latest_booking_update_for_project(project_id: uuid.UUID, db: Session) -> datetime | None:
+    return (
+        db.query(func.max(SlotBooking.updated_at))
+        .filter(SlotBooking.project_id == project_id)
+        .scalar()
+    )
+
+
+def get_weekly_activity_candidates(
+    project_id: uuid.UUID,
+    week_start: date,
+    asset_type: str,
+    db: Session,
+) -> list[dict[str, object]]:
+    latest_upload = _get_latest_processed_upload(project_id, db)
+    if latest_upload is None:
+        return []
+
+    normalized_asset_type = asset_type.strip().lower()
+    selected_week_start = _week_start(week_start)
+    selected_week_end = selected_week_start + timedelta(days=6)
+
+    rows = (
+        db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload, ActivityWorkProfile)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
+        .filter(
+            ProgrammeUpload.id == latest_upload.id,
+            ActivityAssetMapping.asset_type == normalized_asset_type,
+            or_(
+                ActivityAssetMapping.auto_committed.is_(True),
+                and_(
+                    ActivityAssetMapping.manually_corrected.is_(True),
+                    ActivityAssetMapping.source == "manual",
+                    ActivityAssetMapping.auto_committed.is_(False),
+                ),
+            ),
+            or_(
+                ActivityAssetMapping.confidence.in_(["high", "medium"]),
+                ActivityAssetMapping.manually_corrected.is_(True),
+            ),
+            or_(
+                ProgrammeActivity.pct_complete.is_(None),
+                ProgrammeActivity.pct_complete < 100,
+            ),
+        )
+        .all()
+    )
+
+    booking_groups = {
+        group.programme_activity_id: group
+        for group in (
+            db.query(ActivityBookingGroup)
+            .filter(ActivityBookingGroup.project_id == project_id)
+            .all()
+        )
+    }
+    linked_counts = dict(
+        db.query(ActivityBookingGroup.programme_activity_id, func.count(SlotBooking.id))
+        .outerjoin(SlotBooking, SlotBooking.booking_group_id == ActivityBookingGroup.id)
+        .filter(ActivityBookingGroup.project_id == project_id)
+        .group_by(ActivityBookingGroup.programme_activity_id)
+        .all()
+    )
+
+    candidates: list[dict[str, object]] = []
+    for mapping, activity, upload, profile in rows:
+        distribution_result = _resolve_activity_distribution(
+            db,
+            mapping=mapping,
+            activity=activity,
+            upload=upload,
+            profile=profile,
+        )
+        if distribution_result is None:
+            continue
+
+        overlap_hours = 0.0
+        for activity_day, demand_hours in zip(
+            distribution_result["work_dates"],
+            distribution_result["distribution"],
+            strict=True,
+        ):
+            if selected_week_start <= activity_day <= selected_week_end:
+                overlap_hours += float(demand_hours)
+
+        if overlap_hours <= 0:
+            continue
+
+        booking_group = booking_groups.get(activity.id)
+        candidates.append(
+            {
+                "activity_id": activity.id,
+                "programme_upload_id": upload.id,
+                "activity_name": activity.name,
+                "start_date": activity.start_date.isoformat() if activity.start_date else None,
+                "end_date": activity.end_date.isoformat() if activity.end_date else None,
+                "overlap_hours": round(overlap_hours, 2),
+                "level_name": activity.level_name,
+                "zone_name": activity.zone_name,
+                "row_confidence": activity.row_confidence,
+                "sort_order": activity.sort_order,
+                "booking_group_id": booking_group.id if booking_group else None,
+                "linked_booking_count": int(linked_counts.get(activity.id, 0)),
+            }
+        )
+
+    candidates.sort(
+        key=lambda row: (
+            -float(row["overlap_hours"]),
+            10**9 if row["sort_order"] is None else int(row["sort_order"]),
+            str(row["activity_id"]),
+        )
+    )
+    return candidates
+
+
+def refresh_lookahead_after_project_change(project_id: uuid.UUID) -> LookaheadSnapshot | None:
+    db = SessionLocal()
+    try:
+        return calculate_lookahead_for_project(project_id=project_id, db=db)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to refresh lookahead after project change for project %s", project_id)
+        return None
+    finally:
+        db.close()
 
 
 def get_latest_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:

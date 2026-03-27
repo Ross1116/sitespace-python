@@ -8,6 +8,7 @@ from pydantic import Field, field_validator
 
 from .base import BaseSchema
 from ..core.constants import ALLOWED_ASSET_TYPES
+from .slot_booking import BookingDetailResponse
 
 
 class ProgrammeUploadAccepted(BaseSchema):
@@ -112,3 +113,49 @@ class ActivityMappingResponse(BaseSchema):
     corrected_at: datetime | None = None
     subcontractor_id: UUID | None = None
     created_at: datetime | None = None
+
+
+class ActivityBookingGroupSummary(BaseSchema):
+    """Summary of the primary booking group linked to a programme activity."""
+
+    id: UUID
+    programme_activity_id: UUID
+    expected_asset_type: str
+    selected_week_start: str | None = None
+    origin_source: str
+    is_modified: bool
+    linked_booking_count: int = 0
+
+
+class ActivityBookingContextAssetCandidate(BaseSchema):
+    """Real project asset candidate for activity-linked booking."""
+
+    id: UUID
+    asset_code: str
+    name: str
+    type: str | None = None
+    canonical_type: str | None = None
+    status: str
+    planning_ready: bool
+    is_available: bool
+    availability_reason: str | None = None
+
+
+class ProgrammeActivityBookingContextResponse(BaseSchema):
+    """Prefill payload for booking from a programme activity."""
+
+    activity_id: UUID
+    programme_upload_id: UUID
+    project_id: UUID
+    activity_name: str
+    start_date: str | None = None
+    end_date: str | None = None
+    expected_asset_type: str
+    selected_week_start: str | None = None
+    default_date: str | None = None
+    default_start_time: str
+    default_end_time: str
+    suggested_bulk_dates: list[str] = Field(default_factory=list)
+    booking_group: ActivityBookingGroupSummary | None = None
+    linked_bookings: list[BookingDetailResponse] = Field(default_factory=list)
+    candidate_assets: list[ActivityBookingContextAssetCandidate] = Field(default_factory=list)

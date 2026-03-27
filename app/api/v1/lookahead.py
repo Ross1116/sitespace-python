@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ...core.database import get_db
@@ -14,7 +15,9 @@ from ...models.user import User
 from ...schemas.enums import UserRole
 from ...schemas.lookahead import (
     LookaheadAlertsResponse,
+    LookaheadActivitiesResponse,
     LookaheadHistoryResponse,
+    LookaheadActivityCandidate,
     LookaheadResponse,
     SnapshotHistoryItem,
     SubAssetSuggestionsResponse,
@@ -23,7 +26,9 @@ from ...schemas.lookahead import (
 )
 from ...services.lookahead_engine import (
     calculate_lookahead_for_project,
+    get_latest_booking_update_for_project,
     get_latest_snapshot,
+    get_weekly_activity_candidates,
     get_snapshot_history,
     get_sub_notifications,
     get_sub_asset_suggestions_for_project,
@@ -65,7 +70,14 @@ def _get_fresh_snapshot(project_id: UUID, db: Session):
     if latest_upload is None:
         return None
     snapshot = get_latest_snapshot(project_id, db)
-    if not snapshot or snapshot.programme_upload_id != latest_upload.id:
+    latest_booking_update = get_latest_booking_update_for_project(project_id, db)
+    booking_is_newer = bool(
+        snapshot
+        and snapshot.created_at
+        and latest_booking_update
+        and latest_booking_update > snapshot.created_at
+    )
+    if not snapshot or snapshot.programme_upload_id != latest_upload.id or booking_is_newer:
         snapshot = calculate_lookahead_for_project(project_id, db)
     return snapshot
 
@@ -200,6 +212,41 @@ def get_subcontractor_asset_suggestions(
         project_id=project_id,
         snapshot_date=snapshot.snapshot_date.isoformat() if snapshot else None,
         suggestions=suggestions,
+    )
+
+
+@router.get("/{project_id}/activities", response_model=LookaheadActivitiesResponse)
+def get_lookahead_week_activities(
+    project_id: UUID,
+    week_start: date = Query(..., description="Monday-aligned lookahead week start"),
+    asset_type: str = Query(..., min_length=1, description="Canonical asset type"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> LookaheadActivitiesResponse:
+    project = _check_project_exists(project_id, db)
+    _check_manager_project_access(project, _)
+
+    snapshot = _get_fresh_snapshot(project_id, db)
+    if not snapshot:
+        return LookaheadActivitiesResponse(
+            project_id=project_id,
+            week_start=(week_start.isoformat()),
+            asset_type=asset_type.strip().lower(),
+            activities=[],
+        )
+
+    normalized_week_start = week_start - timedelta(days=week_start.weekday())
+    candidates = get_weekly_activity_candidates(
+        project_id=project_id,
+        week_start=normalized_week_start,
+        asset_type=asset_type,
+        db=db,
+    )
+    return LookaheadActivitiesResponse(
+        project_id=project_id,
+        week_start=normalized_week_start.isoformat(),
+        asset_type=asset_type.strip().lower(),
+        activities=[LookaheadActivityCandidate(**candidate) for candidate in candidates],
     )
 
 
