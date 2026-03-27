@@ -15,6 +15,12 @@ class SlotBooking(Base):
     manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     subcontractor_id = Column(UUID(as_uuid=True), ForeignKey("subcontractors.id", ondelete="RESTRICT"), nullable=True)  # Changed to nullable=True
     asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="RESTRICT"), nullable=False)
+    booking_group_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_booking_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     booking_date = Column(Date, nullable=False, index=True)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
@@ -46,3 +52,4 @@ class SlotBooking(Base):
     manager = relationship("User", back_populates="bookings")
     subcontractor = relationship("Subcontractor", back_populates="bookings")
     asset = relationship("Asset", back_populates="bookings")
+    booking_group = relationship("ActivityBookingGroup", back_populates="bookings")

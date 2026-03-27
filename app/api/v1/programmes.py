@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
@@ -23,16 +23,30 @@ from sqlalchemy.orm import Session
 
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
+from ...crud import asset as asset_crud
+from ...crud import slot_booking as booking_crud
 from ...crud.site_project import check_sub_project_access
-from ...models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
+from ...models.asset import Asset
+from ...models.programme import (
+    ActivityAssetMapping,
+    ActivityBookingGroup,
+    AISuggestionLog,
+    ProgrammeActivity,
+    ProgrammeUpload,
+)
 from ...models.site_project import SiteProject
+from ...models.slot_booking import SlotBooking
 from ...models.stored_file import StoredFile
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
+from ...schemas.asset import AssetAvailabilityCheck
 from ...schemas.programme import (
+    ActivityBookingContextAssetCandidate,
+    ActivityBookingGroupSummary,
     ActivityMappingResponse,
     MappingCorrectionRequest,
     ProgrammeActivityItem,
+    ProgrammeActivityBookingContextResponse,
     ProgrammeDiff,
     ProgrammeUploadAccepted,
     ProgrammeUploadStatus,
@@ -41,6 +55,7 @@ from ...schemas.programme import (
 from ...schemas.enums import UserRole
 from ...utils.storage import storage
 from ...utils.programme_notes import normalize_programme_completeness_notes
+from ...services.metadata_confidence_service import asset_is_planning_ready
 from ...services.process_programme import preflight_validate, process_programme
 
 logger = logging.getLogger(__name__)
@@ -97,6 +112,33 @@ def _serialize_mapping(
 
 def _normalize_completeness_notes(notes: dict | None) -> dict:
     return normalize_programme_completeness_notes(notes)
+
+
+def _normalize_week_start(selected_week_start: date | None) -> date | None:
+    if selected_week_start is None:
+        return None
+    return selected_week_start - timedelta(days=selected_week_start.weekday())
+
+
+def _resolve_work_days_per_week(upload: ProgrammeUpload) -> int:
+    raw_wdpw = upload.work_days_per_week
+    if raw_wdpw and 1 <= raw_wdpw <= 7:
+        return raw_wdpw
+    return 5
+
+
+def _iter_working_dates(start_date: date | None, end_date: date | None, work_days_per_week: int) -> list[date]:
+    if start_date is None or end_date is None:
+        return []
+    span_start = min(start_date, end_date)
+    span_end = max(start_date, end_date)
+    days: list[date] = []
+    current = span_start
+    while current <= span_end:
+        if current.weekday() < work_days_per_week:
+            days.append(current)
+        current += timedelta(days=1)
+    return days
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +454,191 @@ def get_activities(
         )
         for a in activities
     ]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/programmes/activities/{activity_id}/booking-context
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/activities/{activity_id}/booking-context",
+    response_model=ProgrammeActivityBookingContextResponse,
+)
+def get_activity_booking_context(
+    activity_id: UUID,
+    selected_week_start: date | None = None,
+    db: Session = Depends(get_db),
+    current_entity: User | Subcontractor = Depends(
+        require_role([UserRole.MANAGER, UserRole.ADMIN, UserRole.SUBCONTRACTOR])
+    ),
+) -> ProgrammeActivityBookingContextResponse:
+    activity = db.query(ProgrammeActivity).filter(ProgrammeActivity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == activity.programme_upload_id).first()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.status not in {"committed", "degraded"}:
+        raise HTTPException(status_code=409, detail="Programme activity is not available for booking.")
+
+    role = normalize_role(getattr(current_entity, "role", "subcontractor"))
+    is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
+
+    if is_subcontractor:
+        project = db.query(SiteProject).filter(SiteProject.id == upload.project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == current_entity.id).first()
+        if not subcontractor or not check_sub_project_access(db, subcontractor, project):
+            raise HTTPException(status_code=403, detail="You are not assigned to this project")
+
+        has_activity_access = (
+            db.query(ActivityAssetMapping.id)
+            .filter(
+                ActivityAssetMapping.programme_activity_id == activity_id,
+                ActivityAssetMapping.subcontractor_id == current_entity.id,
+            )
+            .first()
+            is not None
+        )
+        if not has_activity_access:
+            raise HTTPException(status_code=403, detail="You can only view your own assigned activities")
+    else:
+        _check_project_access(upload.project_id, current_entity, db)
+
+    mapping = (
+        db.query(ActivityAssetMapping)
+        .filter(
+            ActivityAssetMapping.programme_activity_id == activity_id,
+            ActivityAssetMapping.asset_type.isnot(None),
+        )
+        .order_by(
+            ActivityAssetMapping.manually_corrected.desc(),
+            ActivityAssetMapping.corrected_at.desc().nulls_last(),
+            ActivityAssetMapping.created_at.desc(),
+        )
+        .first()
+    )
+    if mapping is None or not mapping.asset_type:
+        raise HTTPException(status_code=409, detail="Activity does not have a resolved asset type.")
+
+    normalized_week_start = _normalize_week_start(selected_week_start)
+    working_dates = _iter_working_dates(
+        activity.start_date,
+        activity.end_date,
+        _resolve_work_days_per_week(upload),
+    )
+
+    if normalized_week_start is not None:
+        week_end = normalized_week_start + timedelta(days=6)
+        suggested_bulk_dates = [
+            working_date
+            for working_date in working_dates
+            if normalized_week_start <= working_date <= week_end
+        ]
+        default_date = suggested_bulk_dates[0] if suggested_bulk_dates else activity.start_date
+    else:
+        suggested_bulk_dates = []
+        default_date = activity.start_date
+
+    booking_group = (
+        db.query(ActivityBookingGroup)
+        .filter(ActivityBookingGroup.programme_activity_id == activity_id)
+        .first()
+    )
+    linked_booking_ids = []
+    if booking_group is not None:
+        linked_booking_ids = [
+            row[0]
+            for row in (
+                db.query(SlotBooking.id)
+                .filter(SlotBooking.booking_group_id == booking_group.id)
+                .order_by(SlotBooking.booking_date.asc(), SlotBooking.start_time.asc())
+                .all()
+            )
+        ]
+
+    linked_bookings = [
+        booking_crud.get_booking_detail(db, booking_id)
+        for booking_id in linked_booking_ids
+    ]
+
+    candidate_assets_query = (
+        db.query(Asset)
+        .filter(
+            Asset.project_id == upload.project_id,
+            func.lower(func.coalesce(Asset.canonical_type, "")) == str(mapping.asset_type).strip().lower(),
+        )
+        .order_by(Asset.name.asc())
+    )
+    candidate_assets: list[ActivityBookingContextAssetCandidate] = []
+    for asset in candidate_assets_query.all():
+        if default_date is not None:
+            availability = asset_crud.check_asset_availability(
+                db,
+                AssetAvailabilityCheck(
+                    asset_id=asset.id,
+                    date=default_date,
+                    start_time="08:00",
+                    end_time="16:00",
+                ),
+            )
+            is_available = bool(availability.is_available)
+            availability_reason = availability.reason
+        else:
+            is_available = False
+            availability_reason = "No default date available"
+
+        candidate_assets.append(
+            ActivityBookingContextAssetCandidate(
+                id=asset.id,
+                asset_code=asset.asset_code,
+                name=asset.name,
+                type=asset.type,
+                canonical_type=asset.canonical_type,
+                status=asset.status.value if asset.status else "unknown",
+                planning_ready=asset_is_planning_ready(asset),
+                is_available=is_available,
+                availability_reason=availability_reason,
+            )
+        )
+
+    candidate_assets.sort(key=lambda asset: (not asset.is_available, asset.name.lower(), str(asset.id)))
+
+    return ProgrammeActivityBookingContextResponse(
+        activity_id=activity.id,
+        programme_upload_id=upload.id,
+        project_id=upload.project_id,
+        activity_name=activity.name,
+        start_date=activity.start_date.isoformat() if activity.start_date else None,
+        end_date=activity.end_date.isoformat() if activity.end_date else None,
+        expected_asset_type=str(mapping.asset_type).strip().lower(),
+        selected_week_start=normalized_week_start.isoformat() if normalized_week_start else None,
+        default_date=default_date.isoformat() if default_date else None,
+        default_start_time="08:00",
+        default_end_time="16:00",
+        suggested_bulk_dates=[bulk_date.isoformat() for bulk_date in suggested_bulk_dates],
+        booking_group=(
+            ActivityBookingGroupSummary(
+                id=booking_group.id,
+                programme_activity_id=booking_group.programme_activity_id,
+                expected_asset_type=booking_group.expected_asset_type,
+                selected_week_start=(
+                    booking_group.selected_week_start.isoformat()
+                    if booking_group.selected_week_start
+                    else None
+                ),
+                origin_source=booking_group.origin_source,
+                is_modified=booking_group.is_modified,
+                linked_booking_count=len(linked_booking_ids),
+            )
+            if booking_group
+            else None
+        ),
+        linked_bookings=[booking for booking in linked_bookings if booking is not None],
+        candidate_assets=candidate_assets,
+    )
 
 
 # ---------------------------------------------------------------------------

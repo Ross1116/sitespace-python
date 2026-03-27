@@ -168,6 +168,58 @@ class ActivityAssetMapping(Base):
         return f"<ActivityAssetMapping(id={self.id}, asset='{self.asset_type}', confidence='{self.confidence}')>"
 
 
+class ActivityBookingGroup(Base):
+    __tablename__ = "activity_booking_groups"
+    __table_args__ = (
+        UniqueConstraint("programme_activity_id", name="uq_activity_booking_groups_activity"),
+        CheckConstraint(
+            "origin_source IN ('activity_row', 'lookahead_week_row')",
+            name="ck_activity_booking_groups_origin_source",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    programme_activity_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("programme_activities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expected_asset_type = Column(String(50), nullable=False)
+    selected_week_start = Column(Date, nullable=True)
+    origin_source = Column(String(20), nullable=False)
+    is_modified = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Cross-actor snapshot ID (user or subcontractor); intentionally no FK.
+    created_by = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    project = relationship("SiteProject", foreign_keys=[project_id])
+    activity = relationship("ProgrammeActivity", foreign_keys=[programme_activity_id])
+    bookings = relationship("SlotBooking", back_populates="booking_group")
+
+    def __repr__(self) -> str:
+        return (
+            f"<ActivityBookingGroup(id={self.id}, activity_id={self.programme_activity_id}, "
+            f"expected_asset_type='{self.expected_asset_type}')>"
+        )
+
+
 class AISuggestionLog(Base):
     __tablename__ = "ai_suggestion_logs"
 

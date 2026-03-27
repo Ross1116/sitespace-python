@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Any
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta
 from uuid import UUID
 
 from .base import BaseSchema, TimestampSchema
@@ -9,6 +9,12 @@ from .user import UserBriefResponse
 from .subcontractor import SubcontractorBriefResponse
 from .asset import AssetBriefResponse
 from .site_project import SiteProjectBriefResponse
+
+
+def _normalize_to_monday(value: Optional[date]) -> Optional[date]:
+    if value is None:
+        return None
+    return value - timedelta(days=value.weekday())
 
 
 class TimeSlot(BaseSchema):
@@ -36,6 +42,8 @@ class BookingCreate(BookingBase):
     manager_id: Optional[UUID] = None
     subcontractor_id: Optional[UUID] = None
     asset_id: UUID
+    programme_activity_id: Optional[UUID] = None
+    selected_week_start: Optional[date] = None
     status: Optional[BookingStatus] = None
     comment: Optional[str] = Field(
         None, 
@@ -57,12 +65,19 @@ class BookingCreate(BookingBase):
             raise ValueError('Cannot book for past dates')
         return v
 
+    @field_validator("selected_week_start")
+    @classmethod
+    def normalize_selected_week_start(cls, value: Optional[date]) -> Optional[date]:
+        return _normalize_to_monday(value)
+
 
 class BookingUpdate(BaseSchema):
     """Booking update schema"""
     booking_date: Optional[date] = None
     start_time: Optional[time] = None
     end_time: Optional[time] = None
+    subcontractor_id: Optional[UUID] = None
+    asset_id: Optional[UUID] = None
     status: Optional[BookingStatus] = None
     purpose: Optional[str] = Field(None, max_length=500)
     notes: Optional[str] = None
@@ -150,6 +165,12 @@ class BookingResponse(BookingBase, TimestampSchema):
     subcontractor_id: Optional[UUID] = None
     asset_id: UUID
     status: BookingStatus
+    source: Optional[str] = None
+    booking_group_id: Optional[UUID] = None
+    programme_activity_id: Optional[UUID] = None
+    programme_activity_name: Optional[str] = None
+    expected_asset_type: Optional[str] = None
+    is_modified: bool = False
 
 
 class BookingDetailResponse(BookingResponse):
@@ -217,6 +238,8 @@ class BulkBookingCreate(BaseSchema):
     subcontractor_id: Optional[UUID] = None 
     asset_ids: List[UUID]
     booking_dates: List[date]
+    programme_activity_id: Optional[UUID] = None
+    selected_week_start: Optional[date] = None
     start_time: time
     end_time: time
     purpose: Optional[str] = Field(None, max_length=500)
@@ -246,6 +269,11 @@ class BulkBookingCreate(BaseSchema):
             if booking_date < today:
                 raise ValueError(f'Cannot book for past date: {booking_date}')
         return v
+
+    @field_validator("selected_week_start")
+    @classmethod
+    def normalize_selected_week_start(cls, value: Optional[date]) -> Optional[date]:
+        return _normalize_to_monday(value)
     
     @model_validator(mode='after')
     def validate_time_slot(self) -> 'BulkBookingCreate':

@@ -20,6 +20,7 @@ from ...schemas.asset import (
 )
 from ...schemas.base import MessageResponse
 from ...schemas.enums import AssetStatus, AssetTypeResolutionStatus, UserRole
+from ...services.lookahead_engine import refresh_lookahead_after_project_change
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,8 @@ def update_asset(
             )
 
         check_asset_view_access(db, asset.project_id, current_user)
+        previous_status = asset.status
+        previous_canonical_type = asset.canonical_type
 
         try:
             actor_role = (
@@ -253,6 +256,10 @@ def update_asset(
             actor_role=actor_role,
             confirm_booking_denials=confirm_booking_denials,
         )
+        canonical_type_changed = updated_asset.canonical_type != previous_canonical_type
+        status_changed = updated_asset.status != previous_status
+        if confirm_booking_denials or canonical_type_changed or status_changed:
+            refresh_lookahead_after_project_change(updated_asset.project_id)
         return AssetResponse.model_validate(updated_asset)
     except asset_crud.AssetStatusChangeConfirmationRequired as e:
         raise HTTPException(
@@ -312,6 +319,8 @@ def transfer_asset(
 ):
     """Transfer asset to another project"""
     try:
+        existing_asset = asset_crud.get_asset(db, asset_id)
+        old_project_id = existing_asset.project_id if existing_asset else None
         transferred_asset = asset_crud.transfer_asset(
             db, asset_id, transfer, current_user.id
         )
@@ -320,6 +329,13 @@ def transfer_asset(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Asset not found"
             )
+        projects_to_refresh = {
+            project_id
+            for project_id in [old_project_id, transferred_asset.project_id]
+            if project_id is not None
+        }
+        for project_id in projects_to_refresh:
+            refresh_lookahead_after_project_change(project_id)
         return AssetResponse.model_validate(transferred_asset)
     except HTTPException:
         raise

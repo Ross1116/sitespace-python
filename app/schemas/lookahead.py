@@ -59,6 +59,32 @@ class SubAssetSuggestionsResponse(BaseSchema):
     suggestions: list[Any] = []
 
 
+class LookaheadActivityCandidate(BaseSchema):
+    """A single activity contributing to a lookahead week/asset-type row."""
+
+    activity_id: UUID
+    programme_upload_id: UUID
+    activity_name: str
+    start_date: str | None = None
+    end_date: str | None = None
+    overlap_hours: float
+    level_name: str | None = None
+    zone_name: str | None = None
+    row_confidence: str | None = None
+    sort_order: int | None = None
+    booking_group_id: UUID | None = None
+    linked_booking_count: int = 0
+
+
+class LookaheadActivitiesResponse(BaseSchema):
+    """Activity picker payload for a lookahead week/asset-type row."""
+
+    project_id: UUID
+    week_start: str
+    asset_type: str
+    activities: list[LookaheadActivityCandidate] = []
+
+
 class SnapshotHistoryItem(BaseSchema):
     """Summary of a single lookahead snapshot in the history list."""
 
