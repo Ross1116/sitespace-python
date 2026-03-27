@@ -141,6 +141,32 @@ class ActivityBookingContextAssetCandidate(BaseSchema):
     availability_reason: str | None = None
 
 
+class ProgrammeActivitySuggestedBookingDate(BaseSchema):
+    """A booking-ready per-date suggestion for an activity-linked week."""
+
+    date: str
+    start_time: str | None = None
+    end_time: str | None = None
+    hours: float | None = None
+    demand_hours: float | None = None
+    booked_hours: float | None = None
+    gap_hours: float | None = None
+
+
+class LinkedBookingGroupSummary(BaseSchema):
+    """Frontend-friendly summary of the linked booking group for this activity."""
+
+    booking_group_id: UUID
+    programme_activity_id: UUID
+    expected_asset_type: str
+    selected_week_start: str | None = None
+    origin_source: str
+    is_modified: bool
+    booking_count: int = 0
+    total_booked_hours: float = 0.0
+    last_booking_at: str | None = None
+
+
 class ProgrammeActivityBookingContextResponse(BaseSchema):
     """Prefill payload for booking from a programme activity."""
 
@@ -150,12 +176,17 @@ class ProgrammeActivityBookingContextResponse(BaseSchema):
     activity_name: str
     start_date: str | None = None
     end_date: str | None = None
+    level_name: str | None = None
+    zone_name: str | None = None
     expected_asset_type: str
     selected_week_start: str | None = None
+    default_week_start: str | None = None
     default_date: str | None = None
+    default_booking_date: str | None = None
     default_start_time: str
     default_end_time: str
-    suggested_bulk_dates: list[str] = Field(default_factory=list)
+    suggested_bulk_dates: list[ProgrammeActivitySuggestedBookingDate] = Field(default_factory=list)
     booking_group: ActivityBookingGroupSummary | None = None
+    linked_booking_group: LinkedBookingGroupSummary | None = None
     linked_bookings: list[BookingDetailResponse] = Field(default_factory=list)
     candidate_assets: list[ActivityBookingContextAssetCandidate] = Field(default_factory=list)

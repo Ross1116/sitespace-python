@@ -249,6 +249,29 @@ def _resolve_activity_distribution(
     }
 
 
+def resolve_activity_distribution(
+    db: Session,
+    *,
+    mapping: ActivityAssetMapping,
+    activity: ProgrammeActivity,
+    upload: ProgrammeUpload,
+    profile: ActivityWorkProfile | None,
+) -> dict[str, object] | None:
+    """Public wrapper for activity date/hour distribution resolution.
+
+    This exposes the same distribution logic used by lookahead so other
+    booking/planning endpoints can return booking-ready plans without
+    re-implementing the profile fallback logic.
+    """
+    return _resolve_activity_distribution(
+        db,
+        mapping=mapping,
+        activity=activity,
+        upload=upload,
+        profile=profile,
+    )
+
+
 def _get_latest_processed_upload(project_id: uuid.UUID, db: Session) -> ProgrammeUpload | None:
     return (
         db.query(ProgrammeUpload)
