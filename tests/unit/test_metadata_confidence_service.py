@@ -117,7 +117,7 @@ def test_compute_booked_by_week_asset_skips_unresolved_assets(monkeypatch):
 
     monkeypatch.setattr(lookahead_engine, "get_active_asset_types", lambda _db: {"crane"})
 
-    result = lookahead_engine._compute_booked_by_week_asset(
+    result, diagnostics = lookahead_engine._compute_booked_by_week_asset(
         db=_FakeDB(rows),
         project_id=project_id,
         tz=lookahead_engine.ZoneInfo("Australia/Adelaide"),
@@ -125,3 +125,4 @@ def test_compute_booked_by_week_asset_skips_unresolved_assets(monkeypatch):
 
     assert sum(result.values()) == 4.0
     assert list(result.values()) == [4.0]
+    assert diagnostics["excluded_booking_count"] == 1

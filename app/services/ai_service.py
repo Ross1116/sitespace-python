@@ -10,6 +10,9 @@ Public interface:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import logging
 import re
@@ -43,6 +46,7 @@ from ..core.constants import (
 )
 
 logger = logging.getLogger(__name__)
+_USD_COST_QUANTUM = Decimal("0.000001")
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _AI_PROVIDER_REQUEST_SEMAPHORE = threading.BoundedSemaphore(
@@ -320,6 +324,8 @@ class StructureResult:
     completeness_score: int          # 0–100
     missing_fields: list[str]
     notes: str
+    ai_tokens_used: int = 0
+    ai_cost_usd: Decimal | None = None
 
 
 @dataclass
@@ -344,7 +350,85 @@ class ClassificationResult:
     classifications: list[ClassificationItem]
     skipped: list[str]
     batch_tokens_used: int = 0
+    batch_cost_usd: Decimal | None = None
     fallback_used: bool = False
+
+
+@dataclass(frozen=True)
+class AIUsage:
+    """Token and cost accounting for a single upstream AI call."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: Decimal | None = None
+
+
+@dataclass
+class AIExecutionContext:
+    """Per-upload AI execution state shared across detection, classification, and profiling."""
+
+    suppress_ai: bool = False
+    quota_exhausted: bool = False
+    quota_error_count: int = 0
+
+    def mark_quota_exhausted(self) -> None:
+        self.quota_exhausted = True
+        self.suppress_ai = True
+        self.quota_error_count += 1
+
+
+def _configured_token_price(value: float | None) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value))
+
+
+def estimate_ai_cost_usd(
+    input_tokens: int,
+    output_tokens: int,
+) -> Decimal | None:
+    """Return USD cost for one AI call when pricing has been configured."""
+    input_rate = _configured_token_price(settings.AI_INPUT_COST_PER_MILLION_USD)
+    output_rate = _configured_token_price(settings.AI_OUTPUT_COST_PER_MILLION_USD)
+    if input_rate is None or output_rate is None:
+        return None
+
+    total_cost = (
+        (Decimal(max(0, input_tokens)) * input_rate)
+        + (Decimal(max(0, output_tokens)) * output_rate)
+    ) / Decimal("1000000")
+    return total_cost.quantize(_USD_COST_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def build_ai_usage(
+    input_tokens: int,
+    output_tokens: int,
+) -> AIUsage:
+    """Build a normalized AI usage object from provider token counters."""
+    safe_input = max(0, int(input_tokens or 0))
+    safe_output = max(0, int(output_tokens or 0))
+    return AIUsage(
+        input_tokens=safe_input,
+        output_tokens=safe_output,
+        total_tokens=safe_input + safe_output,
+        cost_usd=estimate_ai_cost_usd(safe_input, safe_output),
+    )
+
+
+def coerce_ai_usage(value: AIUsage | int | None) -> AIUsage:
+    """Normalize legacy total-token mocks to the structured AIUsage shape."""
+    if isinstance(value, AIUsage):
+        return value
+    return build_ai_usage(int(value or 0), 0)
+
+
+def sum_ai_costs(*values: Decimal | None) -> Decimal | None:
+    """Add nullable Decimal costs, preserving None when every value is unknown."""
+    known = [value for value in values if value is not None]
+    if not known:
+        return None
+    return sum(known, Decimal("0")).quantize(_USD_COST_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 @dataclass
@@ -358,11 +442,41 @@ class SubcontractorAssetSuggestion:
     suggested_asset_types: list[str]
 
 
+_CURRENT_AI_EXECUTION_CONTEXT: ContextVar[AIExecutionContext | None] = ContextVar(
+    "sitespace_ai_execution_context",
+    default=None,
+)
+
+
+def get_current_ai_execution_context() -> AIExecutionContext | None:
+    return _CURRENT_AI_EXECUTION_CONTEXT.get()
+
+
+def _resolve_ai_execution_context(
+    execution_context: AIExecutionContext | None = None,
+) -> AIExecutionContext | None:
+    return execution_context or get_current_ai_execution_context()
+
+
+@contextmanager
+def bind_ai_execution_context(execution_context: AIExecutionContext):
+    """Bind a shared execution context for all AI calls made in this upload flow."""
+    token = _CURRENT_AI_EXECUTION_CONTEXT.set(execution_context)
+    try:
+        yield execution_context
+    finally:
+        _CURRENT_AI_EXECUTION_CONTEXT.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Public interface — called by process_programme.py orchestrator
 # ---------------------------------------------------------------------------
 
-async def detect_structure(rows: list[dict[str, Any]]) -> StructureResult:
+async def detect_structure(
+    rows: list[dict[str, Any]],
+    *,
+    execution_context: AIExecutionContext | None = None,
+) -> StructureResult:
     """
     Analyse the first 50–100 rows of a programme file and return:
       - column_mapping: header → semantic field name
@@ -372,12 +486,17 @@ async def detect_structure(rows: list[dict[str, Any]]) -> StructureResult:
     Falls back to regex heuristics if AI is disabled or fails.
     Never raises — always returns a StructureResult (possibly degraded).
     """
+    execution_context = _resolve_ai_execution_context(execution_context)
+
     if not settings.AI_ENABLED:
         logger.info("AI_ENABLED=false — using regex fallback for structure detection")
         return _detect_structure_fallback(rows)
+    if execution_context is not None and execution_context.suppress_ai:
+        logger.info("AI suppressed — using regex fallback for structure detection")
+        return _detect_structure_fallback(rows)
 
     try:
-        return await _detect_structure_real(rows)
+        return await _detect_structure_real(rows, execution_context=execution_context)
     except Exception as exc:
         logger.warning("AI structure detection failed (%s) — falling back to regex", exc)
         return _detect_structure_fallback(rows)
@@ -386,6 +505,8 @@ async def detect_structure(rows: list[dict[str, Any]]) -> StructureResult:
 async def classify_assets(
     activities: list[dict[str, Any]],
     project_assets: list[dict[str, Any]] | None = None,
+    *,
+    execution_context: AIExecutionContext | None = None,
 ) -> ClassificationResult:
     """
     Classify a batch of activities by asset type.
@@ -399,12 +520,21 @@ async def classify_assets(
     Falls back to keyword-only classification if AI is disabled or fails.
     Never raises.
     """
+    execution_context = _resolve_ai_execution_context(execution_context)
+
     if not settings.AI_ENABLED:
         logger.info("AI_ENABLED=false — using keyword fallback for classification")
         return _classify_assets_fallback(activities, project_assets=project_assets)
+    if execution_context is not None and execution_context.suppress_ai:
+        logger.info("AI suppressed — using keyword fallback for classification")
+        return _classify_assets_fallback(activities, project_assets=project_assets)
 
     try:
-        return await _classify_assets_real(activities, project_assets=project_assets)
+        return await _classify_assets_real(
+            activities,
+            project_assets=project_assets,
+            execution_context=execution_context,
+        )
     except Exception as exc:
         logger.warning("AI classification failed (%s) — falling back to keyword", exc)
         return _classify_assets_fallback(activities, project_assets=project_assets)
@@ -425,7 +555,10 @@ def classify_item_standalone(
     Returns (asset_type, confidence) for high/medium results, or None on
     failure / low-confidence / AI disabled.  Never raises.
     """
+    execution_context = get_current_ai_execution_context()
     if not settings.AI_ENABLED:
+        return None
+    if execution_context is not None and execution_context.suppress_ai:
         return None
 
     fake_id = str(uuid.uuid4())
@@ -466,7 +599,12 @@ def classify_item_standalone(
             # closed before the event loop is torn down.
             async with thread_client:
                 try:
-                    raw = await _classify_batch(batch, system_prompt, thread_client)
+                    raw = await _classify_batch(
+                        batch,
+                        system_prompt,
+                        thread_client,
+                        execution_context=execution_context,
+                    )
                 except Exception as exc:
                     logger.warning("classify_item_standalone AI call failed: %s", exc)
                     return None
@@ -635,14 +773,19 @@ async def _call_api(
     user_message: str,
     max_tokens: int,
     timeout: float,
-) -> tuple[str, int]:
+    execution_context: AIExecutionContext | None = None,
+) -> tuple[str, AIUsage]:
     """
-    Unified async call — returns (text_content, tokens_used) regardless of provider.
+    Unified async call — returns (text_content, usage) regardless of provider.
 
     Quota/billing errors (OpenAI insufficient_quota, Anthropic credit exhausted) are
     re-raised immediately as RuntimeError so the SDK's built-in retry loop doesn't
     waste minutes retrying a permanent billing error.
     """
+    execution_context = _resolve_ai_execution_context(execution_context)
+    if execution_context is not None and execution_context.suppress_ai:
+        raise RuntimeError("AI suppressed for this upload")
+
     await _acquire_provider_request_slot()
     try:
         try:
@@ -661,7 +804,8 @@ async def _call_api(
                 )
                 content = response.choices[0].message.content if response.choices else None
                 usage = getattr(response, "usage", None)
-                tokens = (getattr(usage, "prompt_tokens", None) or 0) + (getattr(usage, "completion_tokens", None) or 0)
+                input_tokens = getattr(usage, "prompt_tokens", None) or 0
+                output_tokens = getattr(usage, "completion_tokens", None) or 0
             else:
                 response = await asyncio.wait_for(
                     client.messages.create(
@@ -675,7 +819,8 @@ async def _call_api(
                 )
                 content = response.content[0].text if response.content else None
                 usage = getattr(response, "usage", None)
-                tokens = (getattr(usage, "input_tokens", None) or 0) + (getattr(usage, "output_tokens", None) or 0)
+                input_tokens = getattr(usage, "input_tokens", None) or 0
+                output_tokens = getattr(usage, "output_tokens", None) or 0
         except Exception as exc:
             # Permanent billing/quota errors — skip retries and fail fast.
             # OpenAI:    RateLimitError with code="insufficient_quota"
@@ -689,6 +834,8 @@ async def _call_api(
                 or "exceeded your current quota" in err_body
             )
             if is_quota:
+                if execution_context is not None:
+                    execution_context.mark_quota_exhausted()
                 logger.error("AI provider quota/billing limit reached — disabling AI for this request: %s", exc)
                 raise RuntimeError(f"AI quota exhausted: {exc}") from exc
             raise
@@ -697,7 +844,7 @@ async def _call_api(
 
     if not content:
         raise ValueError("Empty or malformed API response")
-    return content, tokens
+    return content, build_ai_usage(input_tokens, output_tokens)
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
@@ -832,7 +979,11 @@ def _build_activities_from_rows(
 # Real AI implementations — Claude API calls
 # ---------------------------------------------------------------------------
 
-async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
+async def _detect_structure_real(
+    rows: list[dict[str, Any]],
+    *,
+    execution_context: AIExecutionContext | None = None,
+) -> StructureResult:
     """
     Call Claude to detect column structure of a programme file.
     Uses structure_detection.txt system prompt.
@@ -848,7 +999,14 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
         f"ROWS:\n{json.dumps(sample, default=str)}"
     )
 
-    text, _tokens = await _call_api(client, system_prompt, user_message, max_tokens=AI_STRUCTURE_DETECTION_MAX_TOKENS, timeout=float(settings.AI_TIMEOUT_STRUCTURE))
+    text, usage = await _call_api(
+        client,
+        system_prompt,
+        user_message,
+        max_tokens=AI_STRUCTURE_DETECTION_MAX_TOKENS,
+        timeout=float(settings.AI_TIMEOUT_STRUCTURE),
+        execution_context=execution_context,
+    )
     data = _parse_json_response(text)
 
     # Extract mapping, dropping null values
@@ -886,6 +1044,8 @@ async def _detect_structure_real(rows: list[dict[str, Any]]) -> StructureResult:
         completeness_score=completeness_score,
         missing_fields=missing_fields,
         notes=notes,
+        ai_tokens_used=usage.total_tokens,
+        ai_cost_usd=usage.cost_usd,
     )
 
 
@@ -913,6 +1073,8 @@ async def _classify_batch(
     batch: list[dict[str, Any]],
     system_prompt: str,
     client: Any,
+    *,
+    execution_context: AIExecutionContext | None = None,
 ) -> dict[str, Any]:
     """
     Send a single batch of up to 50 activities to the configured AI provider for classification.
@@ -925,13 +1087,21 @@ async def _classify_batch(
         f"ACTIVITIES:\n{json.dumps(batch, ensure_ascii=False)}"
     )
 
-    text, tokens_used = await _call_api(client, system_prompt, user_message, max_tokens=AI_CLASSIFICATION_BATCH_MAX_TOKENS, timeout=float(settings.AI_TIMEOUT_CLASSIFY))
+    text, usage = await _call_api(
+        client,
+        system_prompt,
+        user_message,
+        max_tokens=AI_CLASSIFICATION_BATCH_MAX_TOKENS,
+        timeout=float(settings.AI_TIMEOUT_CLASSIFY),
+        execution_context=execution_context,
+    )
     try:
         data = _parse_json_response(text)
         return {
             "classifications": list(data.get("classifications") or []),
             "skipped": list(data.get("skipped") or []),
-            "tokens_used": tokens_used,
+            "tokens_used": usage.total_tokens,
+            "cost_usd": usage.cost_usd,
         }
     except ValueError:
         # Response was truncated or malformed — attempt field-by-field rescue
@@ -942,7 +1112,12 @@ async def _classify_batch(
                 len(partial),
                 len(batch),
             )
-            return {"classifications": partial, "skipped": [], "tokens_used": tokens_used}
+            return {
+                "classifications": partial,
+                "skipped": [],
+                "tokens_used": usage.total_tokens,
+                "cost_usd": usage.cost_usd,
+            }
         raise
 
 
@@ -1084,6 +1259,8 @@ def _build_classification_prompt(
 async def _classify_assets_real(
     activities: list[dict[str, Any]],
     project_assets: list[dict[str, Any]] | None = None,
+    *,
+    execution_context: AIExecutionContext | None = None,
 ) -> ClassificationResult:
     """
     Classify activities via keyword pre-screening + Claude batched calls.
@@ -1102,6 +1279,7 @@ async def _classify_assets_real(
     if not activities:
         return ClassificationResult(classifications=[], skipped=[], batch_tokens_used=0)
 
+    execution_context = _resolve_ai_execution_context(execution_context)
     client = _get_async_client()
     system_prompt, valid_types = _build_classification_prompt(project_assets)
 
@@ -1113,16 +1291,10 @@ async def _classify_assets_real(
 
     for act in activities:
         act_id = str(act.get("id", ""))
-        name_lower = str(act.get("name", "")).lower()
-
-        matched_type: str | None = None
-        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
-            if keyword in name_lower:
-                # Only accept keyword hit if that type exists on this project
-                if project_assets and asset_type not in valid_types:
-                    continue
-                matched_type = asset_type
-                break
+        matched_type = keyword_classify_activity_name(
+            str(act.get("name", "")),
+            valid_types=valid_types if project_assets else None,
+        )
 
         if matched_type:
             keyword_matched[act_id] = matched_type
@@ -1159,33 +1331,61 @@ async def _classify_assets_real(
     BATCH_SIZE = AI_CLASSIFICATION_BATCH_SIZE
     all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
     total_tokens = 0
+    total_cost_usd: Decimal | None = None
 
     if deduped_candidates:
         batches = [
             deduped_candidates[i:i + BATCH_SIZE]
             for i in range(0, len(deduped_candidates), BATCH_SIZE)
         ]
-        batch_tasks = [_classify_batch(batch, system_prompt, client) for batch in batches]
 
-        if len(deduped_candidates) > AI_CLASSIFICATION_PARALLEL_THRESHOLD:
-            _sem = asyncio.Semaphore(AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES)
-
-            async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
-                async with _sem:
-                    return await task
-
-            batch_results = await asyncio.gather(
-                *[_bounded(t) for t in batch_tasks],
-                return_exceptions=True,
-            )
-        else:
+        if execution_context is not None:
             batch_results = []
-            for task in batch_tasks:
+            for batch in batches:
+                if execution_context.suppress_ai:
+                    break
                 try:
-                    batch_results.append(await task)
+                    batch_results.append(
+                        await _classify_batch(
+                            batch,
+                            system_prompt,
+                            client,
+                            execution_context=execution_context,
+                        )
+                    )
                 except Exception as exc:
                     logger.warning("Batch classification task failed: %s", exc)
                     batch_results.append(exc)
+        else:
+            batch_tasks = [
+                _classify_batch(
+                    batch,
+                    system_prompt,
+                    client,
+                    execution_context=execution_context,
+                )
+                for batch in batches
+            ]
+
+            if len(deduped_candidates) > AI_CLASSIFICATION_PARALLEL_THRESHOLD:
+                _sem = asyncio.Semaphore(AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES)
+
+                async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
+                    async with _sem:
+                        return await task
+
+                batch_results = await asyncio.gather(
+                    *[_bounded(t) for t in batch_tasks],
+                    return_exceptions=True,
+                )
+            else:
+                batch_results = []
+                for task in batch_tasks:
+                    try:
+                        batch_results.append(await task)
+                    except Exception as exc:
+                        logger.warning("Batch classification task failed: %s", exc)
+                        batch_results.append(exc)
 
         for result in batch_results:
             if isinstance(result, Exception):
@@ -1205,6 +1405,7 @@ async def _classify_assets_real(
                         "confidence": "low",
                     }
             total_tokens += result.get("tokens_used", 0)
+            total_cost_usd = sum_ai_costs(total_cost_usd, result.get("cost_usd"))
 
         # Fan-out: copy representative result to all duplicate activities
         expanded: dict[str, dict[str, Any]] = {}
@@ -1309,6 +1510,7 @@ async def _classify_assets_real(
         classifications=classifications,
         skipped=skipped,
         batch_tokens_used=total_tokens,
+        batch_cost_usd=total_cost_usd,
         fallback_used=False,
     )
 
@@ -1445,6 +1647,94 @@ _KEYWORD_MAP: dict[str, str] = {
     # ── Compactor ──────────────────────────────────────────────────────────────
     "compactor": "compactor",
 }
+
+# Generalized deterministic keyword map used by all no-credit fallbacks.
+# This intentionally favors broad, reusable construction patterns over
+# project-specific literals so it remains stable across uploads.
+_KEYWORD_MAP = {
+    "tower crane": "crane",
+    "mobile crane": "crane",
+    "crawler crane": "crane",
+    "luffing crane": "crane",
+    "pick and carry": "crane",
+    "pre cast": "crane",
+    "precast": "crane",
+    "column cages": "crane",
+    "column cage": "crane",
+    "crane": "crane",
+    "builders hoist": "hoist",
+    "builder hoist": "hoist",
+    "builders lift": "hoist",
+    "builder lift": "hoist",
+    "personnel hoist": "hoist",
+    "materials hoist": "hoist",
+    "material hoist": "hoist",
+    "construction lift": "hoist",
+    "hoist": "hoist",
+    "loading zone": "loading_bay",
+    "loading bay": "loading_bay",
+    "unloading bay": "loading_bay",
+    "elevated work platform": "ewp",
+    "scissor lift": "ewp",
+    "boom lift": "ewp",
+    "knuckle boom": "ewp",
+    "knuckle lift": "ewp",
+    "cherry picker": "ewp",
+    "man lift": "ewp",
+    "ewp": "ewp",
+    "concrete pump": "concrete_pump",
+    "boom pump": "concrete_pump",
+    "line pump": "concrete_pump",
+    "concrete pour": "concrete_pump",
+    "slab pour": "concrete_pump",
+    "column pour": "concrete_pump",
+    "pour concrete": "concrete_pump",
+    "pour columns": "concrete_pump",
+    "kibble": "concrete_pump",
+    "mini excavator": "excavator",
+    "dig footings": "excavator",
+    "earthworks": "excavator",
+    "excavation": "excavator",
+    "excavate": "excavator",
+    "trenching": "excavator",
+    "excavator": "excavator",
+    "backhoe": "excavator",
+    "digger": "excavator",
+    "telescopic handler": "telehandler",
+    "reach forklift": "telehandler",
+    "telehandler": "telehandler",
+    "forklift": "forklift",
+    "plate compactor": "compactor",
+    "smooth drum roller": "compactor",
+    "compactor": "compactor",
+    "roller": "compactor",
+}
+
+
+def _normalize_for_keyword_match(name: str) -> str:
+    normalized = _normalize_for_dedup(name)
+    normalized = normalized.replace("&", " and ")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def keyword_classify_activity_name(
+    activity_name: str,
+    *,
+    valid_types: frozenset[str] | None = None,
+) -> str | None:
+    normalized_name = _normalize_for_keyword_match(activity_name)
+    if not normalized_name:
+        return None
+
+    padded_name = f" {normalized_name} "
+    for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if f" {keyword} " not in padded_name:
+            continue
+        if valid_types and asset_type not in valid_types:
+            continue
+        return asset_type
+    return None
 
 
 def _detect_structure_fallback(rows: list[dict[str, Any]]) -> StructureResult:
@@ -1625,15 +1915,10 @@ def _classify_assets_fallback(
 
     for activity in activities:
         activity_id = str(activity.get("id", ""))
-        name = str(activity.get("name", "")).lower()
-
-        matched_type: str | None = None
-        for keyword, asset_type in sorted(_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
-            if keyword in name:
-                if valid_types and asset_type not in valid_types:
-                    continue
-                matched_type = asset_type
-                break
+        matched_type = keyword_classify_activity_name(
+            str(activity.get("name", "")),
+            valid_types=valid_types,
+        )
 
         if matched_type:
             classifications.append(ClassificationItem(

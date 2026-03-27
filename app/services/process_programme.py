@@ -44,15 +44,18 @@ from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeA
 from ..models.site_project import SiteProject
 from ..utils.storage import storage
 from .ai_service import (
+    AIExecutionContext,
     ActivityItem,
     ClassificationResult,
     StructureResult,
+    bind_ai_execution_context,
     classify_assets,
     classify_row_kind,
     detect_structure,
     parse_pct_raw,
     score_row_confidence,
     suggest_subcontractor_asset_types,
+    sum_ai_costs,
 )
 from .classification_service import resolve_item_classification
 from .identity_service import normalize_activity_name, resolve_or_create_item
@@ -67,6 +70,54 @@ SAFE_FAILURE_REASON = "processing_failed"
 # Reused across uploads with identical column headers — skips AI entirely.
 _header_cache: dict[str, dict[str, Any]] = {}
 _header_cache_lock = threading.Lock()
+
+_COMPLETENESS_NOTES_DEFAULTS: dict[str, Any] = {
+    "missing_fields": [],
+    "notes": "",
+    "ai_quota_exhausted": False,
+    "classification_ai_suppressed": False,
+    "work_profile_ai_suppressed": False,
+    "unclassified_mapping_count": 0,
+    "non_planning_ready_asset_count": 0,
+    "excluded_booking_count": 0,
+}
+
+
+def _normalize_completeness_notes(existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    notes = dict(_COMPLETENESS_NOTES_DEFAULTS)
+    if isinstance(existing, dict):
+        notes.update(existing)
+
+    notes["missing_fields"] = list(notes.get("missing_fields") or [])
+    notes["notes"] = str(notes.get("notes") or "")
+
+    for key in (
+        "ai_quota_exhausted",
+        "classification_ai_suppressed",
+        "work_profile_ai_suppressed",
+    ):
+        notes[key] = bool(notes.get(key))
+
+    for key in (
+        "unclassified_mapping_count",
+        "non_planning_ready_asset_count",
+        "excluded_booking_count",
+    ):
+        try:
+            notes[key] = int(notes.get(key) or 0)
+        except (TypeError, ValueError):
+            notes[key] = 0
+
+    return notes
+
+
+def _update_completeness_notes(upload: ProgrammeUpload, **updates: Any) -> None:
+    notes = _normalize_completeness_notes(upload.completeness_notes)
+    for key, value in updates.items():
+        if value is None:
+            continue
+        notes[key] = value
+    upload.completeness_notes = _normalize_completeness_notes(notes)
 
 
 def preflight_validate(file_bytes: bytes, file_name: str) -> str | None:
@@ -253,15 +304,24 @@ async def _run(upload_id: str, db: Session) -> None:
         _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
+    ai_execution_context = AIExecutionContext()
+
     # 3. Detect column structure.
     is_pdf = _file_name.lower().endswith(".pdf")
     if is_pdf:
         # PDFs have fixed columns (ID, Name, Start, Finish) — pre-build the
         # activities from the known mapping, then let Claude score data quality.
         pdf_result = _pdf_structure(rows)
+        structure_ai_tokens_used = 0
+        structure_ai_cost_usd = None
         try:
-            ai_score = await detect_structure(rows[:100])
+            ai_score = await detect_structure(
+                rows[:100],
+                execution_context=ai_execution_context,
+            )
             score = min(ai_score.completeness_score, 90)
+            structure_ai_tokens_used = ai_score.ai_tokens_used
+            structure_ai_cost_usd = ai_score.ai_cost_usd
         except Exception:
             logger.warning("PDF upload %s — AI scoring failed, falling back to row-based score", upload_id)
             total = len(pdf_result.activities)
@@ -273,6 +333,8 @@ async def _run(upload_id: str, db: Session) -> None:
             completeness_score=score,
             missing_fields=pdf_result.missing_fields,
             notes=pdf_result.notes,
+            ai_tokens_used=structure_ai_tokens_used,
+            ai_cost_usd=structure_ai_cost_usd,
         )
         logger.info(
             "PDF upload %s — pre-determined column mapping, AI-scored completeness %d%% (%d activities)",
@@ -288,7 +350,10 @@ async def _run(upload_id: str, db: Session) -> None:
             logger.info("Header hash cache hit for upload %s — reusing cached structure metadata", upload_id)
             structure = _build_structure_from_cached_mapping(sample, cached)
         else:
-            structure = await detect_structure(sample)
+            structure = await detect_structure(
+                sample,
+                execution_context=ai_execution_context,
+            )
             with _header_cache_lock:
                 _header_cache[header_hash] = {"column_mapping": dict(structure.column_mapping)}
 
@@ -313,17 +378,23 @@ async def _run(upload_id: str, db: Session) -> None:
     # 5. Persist column_mapping + score on programme_uploads
     upload.column_mapping = structure.column_mapping
     upload.completeness_score = completeness_float
-    upload.completeness_notes = {
-        "missing_fields": structure.missing_fields,
-        "notes": structure.notes,
-    }
+    upload.ai_tokens_used = int(structure.ai_tokens_used or 0)
+    upload.ai_cost_usd = structure.ai_cost_usd
+    upload.completeness_notes = _normalize_completeness_notes(
+        {
+            "missing_fields": structure.missing_fields,
+            "notes": structure.notes,
+            "ai_quota_exhausted": ai_execution_context.quota_exhausted,
+        }
+    )
     db.flush()
 
     # 7. Bulk-insert programme_activities
     #    Insert parents before children to satisfy the deferred FK constraint.
     #    The deferred FK means the constraint is checked at commit time, not per-row,
     #    but ordering is still safer for large batches.
-    inserted_rows, id_map, resolved_cls_map = _insert_activities(upload_id, all_activity_items, db)
+    with bind_ai_execution_context(ai_execution_context):
+        inserted_rows, id_map, resolved_cls_map = _insert_activities(upload_id, all_activity_items, db)
 
     # 8. Classify assets — only task rows generate demand; summary and milestone
     #    rows are excluded so they don't pollute asset-type suggestions.
@@ -375,7 +446,11 @@ async def _run(upload_id: str, db: Session) -> None:
 
     classification: ClassificationResult | None = None
     try:
-        classification = await classify_assets(activity_dicts, project_assets=project_assets or None)
+        classification = await classify_assets(
+            activity_dicts,
+            project_assets=project_assets or None,
+            execution_context=ai_execution_context,
+        )
     except Exception as exc:
         logger.warning("Classification failed for upload %s (%s) — activities imported without mappings", upload_id, exc)
 
@@ -388,16 +463,23 @@ async def _run(upload_id: str, db: Session) -> None:
 
     if classification is not None:
         if classification.batch_tokens_used is not None:
-            upload.ai_tokens_used = classification.batch_tokens_used
+            upload.ai_tokens_used = int(upload.ai_tokens_used or 0) + int(classification.batch_tokens_used or 0)
+        upload.ai_cost_usd = sum_ai_costs(upload.ai_cost_usd, classification.batch_cost_usd)
+        _update_completeness_notes(
+            upload,
+            ai_quota_exhausted=ai_execution_context.quota_exhausted,
+            classification_ai_suppressed=classification.fallback_used or ai_execution_context.suppress_ai,
+            unclassified_mapping_count=len(classification.skipped),
+        )
         if classification.fallback_used and activity_dicts:
             # AI was unavailable — stamp a visible warning into completeness_notes
             # so the status poll response surfaces it on the frontend.
-            notes_dict = dict(upload.completeness_notes or {})
-            existing = str(notes_dict.get("notes") or "")
+            notes_dict = _normalize_completeness_notes(upload.completeness_notes)
+            existing = notes_dict["notes"]
             warning = "AI classification unavailable — asset demand forecast may be incomplete. Re-upload once the AI service is restored."
             notes_dict["notes"] = f"{existing} | {warning}" if existing else warning
             notes_dict["ai_classification_fallback"] = True
-            upload.completeness_notes = notes_dict
+            upload.completeness_notes = _normalize_completeness_notes(notes_dict)
         try:
             with db.begin_nested():
                 _write_classifications(
@@ -459,14 +541,25 @@ async def _run(upload_id: str, db: Session) -> None:
 
     try:
         with db.begin_nested():
-            runtime = await materialize_work_profiles_for_upload(db, upload)
+            runtime = await materialize_work_profiles_for_upload(
+                db,
+                upload,
+                execution_context=ai_execution_context,
+            )
             _sync_subcontractor_asset_type_assignments(upload.project_id, upload_id, db)
             ensure_project_alert_policy(db, upload.project_id)
             upload.ai_tokens_used = int(upload.ai_tokens_used or 0) + int(runtime.ai_tokens_used or 0)
-            notes_dict = dict(upload.completeness_notes or {})
+            upload.ai_cost_usd = sum_ai_costs(upload.ai_cost_usd, runtime.ai_cost_usd)
+            notes_dict = _normalize_completeness_notes(upload.completeness_notes)
             if runtime.degraded_reasons:
                 notes_dict["work_profile_degraded_reasons"] = runtime.degraded_reasons
-                upload.completeness_notes = notes_dict
+            notes_dict["ai_quota_exhausted"] = ai_execution_context.quota_exhausted
+            notes_dict["work_profile_ai_suppressed"] = (
+                bool(notes_dict.get("work_profile_ai_suppressed"))
+                or ai_execution_context.suppress_ai
+                or "work_profile_ai_suppressed" in runtime.degraded_reasons
+            )
+            upload.completeness_notes = _normalize_completeness_notes(notes_dict)
     except Exception as exc:
         logger.warning(
             "Work-profile materialization failed for upload %s (%s) - continuing in degraded mode",
@@ -489,9 +582,11 @@ async def _run(upload_id: str, db: Session) -> None:
             )
             _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
             return
-        notes_dict = dict(upload.completeness_notes or {})
+        notes_dict = _normalize_completeness_notes(upload.completeness_notes)
         notes_dict["work_profile_degraded_reasons"] = ["materialization_failed"]
-        upload.completeness_notes = notes_dict
+        notes_dict["work_profile_ai_suppressed"] = True
+        notes_dict["ai_quota_exhausted"] = ai_execution_context.quota_exhausted
+        upload.completeness_notes = _normalize_completeness_notes(notes_dict)
         upload.status = "degraded"
         upload.processing_outcome = "completed_with_warnings"
 
@@ -512,7 +607,18 @@ async def _run(upload_id: str, db: Session) -> None:
     # Refresh the lookahead snapshot immediately so the dashboard reflects this
     # upload without waiting for the nightly job.
     try:
-        calculate_lookahead_for_project(uuid.UUID(_project_id), db)
+        snapshot = calculate_lookahead_for_project(uuid.UUID(_project_id), db)
+        diagnostics = ((snapshot.data or {}).get("diagnostics") or {}) if snapshot else {}
+        if snapshot:
+            upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+            if upload:
+                _update_completeness_notes(
+                    upload,
+                    ai_quota_exhausted=ai_execution_context.quota_exhausted,
+                    non_planning_ready_asset_count=diagnostics.get("non_planning_ready_asset_count", 0),
+                    excluded_booking_count=diagnostics.get("excluded_booking_count", 0),
+                )
+                db.commit()
         logger.info("Lookahead snapshot refreshed for project %s", _project_id)
     except Exception:
         logger.warning("Lookahead snapshot refresh failed for project %s — nightly job will catch up", _project_id)
@@ -1204,7 +1310,10 @@ def _commit_degraded(
 ) -> None:
     """Mark upload as degraded terminal state instead of committed source data."""
     upload.completeness_score = completeness_score
-    upload.completeness_notes = {"missing_fields": notes, "notes": "Processing degraded."}
+    notes_dict = _normalize_completeness_notes(upload.completeness_notes)
+    notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], *notes]))
+    notes_dict["notes"] = "Processing degraded."
+    upload.completeness_notes = _normalize_completeness_notes(notes_dict)
     upload.status = "degraded"
     upload.processing_outcome = "completed_with_warnings"
     db.commit()
@@ -1216,7 +1325,10 @@ def _mark_failed_as_committed(upload_id: str, db: Session, reason: str) -> None:
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload and upload.status == "processing":
             upload.completeness_score = 0.0
-            upload.completeness_notes = {"missing_fields": ["unknown_error"], "notes": reason}
+            notes_dict = _normalize_completeness_notes(upload.completeness_notes)
+            notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], "unknown_error"]))
+            notes_dict["notes"] = reason
+            upload.completeness_notes = _normalize_completeness_notes(notes_dict)
             upload.status = "degraded"
             upload.processing_outcome = "failed"
             db.commit()

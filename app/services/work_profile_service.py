@@ -9,6 +9,7 @@ materialization for construction programme activities.
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 import hashlib
 import json
 import logging
@@ -51,7 +52,16 @@ from ..models.work_profile import (
     ItemContextProfile,
     WorkProfileAILog,
 )
-from .ai_service import _call_api, _get_async_client, _parse_json_response
+from .ai_service import (
+    AIExecutionContext,
+    _call_api,
+    _get_async_client,
+    _parse_json_response,
+    _resolve_ai_execution_context,
+    build_ai_usage,
+    coerce_ai_usage,
+    sum_ai_costs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +90,7 @@ class WorkProfileRuntimeState:
     allow_ai: bool = True
     operator_override: bool = False
     ai_tokens_used: int = 0
+    ai_cost_usd: Decimal | None = None
     ai_attempts: int = 0
     validation_failures: int = 0
     degraded_reasons: list[str] = field(default_factory=list)
@@ -101,13 +112,17 @@ class WorkProfileAIOutcome:
     attempted_ai: bool = False
     ai_attempts: int = 0
     ai_tokens_used: int = 0
+    ai_cost_usd: Decimal | None = None
     validation_failures: int = 0
     request_json: dict[str, object] = field(default_factory=dict)
     response_json: Optional[dict[str, object]] = None
     validation_errors: Optional[list[str]] = None
     fallback_used: bool = False
     retry_count: int = 0
+    log_input_tokens_used: Optional[int] = None
+    log_output_tokens_used: Optional[int] = None
     log_tokens_used: Optional[int] = None
+    log_cost_usd: Decimal | None = None
     latency_ms: Optional[int] = None
 
 
@@ -1470,7 +1485,10 @@ def _write_work_profile_ai_log(
     validation_errors: Optional[list[str]],
     fallback_used: bool,
     retry_count: int,
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
     tokens_used: Optional[int],
+    cost_usd: Decimal | None,
     latency_ms: Optional[int],
     model_name: str,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
@@ -1486,7 +1504,10 @@ def _write_work_profile_ai_log(
         validation_errors_json=validation_errors,
         fallback_used=fallback_used,
         retry_count=retry_count,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         tokens_used=tokens_used,
+        cost_usd=cost_usd,
         latency_ms=latency_ms,
     )
     db.add(log_row)
@@ -1506,7 +1527,9 @@ async def generate_work_profile_ai(
     compressed_context: Optional[dict] = None,
     posterior_hint: Optional[dict[str, float]] = None,
     repair_errors: Optional[list[str]] = None,
+    execution_context: AIExecutionContext | None = None,
 ) -> Optional[dict[str, object]]:
+    execution_context = _resolve_ai_execution_context(execution_context)
     if duration_days <= 0:
         duration_days = 1
 
@@ -1538,11 +1561,15 @@ async def generate_work_profile_ai(
         request_payload["repair_errors"] = repair_errors
 
     if asset_type == "none":
+        usage = build_ai_usage(0, 0)
         return {
             "total_hours": 0.0,
             "normalized_distribution": [0.0] * duration_days,
             "confidence": 1.0,
-            "tokens_used": 0,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "tokens_used": usage.total_tokens,
+            "cost_usd": usage.cost_usd,
             "latency_ms": 0,
             "request_json": request_payload,
             "response_json": {
@@ -1553,6 +1580,8 @@ async def generate_work_profile_ai(
         }
 
     if not settings.AI_ENABLED or not settings.AI_API_KEY:
+        return None
+    if execution_context is not None and execution_context.suppress_ai:
         return None
 
     system_prompt = _work_profile_prompt_text()
@@ -1568,13 +1597,15 @@ async def generate_work_profile_ai(
     try:
         started = time.perf_counter()
         client = _get_async_client()
-        text, tokens_used = await _call_api(
+        text, usage = await _call_api(
             client,
             system_prompt,
             user_message,
             max_tokens=response_max_tokens,
             timeout=float(settings.AI_TIMEOUT_WORK_PROFILE),
+            execution_context=execution_context,
         )
+        usage = coerce_ai_usage(usage)
         latency_ms = int((time.perf_counter() - started) * 1000)
         data = _parse_json_response(text)
     except Exception as exc:
@@ -1608,7 +1639,10 @@ async def generate_work_profile_ai(
         "total_hours": total_hours,
         "normalized_distribution": normalized_distribution,
         "confidence": confidence,
-        "tokens_used": tokens_used,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "tokens_used": usage.total_tokens,
+        "cost_usd": usage.cost_usd,
         "latency_ms": latency_ms,
         "request_json": request_payload,
         "response_json": data,
@@ -1666,7 +1700,10 @@ def _validate_ai_proposal(
         "normalized_distribution": normalized_distribution,
         "confidence": confidence,
         "raw_total_hours": ai_total,
+        "input_tokens": int(proposal.get("input_tokens", 0) or 0),
+        "output_tokens": int(proposal.get("output_tokens", 0) or 0),
         "tokens_used": int(proposal.get("tokens_used", 0) or 0),
+        "cost_usd": proposal.get("cost_usd"),
         "latency_ms": proposal.get("latency_ms"),
         "request_json": proposal.get("request_json"),
         "response_json": proposal.get("response_json"),
@@ -1690,11 +1727,15 @@ async def _request_validated_ai_proposal(
     posterior_hint: Optional[dict[str, float]],
     trusted_baseline: Optional[float],
     runtime: Optional[WorkProfileRuntimeState],
+    execution_context: AIExecutionContext | None = None,
 ) -> Optional[dict[str, object]]:
     last_errors: list[str] = []
     last_request: dict[str, object] | None = None
     last_response: dict[str, object] | None = None
+    last_input_tokens: int | None = None
+    last_output_tokens: int | None = None
     last_tokens: int | None = None
+    last_cost_usd: Decimal | None = None
     last_latency: int | None = None
 
     for attempt in range(2):
@@ -1709,6 +1750,7 @@ async def _request_validated_ai_proposal(
             compressed_context=compressed_context,
             posterior_hint=posterior_hint,
             repair_errors=last_errors or None,
+            execution_context=execution_context,
         )
         if proposal is None:
             last_errors = ["ai_unavailable_or_invalid_response"]
@@ -1717,10 +1759,14 @@ async def _request_validated_ai_proposal(
         if runtime is not None:
             runtime.ai_attempts += 1
             runtime.ai_tokens_used += int(proposal.get("tokens_used", 0) or 0)
+            runtime.ai_cost_usd = sum_ai_costs(runtime.ai_cost_usd, proposal.get("cost_usd"))
 
         last_request = proposal.get("request_json") if isinstance(proposal.get("request_json"), dict) else {}
         last_response = proposal.get("response_json") if isinstance(proposal.get("response_json"), dict) else {}
+        last_input_tokens = int(proposal.get("input_tokens", 0) or 0)
+        last_output_tokens = int(proposal.get("output_tokens", 0) or 0)
         last_tokens = int(proposal.get("tokens_used", 0) or 0)
+        last_cost_usd = proposal.get("cost_usd")
         last_latency = int(proposal.get("latency_ms", 0) or 0)
 
         validated, errors = _validate_ai_proposal(
@@ -1741,7 +1787,10 @@ async def _request_validated_ai_proposal(
                 validation_errors=None,
                 fallback_used=False,
                 retry_count=attempt,
+                input_tokens=last_input_tokens,
+                output_tokens=last_output_tokens,
                 tokens_used=last_tokens,
+                cost_usd=last_cost_usd,
                 latency_ms=last_latency,
                 model_name=settings.AI_MODEL,
             )
@@ -1760,7 +1809,10 @@ async def _request_validated_ai_proposal(
         validation_errors=last_errors or ["ai_fallback_used"],
         fallback_used=True,
         retry_count=1 if last_errors else 0,
+        input_tokens=last_input_tokens,
+        output_tokens=last_output_tokens,
         tokens_used=last_tokens,
+        cost_usd=last_cost_usd,
         latency_ms=last_latency,
         model_name=settings.AI_MODEL,
     )
@@ -1793,13 +1845,18 @@ async def _precompute_validated_ai_proposal(
     row_confidence: Optional[str],
     posterior_hint: Optional[dict[str, float]],
     trusted_baseline: Optional[float],
+    execution_context: AIExecutionContext | None = None,
 ) -> WorkProfileAIOutcome:
     last_errors: list[str] = []
     last_request: dict[str, object] = {}
     last_response: dict[str, object] | None = None
+    last_input_tokens: int | None = None
+    last_output_tokens: int | None = None
     last_tokens: int | None = None
+    last_cost_usd: Decimal | None = None
     last_latency: int | None = None
     total_tokens = 0
+    total_cost_usd: Decimal | None = None
     ai_attempts = 0
 
     for attempt in range(2):
@@ -1815,6 +1872,7 @@ async def _precompute_validated_ai_proposal(
             compressed_context=compressed_context,
             posterior_hint=posterior_hint,
             repair_errors=last_errors or None,
+            execution_context=execution_context,
         )
         if proposal is None:
             last_errors = ["ai_unavailable_or_invalid_response"]
@@ -1822,9 +1880,13 @@ async def _precompute_validated_ai_proposal(
 
         current_tokens = int(proposal.get("tokens_used", 0) or 0)
         total_tokens += current_tokens
+        total_cost_usd = sum_ai_costs(total_cost_usd, proposal.get("cost_usd"))
         last_request = proposal.get("request_json") if isinstance(proposal.get("request_json"), dict) else {}
         last_response = proposal.get("response_json") if isinstance(proposal.get("response_json"), dict) else {}
+        last_input_tokens = int(proposal.get("input_tokens", 0) or 0)
+        last_output_tokens = int(proposal.get("output_tokens", 0) or 0)
         last_tokens = current_tokens
+        last_cost_usd = proposal.get("cost_usd")
         last_latency = int(proposal.get("latency_ms", 0) or 0)
 
         validated, errors = _validate_ai_proposal(
@@ -1840,13 +1902,17 @@ async def _precompute_validated_ai_proposal(
                 attempted_ai=True,
                 ai_attempts=ai_attempts,
                 ai_tokens_used=total_tokens,
+                ai_cost_usd=total_cost_usd,
                 validation_failures=0,
                 request_json=last_request,
                 response_json=last_response,
                 validation_errors=None,
                 fallback_used=False,
                 retry_count=attempt,
+                log_input_tokens_used=last_input_tokens,
+                log_output_tokens_used=last_output_tokens,
                 log_tokens_used=last_tokens,
+                log_cost_usd=last_cost_usd,
                 latency_ms=last_latency,
             )
         last_errors = errors
@@ -1856,13 +1922,17 @@ async def _precompute_validated_ai_proposal(
         attempted_ai=True,
         ai_attempts=ai_attempts,
         ai_tokens_used=total_tokens,
+        ai_cost_usd=total_cost_usd,
         validation_failures=1,
         request_json=last_request,
         response_json=last_response,
         validation_errors=last_errors or ["ai_fallback_used"],
         fallback_used=True,
         retry_count=1 if last_errors else 0,
+        log_input_tokens_used=last_input_tokens,
+        log_output_tokens_used=last_output_tokens,
         log_tokens_used=last_tokens,
+        log_cost_usd=last_cost_usd,
         latency_ms=last_latency,
     )
 
@@ -1962,6 +2032,7 @@ def resolve_work_profile(
     runtime: Optional[WorkProfileRuntimeState] = None,
     preflight: Optional[WorkProfilePreflight] = None,
     precomputed_ai_proposal: Optional[dict[str, object]] = None,
+    execution_context: AIExecutionContext | None = None,
 ) -> ActivityWorkProfile:
     """
     Resolve and persist a work profile for one programme activity.
@@ -2059,6 +2130,7 @@ def resolve_work_profile(
                     posterior_hint=hint,
                     trusted_baseline=None,
                     runtime=runtime,
+                    execution_context=execution_context,
                 )
 
             if ai_payload is not None:
@@ -2147,6 +2219,7 @@ def resolve_work_profile(
                     posterior_hint=None,
                     trusted_baseline=None,
                     runtime=runtime,
+                    execution_context=execution_context,
                 )
 
             if ai_payload is not None:
@@ -2237,8 +2310,15 @@ async def materialize_work_profiles_for_upload(
     upload: ProgrammeUpload,
     *,
     operator_override: bool = False,
+    execution_context: AIExecutionContext | None = None,
 ) -> WorkProfileRuntimeState:
-    runtime = WorkProfileRuntimeState(allow_ai=True, operator_override=operator_override)
+    execution_context = _resolve_ai_execution_context(execution_context)
+    runtime = WorkProfileRuntimeState(
+        allow_ai=not bool(execution_context and execution_context.suppress_ai),
+        operator_override=operator_override,
+    )
+    if execution_context is not None and execution_context.suppress_ai:
+        _append_runtime_reason(runtime, "work_profile_ai_suppressed")
 
     rows = (
         db.query(ProgrammeActivity, ActivityAssetMapping)
@@ -2308,9 +2388,20 @@ async def materialize_work_profiles_for_upload(
                     )
 
         if precompute_inputs:
-            outcome_list = await asyncio.gather(
-                *[
-                    _precompute_validated_ai_proposal(
+            if execution_context is not None:
+                outcome_list = []
+                for (
+                    _context_hash,
+                    representative_activity,
+                    representative_mapping,
+                    representative_preflight,
+                    hint,
+                ) in precompute_inputs:
+                    if execution_context.suppress_ai:
+                        runtime.allow_ai = False
+                        _append_runtime_reason(runtime, "work_profile_ai_suppressed")
+                        break
+                    outcome = await _precompute_validated_ai_proposal(
                         activity_name=representative_activity.name,
                         asset_type=representative_mapping.asset_type,
                         duration_days=max(int(representative_activity.duration_days or 0), 1),
@@ -2321,16 +2412,36 @@ async def materialize_work_profiles_for_upload(
                         row_confidence=representative_activity.row_confidence,
                         posterior_hint=hint,
                         trusted_baseline=None,
+                        execution_context=execution_context,
                     )
-                    for (
-                        _context_hash,
-                        representative_activity,
-                        representative_mapping,
-                        representative_preflight,
-                        hint,
-                    ) in precompute_inputs
-                ]
-            )
+                    outcome_list.append(outcome)
+            else:
+                outcome_list = await asyncio.gather(
+                    *[
+                        _precompute_validated_ai_proposal(
+                            activity_name=representative_activity.name,
+                            asset_type=representative_mapping.asset_type,
+                            duration_days=max(int(representative_activity.duration_days or 0), 1),
+                            max_hours_per_day=representative_preflight.max_hours_per_day,
+                            compressed_context=representative_preflight.compressed_context,
+                            level_name=representative_activity.level_name,
+                            zone_name=representative_activity.zone_name,
+                            row_confidence=representative_activity.row_confidence,
+                            posterior_hint=hint,
+                            trusted_baseline=None,
+                            execution_context=None,
+                        )
+                        for (
+                            _context_hash,
+                            representative_activity,
+                            representative_mapping,
+                            representative_preflight,
+                            hint,
+                        ) in precompute_inputs
+                    ]
+                )
+
+            processed_precompute_inputs = precompute_inputs[: len(outcome_list)]
 
             for (
                 context_hash,
@@ -2338,12 +2449,16 @@ async def materialize_work_profiles_for_upload(
                 _representative_mapping,
                 _representative_preflight,
                 _hint,
-            ), outcome in zip(precompute_inputs, outcome_list, strict=True):
+            ), outcome in zip(processed_precompute_inputs, outcome_list, strict=True):
                 representative_outcomes[context_hash] = outcome
                 processed_ai_candidates += 1
                 runtime.ai_attempts += outcome.ai_attempts
                 runtime.ai_tokens_used += outcome.ai_tokens_used
+                runtime.ai_cost_usd = sum_ai_costs(runtime.ai_cost_usd, outcome.ai_cost_usd)
                 runtime.validation_failures += outcome.validation_failures
+                if execution_context is not None and execution_context.suppress_ai:
+                    runtime.allow_ai = False
+                    _append_runtime_reason(runtime, "work_profile_ai_suppressed")
 
                 _write_work_profile_ai_log(
                     db,
@@ -2355,7 +2470,10 @@ async def materialize_work_profiles_for_upload(
                     validation_errors=outcome.validation_errors,
                     fallback_used=outcome.fallback_used,
                     retry_count=outcome.retry_count,
+                    input_tokens=outcome.log_input_tokens_used,
+                    output_tokens=outcome.log_output_tokens_used,
                     tokens_used=outcome.log_tokens_used,
+                    cost_usd=outcome.log_cost_usd,
                     latency_ms=outcome.latency_ms,
                     model_name=settings.AI_MODEL,
                 )
@@ -2393,6 +2511,7 @@ async def materialize_work_profiles_for_upload(
                 runtime=runtime,
                 preflight=representative_preflight,
                 precomputed_ai_proposal=representative_ai_payload,
+                execution_context=execution_context,
             )
 
             for sub_activity, sub_mapping, sub_preflight in group[1:]:
@@ -2420,6 +2539,7 @@ async def materialize_work_profiles_for_upload(
                     runtime=runtime,
                     preflight=sub_preflight,
                     precomputed_ai_proposal=None,
+                    execution_context=execution_context,
                 )
 
         processed_groups += len(batch)

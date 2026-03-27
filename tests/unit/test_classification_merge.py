@@ -78,22 +78,29 @@ class TestKeywordFallbackClassification:
         assert result.batch_tokens_used == 0
 
     async def test_multiple_crane_activities_all_classified(self):
-        # Mix of explicit and implicit crane phrasings drawn from common RC programme patterns
+        # Mix of explicit and generalized crane phrasings used across construction programmes.
         crane_activities = [
             _activity(f"a{i}", name) for i, name in enumerate([
-                "Bubbledeck installation ZONE (A)",
-                "Lift BD false work",
-                "Install BD panels",
-                "Jump the Hoist",
-                "Recycle props to upper levels",
-                "Install Builder's Lift @ 4d/ level",
-                "Install canopy steel with use of TC",
+                "Tower crane relocation",
+                "Mobile crane lift to roof",
+                "Precast stair install",
+                "Lift column cages",
+                "Crawler crane setup",
+                "Luffing crane install",
+                "Pick and carry steel beams",
             ])
         ]
         result = await classify_assets(crane_activities)
         assert len(result.classifications) == 7
         for item in result.classifications:
             assert item.asset_type == "crane", f"{item.activity_id} mapped to {item.asset_type}"
+
+    async def test_keyword_matching_normalizes_case_and_punctuation(self):
+        activities = [_activity("a1", "SCISSOR-LIFT & access setup")]
+        result = await classify_assets(activities)
+
+        assert len(result.classifications) == 1
+        assert result.classifications[0].asset_type == "ewp"
 
     async def test_project_asset_scoping_restricts_keywords(self):
         """

@@ -75,15 +75,9 @@ def maturity_tier(c: ItemClassification) -> str:
 def _keyword_scan(activity_name: str) -> str | None:
     """Return the best keyword-matched asset type for *activity_name*, or None."""
     # Import here to avoid a circular import at module load time.
-    from .ai_service import _KEYWORD_MAP  # type: ignore[attr-defined]
+    from .ai_service import keyword_classify_activity_name  # type: ignore[attr-defined]
 
-    name_lower = activity_name.lower()
-    for keyword, asset_type in sorted(
-        _KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True
-    ):
-        if keyword in name_lower:
-            return asset_type
-    return None
+    return keyword_classify_activity_name(activity_name)
 
 
 # ---------------------------------------------------------------------------

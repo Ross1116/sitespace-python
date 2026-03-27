@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint
+from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import backref, relationship
 from sqlalchemy.sql import func
@@ -40,6 +40,7 @@ class ProgrammeUpload(Base):
     status = Column(String(20), nullable=False, default="processing")  # processing | committed
     processing_outcome = Column(String(30), nullable=True)
     ai_tokens_used = Column(Integer, nullable=True)
+    ai_cost_usd = Column(Numeric(12, 6), nullable=True)
     work_days_per_week = Column(SmallInteger, nullable=False, default=5)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

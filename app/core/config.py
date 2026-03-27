@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     AI_TIMEOUT_CLASSIFY: int = Field(30, validation_alias="AI_TIMEOUT_CLASSIFY")
     AI_TIMEOUT_WORK_PROFILE: int = Field(25, validation_alias="AI_TIMEOUT_WORK_PROFILE")
     AI_UPLOAD_COST_BUDGET_USD: float = Field(5.0, validation_alias="AI_UPLOAD_COST_BUDGET_USD")
+    AI_INPUT_COST_PER_MILLION_USD: Optional[float] = Field(
+        None,
+        validation_alias="AI_INPUT_COST_PER_MILLION_USD",
+    )
+    AI_OUTPUT_COST_PER_MILLION_USD: Optional[float] = Field(
+        None,
+        validation_alias="AI_OUTPUT_COST_PER_MILLION_USD",
+    )
 
     # Nightly lookahead scheduler defaults
     NIGHTLY_LOOKAHEAD_HOUR: int = Field(18, validation_alias="NIGHTLY_LOOKAHEAD_HOUR")

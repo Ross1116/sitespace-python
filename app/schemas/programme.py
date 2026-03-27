@@ -27,6 +27,8 @@ class ProgrammeUploadStatus(BaseSchema):
     completeness_notes: Optional[dict] = None
     version_number: Optional[int] = None
     file_name: Optional[str] = None
+    ai_tokens_used: Optional[int] = None
+    ai_cost_usd: Optional[float] = None
     created_at: Optional[str] = None
 
 
@@ -38,6 +40,8 @@ class ProgrammeVersionSummary(BaseSchema):
     file_name: Optional[str] = None
     status: Optional[str] = None
     completeness_score: Optional[float] = None
+    ai_tokens_used: Optional[int] = None
+    ai_cost_usd: Optional[float] = None
     created_at: Optional[str] = None
 
 
@@ -97,6 +101,7 @@ class ActivityMappingResponse(BaseSchema):
 
     id: UUID
     programme_activity_id: UUID
+    item_id: UUID | None = None
     activity_name: str | None = None
     asset_type: str | None = None
     confidence: str

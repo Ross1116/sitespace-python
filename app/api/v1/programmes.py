@@ -75,10 +75,12 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
 def _serialize_mapping(
     mapping: ActivityAssetMapping,
     activity_name: str | None,
+    item_id: UUID | None,
 ) -> ActivityMappingResponse:
     return ActivityMappingResponse(
         id=mapping.id,
         programme_activity_id=mapping.programme_activity_id,
+        item_id=item_id,
         activity_name=activity_name,
         asset_type=mapping.asset_type,
         confidence=mapping.confidence,
@@ -90,6 +92,43 @@ def _serialize_mapping(
         subcontractor_id=mapping.subcontractor_id,
         created_at=mapping.created_at,
     )
+
+
+def _normalize_completeness_notes(notes: dict | None) -> dict:
+    normalized = {
+        "missing_fields": [],
+        "notes": "",
+        "ai_quota_exhausted": False,
+        "classification_ai_suppressed": False,
+        "work_profile_ai_suppressed": False,
+        "unclassified_mapping_count": 0,
+        "non_planning_ready_asset_count": 0,
+        "excluded_booking_count": 0,
+    }
+    if isinstance(notes, dict):
+        normalized.update(notes)
+
+    normalized["missing_fields"] = list(normalized.get("missing_fields") or [])
+    normalized["notes"] = str(normalized.get("notes") or "")
+
+    for key in (
+        "ai_quota_exhausted",
+        "classification_ai_suppressed",
+        "work_profile_ai_suppressed",
+    ):
+        normalized[key] = bool(normalized.get(key))
+
+    for key in (
+        "unclassified_mapping_count",
+        "non_planning_ready_asset_count",
+        "excluded_booking_count",
+    ):
+        try:
+            normalized[key] = int(normalized.get(key) or 0)
+        except (TypeError, ValueError):
+            normalized[key] = 0
+
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +308,11 @@ def get_upload_status(
         upload_id=upload.id,
         status=upload.status,
         completeness_score=None if upload.completeness_score is None else round(upload.completeness_score * 100),
-        completeness_notes=upload.completeness_notes,
+        completeness_notes=_normalize_completeness_notes(upload.completeness_notes),
         version_number=upload.version_number,
         file_name=upload.file_name,
+        ai_tokens_used=upload.ai_tokens_used,
+        ai_cost_usd=None if upload.ai_cost_usd is None else float(upload.ai_cost_usd),
         created_at=upload.created_at.isoformat() if upload.created_at else None,
     )
 
@@ -303,6 +344,8 @@ def list_programme_versions(
             file_name=u.file_name,
             status=u.status,
             completeness_score=None if u.completeness_score is None else round(u.completeness_score * 100),
+            ai_tokens_used=u.ai_tokens_used,
+            ai_cost_usd=None if u.ai_cost_usd is None else float(u.ai_cost_usd),
             created_at=u.created_at.isoformat() if u.created_at else None,
         )
         for u in uploads
@@ -547,13 +590,13 @@ def get_activity_mappings(
     _check_project_access(upload.project_id, current_user, db)
 
     rows = (
-        db.query(ActivityAssetMapping, ProgrammeActivity.name)
+        db.query(ActivityAssetMapping, ProgrammeActivity.name, ProgrammeActivity.item_id)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .filter(ProgrammeActivity.programme_upload_id == upload_id)
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
         .all()
     )
-    return [_serialize_mapping(mapping, activity_name) for mapping, activity_name in rows]
+    return [_serialize_mapping(mapping, activity_name, item_id) for mapping, activity_name, item_id in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +617,7 @@ def get_unclassified_activity_mappings(
     _check_project_access(upload.project_id, current_user, db)
 
     rows = (
-        db.query(ActivityAssetMapping, ProgrammeActivity.name)
+        db.query(ActivityAssetMapping, ProgrammeActivity.name, ProgrammeActivity.item_id)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
@@ -584,7 +627,7 @@ def get_unclassified_activity_mappings(
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
         .all()
     )
-    return [_serialize_mapping(mapping, activity_name) for mapping, activity_name in rows]
+    return [_serialize_mapping(mapping, activity_name, item_id) for mapping, activity_name, item_id in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -641,4 +684,4 @@ def correct_activity_mapping(
     db.commit()
     db.refresh(mapping)
 
-    return _serialize_mapping(mapping, activity.name)
+    return _serialize_mapping(mapping, activity.name, activity.item_id)

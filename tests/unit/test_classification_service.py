@@ -104,10 +104,10 @@ class TestKeywordScan:
         assert _keyword_scan("Builder's hoist installation") == "hoist"
 
     def test_longest_key_wins_over_shorter(self):
-        # The key "jump the hoist" (crane) is longer than "hoist" (hoist) in
-        # _KEYWORD_MAP, so longest-key-first ordering means "Jump the Hoist"
-        # returns "crane" rather than "hoist".
-        assert _keyword_scan("Jump the Hoist") == "crane"
+        # The key "reach forklift" (telehandler) is longer than "forklift"
+        # (forklift), so longest-key-first ordering should preserve the more
+        # specific match.
+        assert _keyword_scan("Reach forklift delivery") == "telehandler"
 
     def test_no_match_returns_none(self):
         assert _keyword_scan("General site cleanup") is None
