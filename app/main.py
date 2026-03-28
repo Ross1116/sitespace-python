@@ -75,31 +75,70 @@ try:
 except Exception as e:
     logger.warning("Table creation skipped: %s", e)
 
+
+def _is_duplicate_scheduler_job_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return exc.__class__.__name__ == "ConflictingIdError" or (
+        "duplicate key value violates unique constraint" in message
+        and "apscheduler_jobs" in message
+    )
+
+
+def _register_nightly_scheduler_job(scheduler_instance) -> None:
+    job_id = "nightly_lookahead_job"
+    trigger_kwargs = {
+        "trigger": "cron",
+        "hour": settings.NIGHTLY_LOOKAHEAD_HOUR,
+        "minute": settings.NIGHTLY_LOOKAHEAD_MINUTE,
+        "timezone": settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+    }
+
+    existing_job = scheduler_instance.get_job(job_id)
+    if existing_job is not None:
+        scheduler_instance.reschedule_job(job_id, **trigger_kwargs)
+        logger.info(
+            "Updated scheduler job %s (%s) for %02d:%02d %s",
+            job_id,
+            nightly_lookahead_job.__name__,
+            settings.NIGHTLY_LOOKAHEAD_HOUR,
+            settings.NIGHTLY_LOOKAHEAD_MINUTE,
+            settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+        )
+        return
+
+    try:
+        scheduler_instance.add_job(
+            nightly_lookahead_job,
+            id=job_id,
+            replace_existing=False,
+            **trigger_kwargs,
+        )
+    except Exception as exc:
+        if _is_duplicate_scheduler_job_error(exc):
+            logger.info(
+                "Scheduler job %s already exists in the shared job store; keeping the existing registration",
+                job_id,
+            )
+            return
+        raise
+
+    logger.info(
+        "Registered scheduler job %s (%s) for %02d:%02d %s",
+        job_id,
+        nightly_lookahead_job.__name__,
+        settings.NIGHTLY_LOOKAHEAD_HOUR,
+        settings.NIGHTLY_LOOKAHEAD_MINUTE,
+        settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
+    )
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
     if scheduler is not None:
         scheduler.start()
-        job_id = "nightly_lookahead_job"
         try:
-            scheduler.add_job(
-                nightly_lookahead_job,
-                trigger="cron",
-                hour=settings.NIGHTLY_LOOKAHEAD_HOUR,
-                minute=settings.NIGHTLY_LOOKAHEAD_MINUTE,
-                timezone=settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-                id=job_id,
-                replace_existing=True,
-            )
-            logger.info(
-                "Registered or updated scheduler job %s (%s) for %02d:%02d %s",
-                job_id,
-                nightly_lookahead_job.__name__,
-                settings.NIGHTLY_LOOKAHEAD_HOUR,
-                settings.NIGHTLY_LOOKAHEAD_MINUTE,
-                settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-            )
+            _register_nightly_scheduler_job(scheduler)
         except Exception as exc:
             logger.warning("Nightly lookahead job registration/update failed; continuing without scheduler refresh: %s", exc)
             sentry_sdk.capture_exception(exc)
