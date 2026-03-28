@@ -388,8 +388,14 @@ def create_bulk_bookings(
                         detail="Selected subcontractor is not assigned to this project"
                     )
         
+        asset_contexts = {
+            asset_id: _load_asset_booking_context(db, asset_id)
+            for asset_id in set(bulk_data.asset_ids)
+        }
+
         # Check for conflicts for all combinations
         for asset_id in bulk_data.asset_ids:
+            asset = asset_contexts.get(asset_id)
             for booking_date in bulk_data.booking_dates:
                 conflict_check = BookingConflictCheck(
                     asset_id=asset_id,
@@ -398,7 +404,11 @@ def create_bulk_bookings(
                     end_time=bulk_data.end_time
                 )
 
-                conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
+                conflicts = booking_crud.check_booking_conflicts(
+                    db,
+                    conflict_check,
+                    asset=asset,
+                )
                 if conflicts.has_confirmed_conflict:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
