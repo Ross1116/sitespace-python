@@ -42,7 +42,7 @@ def check_asset_view_access(
     
     if user_role == UserRole.SUBCONTRACTOR:
         if project is not None:
-            if any(subcontractor.id == user_id for subcontractor in project.subcontractors):
+            if any(str(getattr(subcontractor, "id", "")) == str(user_id) for subcontractor in project.subcontractors):
                 return True
         if not project_crud.is_subcontractor_assigned(db, project_id, user_id):
             raise HTTPException(
@@ -53,7 +53,7 @@ def check_asset_view_access(
         
     # Managers
     if project is not None:
-        if any(manager.id == user_id for manager in project.managers):
+        if any(str(getattr(manager, "id", "")) == str(user_id) for manager in project.managers):
             return True
     if not project_crud.has_project_access(db, project_id, user_id):
         raise HTTPException(

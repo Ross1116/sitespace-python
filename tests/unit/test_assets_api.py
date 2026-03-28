@@ -95,12 +95,42 @@ def test_check_asset_view_access_uses_preloaded_project_members_for_manager(monk
     )
 
     monkeypatch.setattr(assets_api, "get_user_role", lambda entity: UserRole.MANAGER)
-    monkeypatch.setattr(assets_api, "get_entity_id", lambda entity: manager_id)
+    monkeypatch.setattr(assets_api, "get_entity_id", lambda entity: str(manager_id))
     monkeypatch.setattr(
         assets_api.project_crud,
         "has_project_access",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("should use preloaded project managers before querying")
+        ),
+    )
+
+    assert (
+        assets_api.check_asset_view_access(
+            db=SimpleNamespace(),
+            project_id=project_id,
+            entity=current_entity,
+            project=project,
+        )
+        is True
+    )
+
+
+def test_check_asset_view_access_uses_preloaded_project_members_for_subcontractor(monkeypatch):
+    subcontractor_id = uuid4()
+    project_id = uuid4()
+    current_entity = SimpleNamespace(id=subcontractor_id)
+    project = SimpleNamespace(
+        managers=[],
+        subcontractors=[SimpleNamespace(id=subcontractor_id)],
+    )
+
+    monkeypatch.setattr(assets_api, "get_user_role", lambda entity: UserRole.SUBCONTRACTOR)
+    monkeypatch.setattr(assets_api, "get_entity_id", lambda entity: str(subcontractor_id))
+    monkeypatch.setattr(
+        assets_api.project_crud,
+        "is_subcontractor_assigned",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("should use preloaded project subcontractors before querying")
         ),
     )
 

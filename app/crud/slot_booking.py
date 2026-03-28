@@ -60,6 +60,44 @@ def _ensure_asset_planning_ready(asset: Asset) -> None:
             f"Asset '{asset.name}' must have a confirmed or inferred canonical type before it can be booked."
         )
 
+
+def _ids_match(entity: object | None, expected_id: UUID) -> bool:
+    entity_id = getattr(entity, "id", getattr(entity, "pk", None))
+    return str(entity_id) == str(expected_id)
+
+
+def _load_project_with_members(db: Session, project_id: UUID) -> Optional[SiteProject]:
+    return (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
+
+
+def _resolve_project_with_members(
+    db: Session,
+    project_id: UUID,
+    project: Optional[SiteProject] = None,
+) -> Optional[SiteProject]:
+    if project is not None and _ids_match(project, project_id):
+        return project
+    return _load_project_with_members(db, project_id)
+
+
+def _load_booking_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
+    return db.query(Asset).filter(Asset.id == asset_id).first()
+
+
+def _resolve_booking_asset(
+    db: Session,
+    asset_id: UUID,
+    asset: Optional[Asset] = None,
+) -> Optional[Asset]:
+    if asset is not None and _ids_match(asset, asset_id):
+        return asset
+    return _load_booking_asset(db, asset_id)
+
 def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
     """Return an OR clause matching any time overlap with the given window."""
     return or_(
@@ -222,7 +260,7 @@ def _mark_matching_lookahead_notifications_acted(
     if booking.status != BookingStatus.CONFIRMED or booking.subcontractor_id is None:
         return []
 
-    resolved_asset = asset or db.query(Asset).filter(Asset.id == booking.asset_id).first()
+    resolved_asset = _resolve_booking_asset(db, booking.asset_id, asset=asset)
     if resolved_asset is None or not asset_is_planning_ready(resolved_asset):
         return []
 
@@ -345,14 +383,11 @@ def _resolve_booking_actor(
 
     Raises ``BookingValidationError`` for any invalid/missing entity reference.
     """
-    project_with_members = project
-    if project_with_members is None:
-        project_with_members = (
-            db.query(SiteProject)
-            .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
-            .filter(SiteProject.id == project_id)
-            .first()
-        )
+    project_with_members = _resolve_project_with_members(
+        db,
+        project_id,
+        project=project,
+    )
 
     if not project_with_members:
         raise BookingValidationError(f"Project with id {project_id} not found")
@@ -479,11 +514,19 @@ def create_booking(
     """
     
     # Validate that all referenced entities exist
-    project = project or db.query(SiteProject).filter(SiteProject.id == booking_data.project_id).first()
+    project = _resolve_project_with_members(
+        db,
+        booking_data.project_id,
+        project=project,
+    )
     if not project:
         raise BookingValidationError(f"Project with id {booking_data.project_id} not found")
     
-    asset = asset or db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
+    asset = _resolve_booking_asset(
+        db,
+        booking_data.asset_id,
+        asset=asset,
+    )
     if not asset:
         raise BookingValidationError(f"Asset with id {booking_data.asset_id} not found")
     _ensure_asset_planning_ready(asset)
@@ -1242,7 +1285,11 @@ def check_booking_conflicts(
     ) or 0
 
     # --- asset capacity ---
-    asset = asset or db.query(Asset).filter(Asset.id == conflict_check.asset_id).first()
+    asset = _resolve_booking_asset(
+        db,
+        conflict_check.asset_id,
+        asset=asset,
+    )
     capacity = asset.pending_booking_capacity if asset else 5
 
     has_confirmed = len(confirmed_bookings) > 0

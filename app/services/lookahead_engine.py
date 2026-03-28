@@ -297,8 +297,13 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
     except Exception as exc:
         try:
             db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            logger.debug(
+                "Rollback failed while preloading max_hours_per_day for asset types %s after %s",
+                sorted(asset_types),
+                exc,
+                exc_info=rollback_exc,
+            )
         logger.warning(
             "Failed to preload max_hours_per_day for %d asset types; falling back to per-type lookups: %s",
             len(asset_types),

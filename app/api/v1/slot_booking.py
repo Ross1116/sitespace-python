@@ -334,6 +334,7 @@ def create_bulk_bookings(
     try:
         user_role = get_user_role(current_entity)
         user_id = get_entity_id(current_entity)
+        project = _load_project_booking_context(db, bulk_data.project_id)
         
         # Validate all bookings first
         for booking_date in bulk_data.booking_dates:
@@ -354,31 +355,22 @@ def create_bulk_bookings(
                     detail="Subcontractors can only create bookings for themselves"
                 )
             
-            if not project_crud.is_subcontractor_assigned(
-                db,
-                bulk_data.project_id,
-                user_id
-            ):
+            if project is not None and not _project_has_member(project.subcontractors, user_id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You are not assigned to this project"
                 )
         
         elif user_role in [UserRole.MANAGER, UserRole.ADMIN]:
-            if bulk_data.project_id:
-                if user_role != UserRole.ADMIN:
-                    if not project_crud.has_project_access(db, bulk_data.project_id, user_id):
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail="You don't have access to this project"
-                        )
+            if bulk_data.project_id and project is not None:
+                if user_role != UserRole.ADMIN and not _project_has_member(project.managers, user_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You don't have access to this project"
+                    )
             
-            if bulk_data.subcontractor_id:
-                if not project_crud.is_subcontractor_assigned(
-                    db,
-                    bulk_data.project_id,
-                    bulk_data.subcontractor_id
-                ):
+            if bulk_data.subcontractor_id and project is not None:
+                if not _project_has_member(project.subcontractors, bulk_data.subcontractor_id):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Selected subcontractor is not assigned to this project"
