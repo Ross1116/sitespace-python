@@ -1,8 +1,8 @@
 # SiteSpace Programme Intelligence Platform
 ## Final Architecture Canon — Revised and Verified
 
-**Version:** Consolidated final, revised and code-verified (updated 24 March 2026)
-**Date:** 24 March 2026
+**Version:** Consolidated final, revised and code-verified baseline (updated 24 March 2026) with current-state addendum (27 March 2026)
+**Date:** Baseline 24 March 2026; addendum 27 March 2026
 **Audience:** Founders, engineers, future LLM/code agents  
 **Purpose:** Single source of truth for architecture, implementation, schema, pipeline design, parser strategy, identity resolution, classification strategy, demand modeling, alerting, observability, failure handling, operational guidance, and delivery sequence.
 
@@ -45,6 +45,95 @@ This revision explicitly addresses:
 - profile maturity tiers: TENTATIVE → CONFIRMED → TRUSTED_BASELINE
 - two-tier cache architecture: project-local and global cross-project knowledge base
 - project lifecycle context and cross-project learning strategy
+
+---
+
+# 1A. Historical Status Addendum (27 March 2026)
+
+This section updates the document to the current backend state without rewriting or deleting the original architecture below.
+
+The architecture text that follows remains intentionally preserved as the March 2026 baseline reference. If a later section says something is missing, planned, or not yet implemented, read that as "true at the time this baseline was written" unless this addendum explicitly supersedes it.
+
+## How to read the document now
+
+- Treat the original architecture below as the preserved target design and historical reasoning record.
+- Treat this addendum as the implemented-state overlay for the codebase as of 27 March 2026.
+- Do not interpret preserved "missing" statements below as current truth when they conflict with this addendum.
+- Do not interpret the preserved delivery checklist in Section 45 as a live task board; it is now partly historical.
+
+## Implemented since the preserved baseline
+
+### Metadata readiness and taxonomy
+
+- `assets.canonical_type` now exists and is in active use.
+- Asset planning-readiness fields now exist in code and API shape, including canonical type, type resolution status, inference metadata, and `planning_ready`.
+- Subcontractor trade-readiness fields now exist in code and API shape, including trade resolution status, inference metadata, and `planning_ready`.
+- Project planning-completeness scoring and task generation now exist behind `GET /api/projects/{project_id}/planning-completeness`.
+- Asset and subcontractor APIs now support planning-readiness-oriented filtering and review flows.
+
+### Safe degraded mode and upload diagnostics
+
+- Safe degraded mode is now implemented, including upload-scoped AI suppression after quota/provider failure.
+- Deterministic fallback is now operational for classification and downstream processing when AI is unavailable.
+- `programme_uploads.completeness_notes` is now a structured, normalized diagnostics object rather than an ad hoc free-form field.
+- Stable upload diagnostics now include at least:
+  - `ai_quota_exhausted`
+  - `classification_ai_suppressed`
+  - `work_profile_ai_suppressed`
+  - `missing_fields`
+  - `notes`
+  - `unclassified_mapping_count`
+  - `non_planning_ready_asset_count`
+  - `excluded_booking_count`
+- A project-scoped processing guard now exists in `process_programme` using advisory locking to prevent concurrent project processing collisions.
+
+### Lookahead persistence and alert runtime
+
+- `lookahead_rows` now exists as a real persisted operational table.
+- `project_alert_policies` now exists.
+- `subcontractor_asset_type_assignments` now exists and is synchronized during programme processing.
+- Notifications now carry `severity_score`.
+- Lookahead generation now writes operational rows, snapshot data, and notifications in the current runtime path.
+- Lookahead diagnostics now include excluded bookings and non-planning-ready asset counts so degraded forecast quality is visible instead of silent.
+
+### Booking integration added after the baseline architecture
+
+- Activity-backed booking provenance now exists via `ActivityBookingGroup`.
+- `slot_bookings.booking_group_id` now exists and links concrete bookings back to a programme activity group.
+- The backend now exposes `GET /api/lookahead/{project_id}/activities?week_start=&asset_type=` for weekly activity drilldown.
+- The backend now exposes `GET /api/programmes/activities/{activity_id}/booking-context?selected_week_start=` for activity-linked booking context.
+- Booking responses now surface provenance fields such as booking source, booking-group linkage, linked programme activity, expected asset type, and modified-state markers.
+- Confirmed bookings now mark matching lookahead notifications as acted.
+- Lookahead refresh/read-repair now considers booking freshness as well as upload freshness.
+
+### Distribution-aware booking context for frontend handoff
+
+- The backend still performs hour distribution server-side; the frontend does not need to reconstruct it.
+- The booking-context response now exposes selected-week, per-date suggested booking rows derived from the same backend distribution logic used by lookahead.
+- Those suggested rows now carry booking-oriented values such as date, start/end time, planned hours, demand hours, booked hours, and gap hours.
+- This is an additive execution-layer contract for frontend booking UX; it does not replace the underlying weekly lookahead architecture described below.
+
+## Important additive deviations from the preserved architecture
+
+- The preserved architecture is heavily lookahead- and notification-centric. The current codebase also includes an activity-backed booking execution layer so frontend booking can be traced back to the originating programme activity. This is additive, not contradictory.
+- The preserved architecture discusses metadata quality mostly as a prerequisite. The current implementation operationalizes that prerequisite much more directly through planning-readiness fields, review APIs, and a project planning-completeness endpoint.
+- The preserved architecture discusses work-profile distribution mainly as an internal demand-modeling concept. The current implementation now also exposes a booking-ready selected-week distribution view through booking context for frontend booking flows.
+
+## Still planned, partial, or not yet fully realized
+
+- Bayesian posterior updating from fresh evidence and actuals still appears only partially realized. The schema support exists, but the full learning loop described below should still be treated as future work unless separately verified.
+- The global cross-project knowledge-base tier and promotion rules remain future-looking relative to the current codebase.
+- Alert hardening still appears incomplete relative to the preserved target architecture, especially around rate limiting, project-wide caps, and refined stale-alert cancellation behavior.
+- Reporting and governance around excessive `other` usage still appears to remain future work.
+- System-health surfacing remains less complete than the preserved architecture intends.
+- The preserved document's exact-unit apportionment and second per-day demand-cap enforcement should still be treated as future hardening work unless a later implementation note explicitly supersedes that assessment.
+
+## Historical sections that are now known to be stale but intentionally preserved
+
+- Any section claiming there is no `assets.canonical_type` is now historical only.
+- Any section claiming there is no safe degraded mode is now historical only.
+- Any section claiming `lookahead_rows` is still pending is now historical only.
+- The delivery checklist in Section 45 is preserved for historical planning context and now mixes completed, partially completed, and still-planned work.
 
 ---
 
@@ -4449,6 +4538,8 @@ Because:
 ---
 
 # 45. Final Checklist
+
+Historical note: this checklist is preserved from the original architecture baseline. Use Section 1A above as the current-state overlay before treating any unchecked item here as still pending.
 
 ## Immediately
 
