@@ -37,6 +37,14 @@ from ...services.lookahead_engine import (
 router = APIRouter(prefix="/lookahead", tags=["Lookahead"])
 
 
+def _normalize_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _check_project_exists(project_id: UUID, db: Session) -> SiteProject:
     project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
     if not project:
@@ -67,12 +75,11 @@ def _snapshot_refreshed_at(snapshot) -> datetime | None:
         except ValueError:
             parsed = None
         else:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = _normalize_timestamp(parsed)
         if parsed is not None:
             return parsed
 
-    return getattr(snapshot, "created_at", None)
+    return _normalize_timestamp(getattr(snapshot, "created_at", None))
 
 
 def _get_fresh_snapshot(project_id: UUID, db: Session):
@@ -91,7 +98,7 @@ def _get_fresh_snapshot(project_id: UUID, db: Session):
     if latest_upload is None:
         return None
     snapshot = get_latest_snapshot(project_id, db)
-    latest_booking_update = get_latest_booking_update_for_project(project_id, db)
+    latest_booking_update = _normalize_timestamp(get_latest_booking_update_for_project(project_id, db))
     snapshot_refreshed_at = _snapshot_refreshed_at(snapshot)
     booking_is_newer = bool(
         snapshot_refreshed_at
