@@ -6,16 +6,21 @@ from app.crud import slot_booking as booking_crud
 from app.schemas.enums import AssetStatus, BookingStatus, UserRole
 
 
-def test_resolve_booking_actor_uses_preloaded_project_members_for_manager():
+def test_resolve_booking_actor_uses_canonical_project_members_for_manager():
     manager_id = uuid4()
     subcontractor_id = uuid4()
     project_id = uuid4()
-    db = MagicMock()
     project = SimpleNamespace(
         id=project_id,
         managers=[SimpleNamespace(id=manager_id)],
         subcontractors=[SimpleNamespace(id=subcontractor_id)],
     )
+    query = MagicMock()
+    query.options.return_value = query
+    query.filter.return_value = query
+    query.first.return_value = project
+    db = MagicMock()
+    db.query.return_value = query
 
     resolved_manager_id, resolved_subcontractor_id, booking_status = booking_crud._resolve_booking_actor(
         db=db,
@@ -30,10 +35,10 @@ def test_resolve_booking_actor_uses_preloaded_project_members_for_manager():
     assert resolved_manager_id == manager_id
     assert resolved_subcontractor_id == subcontractor_id
     assert booking_status.value == "confirmed"
-    db.query.assert_not_called()
+    db.query.assert_called_once_with(booking_crud.SiteProject)
 
 
-def test_check_booking_conflicts_reuses_preloaded_asset_capacity():
+def test_check_booking_conflicts_uses_canonical_asset_capacity():
     asset_id = uuid4()
     query_confirmed = MagicMock()
     query_confirmed.filter.return_value = query_confirmed
@@ -43,8 +48,12 @@ def test_check_booking_conflicts_reuses_preloaded_asset_capacity():
     query_pending.filter.return_value = query_pending
     query_pending.scalar.return_value = 1
 
+    query_asset = MagicMock()
+    query_asset.filter.return_value = query_asset
+    query_asset.first.return_value = SimpleNamespace(id=asset_id, pending_booking_capacity=3)
+
     db = MagicMock()
-    db.query.side_effect = [query_confirmed, query_pending]
+    db.query.side_effect = [query_confirmed, query_pending, query_asset]
 
     response = booking_crud.check_booking_conflicts(
         db,
@@ -59,7 +68,7 @@ def test_check_booking_conflicts_reuses_preloaded_asset_capacity():
     )
 
     assert response.pending_capacity == 3
-    assert db.query.call_count == 2
+    assert db.query.call_count == 3
 
 
 def test_resolve_booking_actor_reloads_project_when_preloaded_project_mismatches():
@@ -123,11 +132,17 @@ def test_create_booking_reloads_asset_when_preloaded_asset_mismatches(monkeypatc
         maintenance_start_date=None,
         maintenance_end_date=None,
     )
-    query = MagicMock()
-    query.filter.return_value = query
-    query.first.return_value = canonical_asset
+    project_query = MagicMock()
+    project_query.options.return_value = project_query
+    project_query.filter.return_value = project_query
+    project_query.first.return_value = SimpleNamespace(id=project_id, managers=[], subcontractors=[])
+
+    asset_query = MagicMock()
+    asset_query.filter.return_value = asset_query
+    asset_query.first.return_value = canonical_asset
+
     db = MagicMock()
-    db.query.return_value = query
+    db.query.side_effect = [project_query, asset_query]
 
     monkeypatch.setattr(
         booking_crud,
@@ -158,7 +173,7 @@ def test_create_booking_reloads_asset_when_preloaded_asset_mismatches(monkeypatc
         asset=SimpleNamespace(id=wrong_asset_id),
     )
 
-    db.query.assert_called_once_with(booking_crud.Asset)
+    assert db.query.call_count == 2
     assert acted_assets == [canonical_asset]
 
 

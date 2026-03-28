@@ -202,6 +202,12 @@ def create_booking(
         user_id = get_entity_id(current_entity)
         project = _load_project_booking_context(db, booking_data.project_id)
         asset = _load_asset_booking_context(db, booking_data.asset_id)
+
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with id {booking_data.project_id} not found",
+            )
         
         # Validate booking times
         validate_booking_times(booking_data.start_time, booking_data.end_time)
@@ -335,6 +341,12 @@ def create_bulk_bookings(
         user_role = get_user_role(current_entity)
         user_id = get_entity_id(current_entity)
         project = _load_project_booking_context(db, bulk_data.project_id)
+
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with id {bulk_data.project_id} not found",
+            )
         
         # Validate all bookings first
         for booking_date in bulk_data.booking_dates:

@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import ANY, MagicMock
 
+import pytest
+
 from app.api.v1 import slot_booking as booking_api
 from app.schemas.enums import BookingStatus, UserRole
 from app.schemas.slot_booking import BookingCreate, BookingStatusUpdate, BulkBookingCreate
@@ -167,3 +169,54 @@ def test_create_bulk_bookings_uses_preloaded_project_context_for_access(monkeypa
     assert len(response) == 1
     notify_mock.assert_called_once_with(ANY, booking_id, "created", user_id)
     refresh_mock.assert_called_once_with(project_id)
+
+
+def test_create_booking_returns_404_when_project_missing(monkeypatch):
+    booking_data = BookingCreate(
+        project_id=uuid4(),
+        asset_id=uuid4(),
+        booking_date=date.today() + timedelta(days=1),
+        start_time=time(8, 0),
+        end_time=time(16, 0),
+        purpose="Missing project",
+    )
+
+    monkeypatch.setattr(booking_api, "get_user_role", lambda entity: UserRole.MANAGER)
+    monkeypatch.setattr(booking_api, "get_entity_id", lambda entity: uuid4())
+    monkeypatch.setattr(booking_api, "_load_project_booking_context", lambda db, project_id: None)
+    monkeypatch.setattr(booking_api, "_load_asset_booking_context", lambda db, asset_id: SimpleNamespace(id=asset_id))
+
+    with pytest.raises(booking_api.HTTPException) as exc_info:
+        booking_api.create_booking(
+            booking_data,
+            db=MagicMock(),
+            current_entity=SimpleNamespace(id=uuid4(), role=UserRole.MANAGER.value),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == f"Project with id {booking_data.project_id} not found"
+
+
+def test_create_bulk_bookings_returns_404_when_project_missing(monkeypatch):
+    bulk_data = BulkBookingCreate(
+        project_id=uuid4(),
+        asset_ids=[uuid4()],
+        booking_dates=[date.today() + timedelta(days=1)],
+        start_time=time(8, 0),
+        end_time=time(16, 0),
+        purpose="Missing project",
+    )
+
+    monkeypatch.setattr(booking_api, "get_user_role", lambda entity: UserRole.MANAGER)
+    monkeypatch.setattr(booking_api, "get_entity_id", lambda entity: uuid4())
+    monkeypatch.setattr(booking_api, "_load_project_booking_context", lambda db, project_id: None)
+
+    with pytest.raises(booking_api.HTTPException) as exc_info:
+        booking_api.create_bulk_bookings(
+            bulk_data=bulk_data,
+            db=MagicMock(),
+            current_entity=SimpleNamespace(id=uuid4(), role=UserRole.MANAGER.value),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == f"Project with id {bulk_data.project_id} not found"

@@ -31,6 +31,7 @@ from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
     ANOMALY_DEMAND_SPIKE_THRESHOLD,
     ANOMALY_MAPPING_CHANGE_THRESHOLD,
+    DEFAULT_MAX_HOURS_PER_DAY,
     DEMAND_HOURS_PER_DAY,
     DEMAND_LEVEL_HIGH_MAX,
     DEMAND_LEVEL_LOW_MAX,
@@ -286,36 +287,34 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
         return {}
 
     try:
-        rows = (
-            db.query(AssetType.code, AssetType.max_hours_per_day)
-            .filter(
-                AssetType.code.in_(sorted(asset_types)),
-                AssetType.is_active.is_(True),
+        with SessionLocal() as lookup_db:
+            rows = (
+                lookup_db.query(AssetType.code, AssetType.max_hours_per_day)
+                .filter(
+                    AssetType.code.in_(sorted(asset_types)),
+                    AssetType.is_active.is_(True),
+                )
+                .all()
             )
-            .all()
-        )
     except Exception as exc:
-        try:
-            db.rollback()
-        except Exception as rollback_exc:
-            logger.debug(
-                "Rollback failed while preloading max_hours_per_day for asset types %s after %s",
-                sorted(asset_types),
-                exc,
-                exc_info=rollback_exc,
-            )
         logger.warning(
-            "Failed to preload max_hours_per_day for %d asset types; falling back to per-type lookups: %s",
+            "Failed to preload max_hours_per_day for %d asset types; using default fallback hours: %s",
             len(asset_types),
             exc,
         )
-        return {}
+        return {
+            code: DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0)
+            for code in sorted(asset_types)
+        }
 
-    return {
+    max_hours_by_type = {
         code: float(max_hours_per_day)
         for code, max_hours_per_day in rows
         if max_hours_per_day is not None
     }
+    for code in asset_types:
+        max_hours_by_type.setdefault(code, DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0))
+    return max_hours_by_type
 
 
 def _get_latest_processed_upload(project_id: uuid.UUID, db: Session) -> ProgrammeUpload | None:

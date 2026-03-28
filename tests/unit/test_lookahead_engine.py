@@ -1,7 +1,9 @@
 from datetime import date
 from types import SimpleNamespace
 from uuid import uuid4
+from unittest.mock import MagicMock
 
+from app.core.constants import DEFAULT_MAX_HOURS_PER_DAY
 from app.services import lookahead_engine
 
 
@@ -23,6 +25,20 @@ class _RowsQuery:
 
     def all(self):
         return self._rows
+
+
+class _SessionContext:
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self._session
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_get_weekly_activity_candidates_reuses_batched_max_hours(monkeypatch):
@@ -99,3 +115,38 @@ def test_get_weekly_activity_candidates_reuses_batched_max_hours(monkeypatch):
     assert len(candidates) == 2
     assert loaded_asset_types == [{"forklift"}]
     assert resolver_maps == [{"forklift": 8.0}, {"forklift": 8.0}]
+
+
+def test_load_max_hours_by_type_fills_defaults_for_missing_codes(monkeypatch):
+    lookup_query = MagicMock()
+    lookup_query.filter.return_value = lookup_query
+    lookup_query.all.return_value = [("forklift", 8.0)]
+
+    lookup_db = MagicMock()
+    lookup_db.query.return_value = lookup_query
+
+    caller_db = MagicMock()
+    monkeypatch.setattr(lookahead_engine, "SessionLocal", _SessionContext(lookup_db))
+
+    result = lookahead_engine._load_max_hours_by_type(caller_db, {"forklift", "crane"})
+
+    assert result["forklift"] == 8.0
+    assert result["crane"] == DEFAULT_MAX_HOURS_PER_DAY["crane"]
+    caller_db.rollback.assert_not_called()
+
+
+def test_load_max_hours_by_type_does_not_rollback_caller_session_on_failure(monkeypatch):
+    lookup_query = MagicMock()
+    lookup_query.filter.return_value = lookup_query
+    lookup_query.all.side_effect = RuntimeError("boom")
+
+    lookup_db = MagicMock()
+    lookup_db.query.return_value = lookup_query
+
+    caller_db = MagicMock()
+    monkeypatch.setattr(lookahead_engine, "SessionLocal", _SessionContext(lookup_db))
+
+    result = lookahead_engine._load_max_hours_by_type(caller_db, {"forklift"})
+
+    assert result == {"forklift": DEFAULT_MAX_HOURS_PER_DAY["forklift"]}
+    caller_db.rollback.assert_not_called()

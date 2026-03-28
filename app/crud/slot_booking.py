@@ -60,12 +60,6 @@ def _ensure_asset_planning_ready(asset: Asset) -> None:
             f"Asset '{asset.name}' must have a confirmed or inferred canonical type before it can be booked."
         )
 
-
-def _ids_match(entity: object | None, expected_id: UUID) -> bool:
-    entity_id = getattr(entity, "id", getattr(entity, "pk", None))
-    return str(entity_id) == str(expected_id)
-
-
 def _load_project_with_members(db: Session, project_id: UUID) -> Optional[SiteProject]:
     return (
         db.query(SiteProject)
@@ -80,8 +74,7 @@ def _resolve_project_with_members(
     project_id: UUID,
     project: Optional[SiteProject] = None,
 ) -> Optional[SiteProject]:
-    if project is not None and _ids_match(project, project_id):
-        return project
+    _ = project
     return _load_project_with_members(db, project_id)
 
 
@@ -94,8 +87,7 @@ def _resolve_booking_asset(
     asset_id: UUID,
     asset: Optional[Asset] = None,
 ) -> Optional[Asset]:
-    if asset is not None and _ids_match(asset, asset_id):
-        return asset
+    _ = asset
     return _load_booking_asset(db, asset_id)
 
 def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
