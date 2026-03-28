@@ -3,11 +3,13 @@ from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user, get_user_role, get_entity_id
+from app.models.asset import Asset
+from app.models.site_project import SiteProject
 from app.models.subcontractor import Subcontractor
 from app.models.user import User
 from app.models.slot_booking import SlotBooking
@@ -53,6 +55,26 @@ def validate_date_range(date_from: Optional[date], date_to: Optional[date]) -> N
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Start date cannot be after end date"
         )
+
+
+def _load_project_booking_context(db: Session, project_id: UUID) -> Optional[SiteProject]:
+    return (
+        db.query(SiteProject)
+        .options(
+            joinedload(SiteProject.managers),
+            joinedload(SiteProject.subcontractors),
+        )
+        .filter(SiteProject.id == project_id)
+        .first()
+    )
+
+
+def _load_asset_booking_context(db: Session, asset_id: UUID) -> Optional[Asset]:
+    return db.query(Asset).filter(Asset.id == asset_id).first()
+
+
+def _project_has_member(members: list[object], member_id: UUID) -> bool:
+    return any(str(getattr(member, "id", "")) == str(member_id) for member in members)
 
 
 def check_booking_access(
@@ -178,6 +200,8 @@ def create_booking(
     try:
         user_role = get_user_role(current_entity)
         user_id = get_entity_id(current_entity)
+        project = _load_project_booking_context(db, booking_data.project_id)
+        asset = _load_asset_booking_context(db, booking_data.asset_id)
         
         # Validate booking times
         validate_booking_times(booking_data.start_time, booking_data.end_time)
@@ -203,31 +227,22 @@ def create_booking(
                     detail="Subcontractors can only create bookings for themselves"
                 )
             
-            if not project_crud.is_subcontractor_assigned(
-                db,
-                booking_data.project_id,
-                user_id
-            ):
+            if project is not None and not _project_has_member(project.subcontractors, user_id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You are not assigned to this project"
                 )
         
         elif user_role in [UserRole.MANAGER, UserRole.ADMIN]:
-            if booking_data.project_id:
-                if user_role != UserRole.ADMIN:
-                    if not project_crud.has_project_access(db, booking_data.project_id, user_id):
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail="You don't have access to this project"
-                        )
+            if booking_data.project_id and project is not None:
+                if user_role != UserRole.ADMIN and not _project_has_member(project.managers, user_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You don't have access to this project"
+                    )
             
-            if booking_data.subcontractor_id:
-                if not project_crud.is_subcontractor_assigned(
-                    db,
-                    booking_data.project_id,
-                    booking_data.subcontractor_id
-                ):
+            if booking_data.subcontractor_id and project is not None:
+                if not _project_has_member(project.subcontractors, booking_data.subcontractor_id):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Selected subcontractor is not assigned to this project"
@@ -241,7 +256,7 @@ def create_booking(
             end_time=booking_data.end_time
         )
 
-        conflicts = booking_crud.check_booking_conflicts(db, conflict_check)
+        conflicts = booking_crud.check_booking_conflicts(db, conflict_check, asset=asset)
 
         # Confirmed conflict blocks everyone
         if conflicts.has_confirmed_conflict:
@@ -263,7 +278,9 @@ def create_booking(
             booking_data,
             created_by_id=user_id,
             created_by_role=user_role,
-            comment=booking_data.comment  # User-provided comment for audit
+            comment=booking_data.comment,  # User-provided comment for audit
+            project=project,
+            asset=asset,
         )
 
         notify_booking_change(db, booking.id, "created", user_id)

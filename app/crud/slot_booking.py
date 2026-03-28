@@ -337,6 +337,7 @@ def _resolve_booking_actor(
     provided_manager_id: Optional[UUID],
     provided_subcontractor_id: Optional[UUID],
     project_id: UUID,
+    project: Optional[SiteProject] = None,
 ) -> Tuple[UUID, Optional[UUID], BookingStatus]:
     """Resolve manager_id, subcontractor_id, and initial booking status from the actor's role.
 
@@ -344,31 +345,28 @@ def _resolve_booking_actor(
 
     Raises ``BookingValidationError`` for any invalid/missing entity reference.
     """
-    if actor_role in [UserRole.ADMIN, UserRole.MANAGER]:
-        manager_id = provided_manager_id or actor_id
-        subcontractor_id = provided_subcontractor_id
-        booking_status = BookingStatus.CONFIRMED
-
-        manager = db.query(User).filter(User.id == manager_id).first()
-        if not manager:
-            raise BookingValidationError(f"Manager with id {manager_id} not found")
-
-        project = (
+    project_with_members = project
+    if project_with_members is None:
+        project_with_members = (
             db.query(SiteProject)
             .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
             .filter(SiteProject.id == project_id)
             .first()
         )
-        if not project:
-            raise BookingValidationError(f"Project with id {project_id} not found")
-        if not any(str(m.id) == str(manager_id) for m in project.managers):
+
+    if not project_with_members:
+        raise BookingValidationError(f"Project with id {project_id} not found")
+
+    if actor_role in [UserRole.ADMIN, UserRole.MANAGER]:
+        manager_id = provided_manager_id or actor_id
+        subcontractor_id = provided_subcontractor_id
+        booking_status = BookingStatus.CONFIRMED
+
+        if not any(str(m.id) == str(manager_id) for m in project_with_members.managers):
             raise BookingValidationError(f"Manager {manager_id} is not a member of project {project_id}")
 
         if subcontractor_id:
-            subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-            if not subcontractor:
-                raise BookingValidationError(f"Subcontractor with id {subcontractor_id} not found")
-            if not any(str(s.id) == str(subcontractor_id) for s in project.subcontractors):
+            if not any(str(s.id) == str(subcontractor_id) for s in project_with_members.subcontractors):
                 raise BookingValidationError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
 
     elif actor_role == UserRole.SUBCONTRACTOR:
@@ -377,26 +375,11 @@ def _resolve_booking_actor(
         if provided_subcontractor_id and provided_subcontractor_id != actor_id:
             raise BookingValidationError("Subcontractors can only create bookings for themselves")
 
-        subcontractor = db.query(Subcontractor).filter(Subcontractor.id == subcontractor_id).first()
-        if not subcontractor:
-            raise BookingValidationError(f"Subcontractor with id {subcontractor_id} not found")
-
-        project_with_members = (
-            db.query(SiteProject)
-            .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
-            .filter(SiteProject.id == project_id)
-            .first()
-        )
-        if not project_with_members:
-            raise BookingValidationError(f"Project with id {project_id} not found")
         if not any(str(s.id) == str(subcontractor_id) for s in project_with_members.subcontractors):
             raise BookingValidationError(f"Subcontractor {subcontractor_id} is not assigned to project {project_id}")
 
         if provided_manager_id:
             manager_id = provided_manager_id
-            manager = db.query(User).filter(User.id == manager_id).first()
-            if not manager:
-                raise BookingValidationError(f"Manager with id {manager_id} not found")
             if not any(str(m.id) == str(manager_id) for m in project_with_members.managers):
                 raise BookingValidationError(f"Manager {manager_id} is not a member of project {project_id}")
         else:
@@ -488,17 +471,19 @@ def create_booking(
     comment: Optional[str] = None,
     source: Optional[str] = None,
     booking_group_id: Optional[UUID] = None,
+    project: Optional[SiteProject] = None,
+    asset: Optional[Asset] = None,
 ) -> SlotBooking:
     """
     Create a new booking in the database with role-based status.
     """
     
     # Validate that all referenced entities exist
-    project = db.query(SiteProject).filter(SiteProject.id == booking_data.project_id).first()
+    project = project or db.query(SiteProject).filter(SiteProject.id == booking_data.project_id).first()
     if not project:
         raise BookingValidationError(f"Project with id {booking_data.project_id} not found")
     
-    asset = db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
+    asset = asset or db.query(Asset).filter(Asset.id == booking_data.asset_id).first()
     if not asset:
         raise BookingValidationError(f"Asset with id {booking_data.asset_id} not found")
     _ensure_asset_planning_ready(asset)
@@ -525,6 +510,7 @@ def create_booking(
         provided_manager_id=booking_data.manager_id,
         provided_subcontractor_id=booking_data.subcontractor_id,
         project_id=booking_data.project_id,
+        project=project,
     )
 
     booking_group: ActivityBookingGroup | None = None
@@ -615,7 +601,12 @@ def create_bulk_bookings(
     failed_bookings = []
     
     # Validate base entities exist
-    project = db.query(SiteProject).filter(SiteProject.id == bulk_data.project_id).first()
+    project = (
+        db.query(SiteProject)
+        .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
+        .filter(SiteProject.id == bulk_data.project_id)
+        .first()
+    )
     if not project:
         raise BookingValidationError(f"Project with id {bulk_data.project_id} not found")
     
@@ -627,6 +618,7 @@ def create_bulk_bookings(
         provided_manager_id=bulk_data.manager_id,
         provided_subcontractor_id=bulk_data.subcontractor_id,
         project_id=bulk_data.project_id,
+        project=project,
     )
 
     booking_group: ActivityBookingGroup | None = None
@@ -1220,7 +1212,8 @@ def delete_booking(
 
 def check_booking_conflicts(
     db: Session,
-    conflict_check: BookingConflictCheck
+    conflict_check: BookingConflictCheck,
+    asset: Optional[Asset] = None,
 ) -> BookingConflictResponse:
     """Check for conflicts on a slot. Returns enriched response with
     confirmed-conflict flag, pending count, capacity, and can_request."""
@@ -1249,7 +1242,7 @@ def check_booking_conflicts(
     ) or 0
 
     # --- asset capacity ---
-    asset = db.query(Asset).filter(Asset.id == conflict_check.asset_id).first()
+    asset = asset or db.query(Asset).filter(Asset.id == conflict_check.asset_id).first()
     capacity = asset.pending_booking_capacity if asset else 5
 
     has_confirmed = len(confirmed_bookings) > 0

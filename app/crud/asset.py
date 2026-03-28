@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import and_, or_, func, cast, Date
+from sqlalchemy import and_, or_, func, cast, Date, case
 from typing import List, Optional, Tuple, Dict, Any
 from uuid import UUID
 from datetime import datetime, date, time, timedelta, timezone
@@ -438,11 +438,12 @@ def get_asset(db: Session, asset_id: UUID) -> Optional[Asset]:
 
 
 def get_asset_with_details(db: Session, asset_id: UUID) -> Optional[Asset]:
-    """Get asset with all relationships loaded"""
+    """Get an asset with project access context eager loaded."""
     asset = db.query(Asset)\
         .options(
             joinedload(Asset.project),
-            joinedload(Asset.bookings)
+            joinedload(Asset.project).selectinload(SiteProject.managers),
+            joinedload(Asset.project).selectinload(SiteProject.subcontractors),
         )\
         .filter(Asset.id == asset_id)\
         .first()
@@ -547,32 +548,58 @@ def get_assets_brief(
     return assets
 
 
-def get_asset_detail(db: Session, asset_id: UUID) -> Optional[AssetDetailResponse]:
+def get_asset_detail(
+    db: Session,
+    asset_id: UUID,
+    asset: Optional[Asset] = None,
+) -> Optional[AssetDetailResponse]:
     """Get detailed asset information with statistics"""
-    asset = get_asset_with_details(db, asset_id)
+    asset = asset or get_asset_with_details(db, asset_id)
 
     if not asset:
         return None
 
-    # Calculate statistics
-    total_bookings = len(asset.bookings)
-    active_bookings = len([b for b in asset.bookings if b.status == BookingStatus.CONFIRMED])
-    completed_bookings = len([b for b in asset.bookings if b.status == BookingStatus.COMPLETED])
+    booking_stats = db.query(
+        func.count(SlotBooking.id).label("total_bookings"),
+        func.sum(
+            case(
+                (SlotBooking.status == BookingStatus.CONFIRMED, 1),
+                else_=0,
+            )
+        ).label("active_bookings"),
+        func.sum(
+            case(
+                (SlotBooking.status == BookingStatus.COMPLETED, 1),
+                else_=0,
+            )
+        ).label("completed_bookings"),
+        func.count(
+            func.distinct(
+                case(
+                    (
+                        SlotBooking.status.in_(
+                            [BookingStatus.CONFIRMED, BookingStatus.COMPLETED]
+                        ),
+                        SlotBooking.booking_date,
+                    ),
+                    else_=None,
+                )
+            )
+        ).label("booked_days"),
+    ).filter(
+        SlotBooking.asset_id == asset_id
+    ).one()
+
+    total_bookings = booking_stats.total_bookings or 0
+    active_bookings = booking_stats.active_bookings or 0
+    completed_bookings = booking_stats.completed_bookings or 0
 
     # Calculate utilization rate
     utilization_rate = 0.0
     if asset.purchase_date:
         days_owned = (date.today() - asset.purchase_date).days
         if days_owned > 0:
-            # Count unique days with bookings
-            booked_days = db.query(
-                func.count(func.distinct(SlotBooking.booking_date))
-            ).filter(
-                and_(
-                    SlotBooking.asset_id == asset_id,
-                    SlotBooking.status.in_([BookingStatus.CONFIRMED, BookingStatus.COMPLETED])
-                )
-            ).scalar() or 0
+            booked_days = booking_stats.booked_days or 0
             utilization_rate = min((booked_days / days_owned) * 100, 100.0)
 
     # Calculate depreciation if both values exist

@@ -24,17 +24,17 @@ def test_create_booking_refreshes_lookahead(monkeypatch):
 
     monkeypatch.setattr(booking_api, "get_user_role", lambda entity: UserRole.MANAGER)
     monkeypatch.setattr(booking_api, "get_entity_id", lambda entity: user_id)
-    monkeypatch.setattr(booking_api.project_crud, "has_project_access", lambda db, project_id, user_id: True)
+    project = SimpleNamespace(id=project_id, managers=[SimpleNamespace(id=user_id)], subcontractors=[])
+    asset = SimpleNamespace(id=booking_data.asset_id)
+    monkeypatch.setattr(booking_api, "_load_project_booking_context", lambda db, project_id: project)
+    monkeypatch.setattr(booking_api, "_load_asset_booking_context", lambda db, asset_id: asset)
     monkeypatch.setattr(
         booking_api.booking_crud,
         "check_booking_conflicts",
-        lambda db, payload: SimpleNamespace(has_confirmed_conflict=False, can_request=True),
+        lambda db, payload, asset=None: SimpleNamespace(has_confirmed_conflict=False, can_request=True),
     )
-    monkeypatch.setattr(
-        booking_api.booking_crud,
-        "create_booking",
-        MagicMock(return_value=SimpleNamespace(id=booking_id, project_id=project_id)),
-    )
+    create_mock = MagicMock(return_value=SimpleNamespace(id=booking_id, project_id=project_id))
+    monkeypatch.setattr(booking_api.booking_crud, "create_booking", create_mock)
     detail_response = SimpleNamespace(id=booking_id, project_id=project_id)
     monkeypatch.setattr(booking_api.booking_crud, "get_booking_detail", lambda db, booking_id: detail_response)
 
@@ -46,6 +46,15 @@ def test_create_booking_refreshes_lookahead(monkeypatch):
     response = booking_api.create_booking(booking_data, db=MagicMock(), current_entity=current_user)
 
     assert response is detail_response
+    create_mock.assert_called_once_with(
+        ANY,
+        booking_data,
+        created_by_id=user_id,
+        created_by_role=UserRole.MANAGER,
+        comment=booking_data.comment,
+        project=project,
+        asset=asset,
+    )
     notify_mock.assert_called_once_with(ANY, booking_id, "created", user_id)
     refresh_mock.assert_called_once_with(project_id)
 
