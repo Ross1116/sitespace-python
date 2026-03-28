@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import MagicMock
 
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.core.constants import DEFAULT_MAX_HOURS_PER_DAY
 from app.services import lookahead_engine
 
@@ -138,7 +141,7 @@ def test_load_max_hours_by_type_fills_defaults_for_missing_codes(monkeypatch):
 def test_load_max_hours_by_type_does_not_rollback_caller_session_on_failure(monkeypatch):
     lookup_query = MagicMock()
     lookup_query.filter.return_value = lookup_query
-    lookup_query.all.side_effect = RuntimeError("boom")
+    lookup_query.all.side_effect = SQLAlchemyError("boom")
 
     lookup_db = MagicMock()
     lookup_db.query.return_value = lookup_query
@@ -150,3 +153,17 @@ def test_load_max_hours_by_type_does_not_rollback_caller_session_on_failure(monk
 
     assert result == {"forklift": DEFAULT_MAX_HOURS_PER_DAY["forklift"]}
     caller_db.rollback.assert_not_called()
+
+
+def test_load_max_hours_by_type_propagates_non_sqlalchemy_failures(monkeypatch):
+    lookup_query = MagicMock()
+    lookup_query.filter.return_value = lookup_query
+    lookup_query.all.side_effect = RuntimeError("boom")
+
+    lookup_db = MagicMock()
+    lookup_db.query.return_value = lookup_query
+
+    monkeypatch.setattr(lookahead_engine, "SessionLocal", _SessionContext(lookup_db))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        lookahead_engine._load_max_hours_by_type(MagicMock(), {"forklift"})

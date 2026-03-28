@@ -69,12 +69,23 @@ def _load_project_with_members(db: Session, project_id: UUID) -> Optional[SitePr
     )
 
 
+def _ids_match(entity: object | None, expected_id: UUID) -> bool:
+    entity_id = getattr(entity, "id", getattr(entity, "pk", None))
+    return str(entity_id) == str(expected_id)
+
+
 def _resolve_project_with_members(
     db: Session,
     project_id: UUID,
     project: Optional[SiteProject] = None,
 ) -> Optional[SiteProject]:
-    _ = project
+    if (
+        project is not None
+        and _ids_match(project, project_id)
+        and hasattr(project, "managers")
+        and hasattr(project, "subcontractors")
+    ):
+        return project
     return _load_project_with_members(db, project_id)
 
 
@@ -87,7 +98,8 @@ def _resolve_booking_asset(
     asset_id: UUID,
     asset: Optional[Asset] = None,
 ) -> Optional[Asset]:
-    _ = asset
+    if asset is not None and _ids_match(asset, asset_id):
+        return asset
     return _load_booking_asset(db, asset_id)
 
 def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
@@ -626,7 +638,8 @@ def create_bulk_bookings(
     bulk_data: BulkBookingCreate,
     created_by_id: UUID,
     created_by_role: UserRole,
-    comment: Optional[str] = None
+    comment: Optional[str] = None,
+    project: Optional[SiteProject] = None,
 ) -> List[SlotBooking]:
     """
     Create multiple bookings at once with role-based status.
@@ -636,11 +649,10 @@ def create_bulk_bookings(
     failed_bookings = []
     
     # Validate base entities exist
-    project = (
-        db.query(SiteProject)
-        .options(joinedload(SiteProject.managers), joinedload(SiteProject.subcontractors))
-        .filter(SiteProject.id == bulk_data.project_id)
-        .first()
+    project = _resolve_project_with_members(
+        db,
+        bulk_data.project_id,
+        project=project,
     )
     if not project:
         raise BookingValidationError(f"Project with id {bulk_data.project_id} not found")

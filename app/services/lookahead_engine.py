@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import sentry_sdk
 
 from sqlalchemy import and_, func, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
@@ -296,7 +296,7 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
                 )
                 .all()
             )
-    except Exception as exc:
+    except SQLAlchemyError as exc:
         logger.warning(
             "Failed to preload max_hours_per_day for %d asset types; using default fallback hours: %s",
             len(asset_types),

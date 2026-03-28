@@ -416,7 +416,8 @@ def create_bulk_bookings(
             bulk_data,
             created_by_id=user_id,
             created_by_role=user_role,
-            comment=bulk_data.comment  # User-provided comment for audit
+            comment=bulk_data.comment,  # User-provided comment for audit
+            project=project,
         )
 
         for b in bookings:

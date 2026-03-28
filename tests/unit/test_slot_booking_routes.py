@@ -113,17 +113,18 @@ def test_create_bulk_bookings_uses_preloaded_project_context_for_access(monkeypa
         end_time=time(16, 0),
         purpose="Bulk booking",
     )
+    project = SimpleNamespace(
+        id=project_id,
+        managers=[SimpleNamespace(id=user_id)],
+        subcontractors=[SimpleNamespace(id=subcontractor_id)],
+    )
 
     monkeypatch.setattr(booking_api, "get_user_role", lambda entity: UserRole.MANAGER)
     monkeypatch.setattr(booking_api, "get_entity_id", lambda entity: user_id)
     monkeypatch.setattr(
         booking_api,
         "_load_project_booking_context",
-        lambda db, project_id: SimpleNamespace(
-            id=project_id,
-            managers=[SimpleNamespace(id=user_id)],
-            subcontractors=[SimpleNamespace(id=subcontractor_id)],
-        ),
+        lambda db, project_id: project,
     )
     monkeypatch.setattr(
         booking_api.project_crud,
@@ -144,10 +145,11 @@ def test_create_bulk_bookings_uses_preloaded_project_context_for_access(monkeypa
         "check_booking_conflicts",
         lambda db, payload: SimpleNamespace(has_confirmed_conflict=False, can_request=True),
     )
+    create_bulk_mock = MagicMock(return_value=[SimpleNamespace(id=booking_id, project_id=project_id)])
     monkeypatch.setattr(
         booking_api.booking_crud,
         "create_bulk_bookings",
-        lambda *args, **kwargs: [SimpleNamespace(id=booking_id, project_id=project_id)],
+        create_bulk_mock,
     )
     monkeypatch.setattr(
         booking_api.booking_crud,
@@ -167,6 +169,14 @@ def test_create_bulk_bookings_uses_preloaded_project_context_for_access(monkeypa
     )
 
     assert len(response) == 1
+    create_bulk_mock.assert_called_once_with(
+        ANY,
+        bulk_data,
+        created_by_id=user_id,
+        created_by_role=UserRole.MANAGER,
+        comment=bulk_data.comment,
+        project=project,
+    )
     notify_mock.assert_called_once_with(ANY, booking_id, "created", user_id)
     refresh_mock.assert_called_once_with(project_id)
 
