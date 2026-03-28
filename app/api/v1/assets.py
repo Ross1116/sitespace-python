@@ -6,6 +6,7 @@ from datetime import date
 import logging
 
 from app.models.subcontractor import Subcontractor
+from app.models.site_project import SiteProject
 from ...core.constants import ASSET_PAGE_DEFAULT, ASSET_PAGE_MAX
 from ...core.database import get_db
 from ...core.security import get_current_active_user, get_user_role, get_entity_id
@@ -26,7 +27,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Asset Management"])
 
-def check_asset_view_access(db: Session, project_id: UUID, entity: Union[User, Subcontractor]):
+def check_asset_view_access(
+    db: Session,
+    project_id: UUID,
+    entity: Union[User, Subcontractor],
+    project: Optional[SiteProject] = None,
+):
     """Helper to check if entity can view assets of a project"""
     user_role = get_user_role(entity)
     user_id = get_entity_id(entity)
@@ -35,6 +41,9 @@ def check_asset_view_access(db: Session, project_id: UUID, entity: Union[User, S
         return True
     
     if user_role == UserRole.SUBCONTRACTOR:
+        if project is not None:
+            if any(str(getattr(subcontractor, "id", "")) == str(user_id) for subcontractor in project.subcontractors):
+                return True
         if not project_crud.is_subcontractor_assigned(db, project_id, user_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -43,6 +52,9 @@ def check_asset_view_access(db: Session, project_id: UUID, entity: Union[User, S
         return True
         
     # Managers
+    if project is not None:
+        if any(str(getattr(manager, "id", "")) == str(user_id) for manager in project.managers):
+            return True
     if not project_crud.has_project_access(db, project_id, user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -159,8 +171,8 @@ def get_asset_detail(
 ):
     """Get detailed asset information"""
     try:
-        # 1. Fetch Asset to find its Project ID
-        asset = asset_crud.get_asset(db, asset_id)
+        # 1. Fetch the asset with project access context in one go
+        asset = asset_crud.get_asset_with_details(db, asset_id)
         if not asset:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -168,10 +180,10 @@ def get_asset_detail(
             )
             
         # 2. Security Check using the asset's project_id
-        check_asset_view_access(db, asset.project_id, current_entity)
+        check_asset_view_access(db, asset.project_id, current_entity, project=asset.project)
 
-        # 3. Get Full Details
-        asset_detail = asset_crud.get_asset_detail(db, asset_id)
+        # 3. Build detail response from the preloaded asset
+        asset_detail = asset_crud.get_asset_detail(db, asset_id, asset=asset)
         return asset_detail
     except HTTPException:
         raise

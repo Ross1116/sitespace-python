@@ -10,11 +10,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import sentry_sdk
 
 from sqlalchemy import and_, func, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.database import SessionLocal
 from ..models.asset import Asset
+from ..models.asset_type import AssetType
 from ..models.lookahead import (
     LookaheadRow as LookaheadRowModel,
     LookaheadSnapshot,
@@ -30,6 +31,7 @@ from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
     ANOMALY_DEMAND_SPIKE_THRESHOLD,
     ANOMALY_MAPPING_CHANGE_THRESHOLD,
+    DEFAULT_MAX_HOURS_PER_DAY,
     DEMAND_HOURS_PER_DAY,
     DEMAND_LEVEL_HIGH_MAX,
     DEMAND_LEVEL_LOW_MAX,
@@ -190,6 +192,7 @@ def _resolve_activity_distribution(
     activity: ProgrammeActivity,
     upload: ProgrammeUpload,
     profile: ActivityWorkProfile | None,
+    max_hours_by_type: dict[str, float] | None = None,
 ) -> dict[str, object] | None:
     if not activity.start_date or not activity.end_date:
         return None
@@ -199,7 +202,12 @@ def _resolve_activity_distribution(
     if not work_dates:
         return None
 
-    max_hours_per_day = get_max_hours_for_type(db, mapping.asset_type)
+    asset_type = str(mapping.asset_type or "")
+    max_hours_per_day = (
+        max_hours_by_type.get(asset_type)
+        if max_hours_by_type and asset_type in max_hours_by_type
+        else get_max_hours_for_type(db, asset_type)
+    )
     low_confidence = bool(activity.row_confidence == "low")
     repaired = False
     missing_profile = profile is None
@@ -256,6 +264,7 @@ def resolve_activity_distribution(
     activity: ProgrammeActivity,
     upload: ProgrammeUpload,
     profile: ActivityWorkProfile | None,
+    max_hours_by_type: dict[str, float] | None = None,
 ) -> dict[str, object] | None:
     """Public wrapper for activity date/hour distribution resolution.
 
@@ -269,7 +278,43 @@ def resolve_activity_distribution(
         activity=activity,
         upload=upload,
         profile=profile,
+        max_hours_by_type=max_hours_by_type,
     )
+
+
+def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, float]:
+    if not asset_types:
+        return {}
+
+    try:
+        with SessionLocal() as lookup_db:
+            rows = (
+                lookup_db.query(AssetType.code, AssetType.max_hours_per_day)
+                .filter(
+                    AssetType.code.in_(sorted(asset_types)),
+                    AssetType.is_active.is_(True),
+                )
+                .all()
+            )
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Failed to preload max_hours_per_day for %d asset types; using default fallback hours: %s",
+            len(asset_types),
+            exc,
+        )
+        return {
+            code: DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0)
+            for code in sorted(asset_types)
+        }
+
+    max_hours_by_type = {
+        code: float(max_hours_per_day)
+        for code, max_hours_per_day in rows
+        if max_hours_per_day is not None
+    }
+    for code in asset_types:
+        max_hours_by_type.setdefault(code, DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0))
+    return max_hours_by_type
 
 
 def _get_latest_processed_upload(project_id: uuid.UUID, db: Session) -> ProgrammeUpload | None:
@@ -408,6 +453,14 @@ def _compute_demand_by_week_asset(
     )
 
     active_types = get_active_asset_types(db)
+    max_hours_by_type = _load_max_hours_by_type(
+        db,
+        {
+            str(mapping.asset_type)
+            for mapping, _, _, _ in mapping_rows
+            if mapping.asset_type
+        },
+    )
     for mapping, activity, upload, profile in mapping_rows:
         if mapping.asset_type not in active_types:
             logger.warning("Invalid mapping asset_type=%s for activity=%s; skipping", mapping.asset_type, activity.id)
@@ -421,6 +474,7 @@ def _compute_demand_by_week_asset(
             activity=activity,
             upload=upload,
             profile=profile,
+            max_hours_by_type=max_hours_by_type,
         )
         if distribution_result is None:
             continue
@@ -1006,6 +1060,14 @@ def get_weekly_activity_candidates(
         .group_by(ActivityBookingGroup.programme_activity_id)
         .all()
     )
+    max_hours_by_type = _load_max_hours_by_type(
+        db,
+        {
+            str(mapping.asset_type)
+            for mapping, _, _, _ in rows
+            if mapping.asset_type
+        },
+    )
 
     candidates: list[dict[str, object]] = []
     for mapping, activity, upload, profile in rows:
@@ -1015,6 +1077,7 @@ def get_weekly_activity_candidates(
             activity=activity,
             upload=upload,
             profile=profile,
+            max_hours_by_type=max_hours_by_type,
         )
         if distribution_result is None:
             continue
