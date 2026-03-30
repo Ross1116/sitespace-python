@@ -19,6 +19,7 @@ def test_commit_with_warnings_marks_upload_as_readable_success():
     assert upload.status == "completed_with_warnings"
     assert upload.processing_outcome == "completed_with_warnings"
     assert "work_profile_ai_suppressed" in upload.completeness_notes["missing_fields"]
+    assert upload.completeness_notes["notes"] == "Completed with warnings."
     db.commit.assert_called_once()
 
 

@@ -1293,7 +1293,7 @@ def _commit_with_warnings(
     upload.completeness_score = completeness_score
     notes_dict = _normalize_completeness_notes(upload.completeness_notes)
     notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], *notes]))
-    notes_dict["notes"] = "Processing degraded."
+    notes_dict["notes"] = "Completed with warnings."
     upload.completeness_notes = _normalize_completeness_notes(notes_dict)
     upload.status = "completed_with_warnings"
     upload.processing_outcome = "completed_with_warnings"

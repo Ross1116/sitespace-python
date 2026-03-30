@@ -609,8 +609,7 @@ def get_activity_booking_context(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == activity.programme_upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if not is_upload_readable(upload):
-        raise HTTPException(status_code=409, detail="Programme activity is not available for booking.")
+    _require_readable_upload(upload)
 
     role = normalize_role(getattr(current_entity, "role", "subcontractor"))
     is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)

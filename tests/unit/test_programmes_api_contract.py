@@ -5,9 +5,11 @@ from uuid import uuid4
 from app.api.v1.programmes import (
     _build_suggested_booking_dates,
     _normalize_completeness_notes,
+    _require_readable_upload,
     _serialize_programme_upload,
     _serialize_mapping,
 )
+from fastapi import HTTPException
 
 
 def test_normalize_completeness_notes_includes_stable_defaults():
@@ -127,3 +129,21 @@ def test_serialize_programme_upload_normalizes_legacy_status_and_flags():
     assert payload["is_terminal_success"] is True
     assert payload["has_warnings"] is True
     assert payload["completeness_notes"]["notes"] == "warning"
+
+
+def test_require_readable_upload_distinguishes_processing_and_failed_states():
+    try:
+        _require_readable_upload(SimpleNamespace(status="processing"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail == "Programme is still processing."
+    else:
+        raise AssertionError("Expected processing upload to raise HTTPException")
+
+    try:
+        _require_readable_upload(SimpleNamespace(status="failed"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail == "Programme processing did not complete successfully."
+    else:
+        raise AssertionError("Expected failed upload to raise HTTPException")
