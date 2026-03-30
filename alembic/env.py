@@ -33,6 +33,7 @@ try:
     import app.models.item_identity
     import app.models.booking_audit
     import app.models.asset_type
+    import app.models.work_profile
 
     print("Alembic: Successfully imported all models.")
 except ImportError as e:

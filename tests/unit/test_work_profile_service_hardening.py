@@ -160,6 +160,7 @@ class TestWorkProfileAIHardening:
 
     def test_trusted_baseline_uses_asset_shaped_distribution(self):
         db = MagicMock()
+        project_id = uuid.uuid4()
         cache_row = MagicMock()
         cache_row.id = uuid.uuid4()
         written_profile = MagicMock()
@@ -171,6 +172,7 @@ class TestWorkProfileAIHardening:
              patch("app.core.constants.get_max_hours_for_type", return_value=10.0):
             resolve_work_profile(
                 db,
+                project_id=project_id,
                 activity_id=uuid.uuid4(),
                 item_id=uuid.uuid4(),
                 asset_type="concrete_pump",

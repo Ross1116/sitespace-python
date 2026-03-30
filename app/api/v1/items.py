@@ -33,9 +33,13 @@ from ...schemas.item_identity import (
     ItemClassificationEventResponse,
     ItemClassificationOverrideRequest,
     ItemClassificationResponse,
+    ItemClassificationSummary,
+    ItemKnowledgeEntrySummary,
     ItemMergeRequest,
     ItemMergeResponse,
+    ItemOtherReviewResponse,
     ItemResponse,
+    ItemStatisticsResponse,
 )
 from ...services.classification_service import (
     apply_manual_classification,
@@ -43,6 +47,7 @@ from ...services.classification_service import (
     maturity_tier,
 )
 from ...services.identity_service import AliasConflictError, MergeError, add_manual_alias, merge_items
+from ...services.item_learning_service import get_item_statistics, list_other_review_items
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,67 @@ def list_items(
         identity_status=i.identity_status,
         merged_into_item_id=i.merged_into_item_id,
     ) for i in items]
+
+
+@router.get("/review/other", response_model=list[ItemOtherReviewResponse])
+def review_other_items(
+    limit: int = Query(ITEM_PAGE_DEFAULT, ge=1, le=ITEM_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    rows = list_other_review_items(db, limit=limit, offset=offset)
+    return [ItemOtherReviewResponse(**row) for row in rows]
+
+
+@router.get("/{item_id}/statistics", response_model=ItemStatisticsResponse)
+def get_item_statistics_endpoint(
+    item_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    try:
+        stats = get_item_statistics(db, item_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    classification = stats.active_classification
+    return ItemStatisticsResponse(
+        item_id=stats.item.id,
+        display_name=stats.item.display_name,
+        alias_count=stats.alias_count,
+        occurrence_count=stats.occurrence_count,
+        distinct_project_count=stats.distinct_project_count,
+        actuals_count=stats.actuals_count,
+        actual_hours_total=stats.actual_hours_total,
+        last_seen_at=stats.last_seen_at,
+        active_classification=(
+            ItemClassificationSummary(
+                asset_type=classification.asset_type,
+                source=classification.source,
+                confidence=classification.confidence,
+                maturity_tier=maturity_tier(classification),
+            )
+            if classification is not None
+            else None
+        ),
+        local_profile_counts_by_source=stats.local_profile_counts_by_source,
+        local_profile_counts_by_maturity=stats.local_profile_counts_by_maturity,
+        global_knowledge_counts_by_tier=stats.global_knowledge_counts_by_tier,
+        global_knowledge_entries=[
+            ItemKnowledgeEntrySummary(
+                asset_type=row.asset_type,
+                duration_bucket=row.duration_bucket,
+                confidence_tier=row.confidence_tier,
+                source_project_count=row.source_project_count,
+                sample_count=row.sample_count,
+                correction_count=row.correction_count,
+                posterior_mean=float(row.posterior_mean),
+                last_updated_at=row.last_updated_at,
+            )
+            for row in stats.global_knowledge_entries
+        ],
+    )
 
 
 @router.post("/merge", response_model=ItemMergeResponse, status_code=status.HTTP_200_OK)

@@ -4110,16 +4110,16 @@ Add:
 
 Add:
 
-- `item_knowledge_base` table
-- promotion logic: project-local → global (multi-upload, multi-project, zero corrections)
-- global cache lookup in cache-miss path
-- global confidence tier evaluation (medium/high → different AI behaviour)
-- asset-type presence guard on global lookup
-- global posterior update when local projects contribute new observations
-- item statistics
-- Bayesian posterior update using actuals (`actuals_count`, `actuals_median`)
-- `other` review reporting
-- actuals capture foundation (`asset_usage_actuals`)
+- [x] `item_knowledge_base` table
+- [x] promotion logic: project-local → global (multi-upload, multi-project, zero corrections)
+- [x] global cache lookup in cache-miss path
+- [x] global confidence tier evaluation (medium/high → different AI behaviour)
+- [x] asset-type presence guard on global lookup
+- [x] global posterior update when local projects contribute new observations
+- [x] item statistics
+- [x] Bayesian posterior update using actuals (`actuals_count`, `actuals_median`)
+- [x] `other` review reporting
+- [x] actuals capture foundation (`asset_usage_actuals`)
 
 ## Stage 11 — Feature learning
 
@@ -4629,19 +4629,19 @@ Historical note: this checklist is preserved from the original architecture base
 
 ## Next
 
-- [ ] Implement correction propagation flow
+- [x] Implement correction propagation flow
 - [x] Implement manual merge operations for items
 
 ## Later
 
-- [ ] Add `item_knowledge_base` table (global cross-project cache tier)
-- [ ] Implement project-local → global promotion rules
-- [ ] Implement global cache lookup with asset-type presence guard
-- [ ] Implement actuals Bayesian updates (`actuals_count`, `actuals_median`)
+- [x] Add `item_knowledge_base` table (global cross-project cache tier)
+- [x] Implement project-local → global promotion rules
+- [x] Implement global cache lookup with asset-type presence guard
+- [x] Implement actuals Bayesian updates (`actuals_count`, `actuals_median`)
 - [ ] Add similarity-based merge suggestions
 - [ ] Refine stale-alert cancellation by exact signal scope
-- [ ] Add item stats / learning loop
-- [ ] Add actual-hours capture foundation (`asset_usage_actuals`)
+- [x] Add item stats / learning loop
+- [x] Add actual-hours capture foundation (`asset_usage_actuals`)
 - [ ] Add hierarchy feature learning
 - [ ] Add confidence weighting for learned features
 - [ ] Add actuals-informed shape learning

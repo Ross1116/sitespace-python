@@ -47,10 +47,13 @@ from ..core.constants import (
     WORK_PROFILE_OPERATIONAL_UNIT,
     WORK_PROFILE_TOKENS_PER_DAY,
 )
+from ..models.asset import Asset
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
 from ..models.work_profile import (
     ActivityWorkProfile,
+    AssetUsageActual,
     ItemContextProfile,
+    ItemKnowledgeBase,
     WorkProfileAILog,
 )
 from .ai_service import (
@@ -105,6 +108,7 @@ class WorkProfilePreflight:
     cached: Optional[ItemContextProfile] = None
     tier: Optional[str] = None
     trusted_baseline: Optional[float] = None
+    global_knowledge: Optional[ItemKnowledgeBase] = None
 
 
 @dataclass
@@ -286,6 +290,88 @@ def build_context_key(
 
 
 # ---------------------------------------------------------------------------
+# 2.5 Global knowledge helpers
+# ---------------------------------------------------------------------------
+
+def duration_bucket_for_days(duration_days: int) -> int:
+    duration_days = max(int(duration_days or 0), 1)
+    if duration_days <= 5:
+        return duration_days
+    if duration_days <= 10:
+        return 7
+    if duration_days <= 20:
+        return 14
+    return 28
+
+
+def _project_has_asset_type(
+    db: Session,
+    project_id: uuid.UUID,
+    asset_type: str,
+) -> bool:
+    return (
+        db.query(Asset.id)
+        .filter(
+            Asset.project_id == project_id,
+            Asset.canonical_type == asset_type,
+        )
+        .first()
+        is not None
+    )
+
+
+def _resample_normalized_distribution(
+    normalized_distribution: list[float],
+    target_length: int,
+) -> list[float]:
+    if target_length <= 0:
+        return []
+    if not normalized_distribution:
+        return _uniform_normalized(target_length)
+
+    source = derive_normalized_distribution([max(0.0, float(value)) for value in normalized_distribution])
+    source_length = len(source)
+    if source_length == target_length:
+        return source
+
+    # Piecewise-linear bucket overlap so we preserve total mass while changing resolution.
+    result = [0.0] * target_length
+    for target_idx in range(target_length):
+        target_start = target_idx / target_length
+        target_end = (target_idx + 1) / target_length
+        accumulated = 0.0
+        for source_idx, source_value in enumerate(source):
+            source_start = source_idx / source_length
+            source_end = (source_idx + 1) / source_length
+            overlap = max(0.0, min(target_end, source_end) - max(target_start, source_start))
+            if overlap > 0:
+                accumulated += source_value * (overlap * source_length)
+        result[target_idx] = accumulated
+    return derive_normalized_distribution(result)
+
+
+def _coefficient_of_variation(posterior_mean: float, posterior_precision: float) -> float:
+    return (1.0 / math.sqrt(float(posterior_precision))) / float(posterior_mean)
+
+
+def _global_confidence_tier(
+    *,
+    posterior_mean: float,
+    posterior_precision: float,
+    source_project_count: int,
+    sample_count: int,
+) -> str | None:
+    if posterior_mean <= 0 or posterior_precision <= 0:
+        return None
+    cv = _coefficient_of_variation(posterior_mean, posterior_precision)
+    if sample_count >= 10 and source_project_count >= 3 and cv < WORK_PROFILE_CV_TRUSTED:
+        return "high"
+    if sample_count >= 3 and source_project_count >= 1 and cv < WORK_PROFILE_CV_CONFIRMED:
+        return "medium"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 3. Maturity tier evaluation
 # ---------------------------------------------------------------------------
 
@@ -398,6 +484,7 @@ def quantize_hours(hours: float) -> float:
 
 def _find_trusted_baseline(
     db: Session,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -418,6 +505,7 @@ def _find_trusted_baseline(
     manual_rows = (
         db.query(ItemContextProfile)
         .filter(
+            ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.asset_type == asset_type,
             ItemContextProfile.duration_days == duration_days,
@@ -440,6 +528,7 @@ def _find_trusted_baseline(
     rows = (
         db.query(ItemContextProfile)
         .filter(
+            ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.asset_type == asset_type,
             ItemContextProfile.duration_days == duration_days,
@@ -573,6 +662,7 @@ def _base_context_only(compressed_context: dict) -> dict:
 
 def _lookup_cache_with_reduced_context(
     db: Session,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -595,6 +685,7 @@ def _lookup_cache_with_reduced_context(
     )
     cached = lookup_cache(
         db,
+        project_id,
         item_id,
         asset_type,
         duration_days,
@@ -619,6 +710,7 @@ def _lookup_cache_with_reduced_context(
     )
     cached = lookup_cache(
         db,
+        project_id,
         item_id,
         asset_type,
         duration_days,
@@ -1144,6 +1236,7 @@ def build_default_profile(
 
 def lookup_cache(
     db: Session,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -1160,6 +1253,7 @@ def lookup_cache(
     return (
         db.query(ItemContextProfile)
         .filter(
+            ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.asset_type == asset_type,
             ItemContextProfile.duration_days == duration_days,
@@ -1177,6 +1271,7 @@ def lookup_cache(
 
 def _write_cache_entry(
     db: Session,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -1187,6 +1282,7 @@ def _write_cache_entry(
     confidence: float,
     source: str,
     low_confidence_flag: bool = False,
+    sync_global: bool = True,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ItemContextProfile:
@@ -1208,6 +1304,7 @@ def _write_cache_entry(
         sc = 1
 
     profile = ItemContextProfile(
+        project_id=project_id,
         item_id=item_id,
         asset_type=asset_type,
         duration_days=duration_days,
@@ -1231,13 +1328,27 @@ def _write_cache_entry(
     db.add(profile)
     try:
         db.flush()
+        if sync_global and source != "default":
+            rebuild_global_knowledge_entry(
+                db,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_bucket=duration_bucket_for_days(duration_days),
+                context_version=context_version,
+                inference_version=inference_version,
+            )
         return profile
     except IntegrityError:
         db.rollback()
         existing = (
             db.query(ItemContextProfile)
             .filter(
+                ItemContextProfile.project_id == project_id,
                 ItemContextProfile.item_id == item_id,
+                ItemContextProfile.asset_type == asset_type,
+                ItemContextProfile.duration_days == duration_days,
+                ItemContextProfile.context_version == context_version,
+                ItemContextProfile.inference_version == inference_version,
                 ItemContextProfile.context_hash == context_hash,
             )
             .one_or_none()
@@ -1269,6 +1380,7 @@ def _overwrite_cache_entry(
 def _upsert_cache_from_external_observation(
     db: Session,
     *,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -1279,11 +1391,13 @@ def _upsert_cache_from_external_observation(
     confidence: float,
     source: str,
     low_confidence_flag: bool,
+    sync_global: bool = True,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ItemContextProfile:
     existing = lookup_cache(
         db,
+        project_id,
         item_id,
         asset_type,
         duration_days,
@@ -1294,6 +1408,7 @@ def _upsert_cache_from_external_observation(
     if existing is None:
         return _write_cache_entry(
             db,
+            project_id,
             item_id,
             asset_type,
             duration_days,
@@ -1304,8 +1419,9 @@ def _upsert_cache_from_external_observation(
             confidence,
             source,
             low_confidence_flag,
-            context_version,
-            inference_version,
+            sync_global=sync_global,
+            context_version=context_version,
+            inference_version=inference_version,
         )
 
     if existing.source == "manual":
@@ -1329,6 +1445,15 @@ def _upsert_cache_from_external_observation(
             existing.evidence_weight = float(confidence)
             existing.sample_count = 1
         db.flush()
+        if sync_global:
+            rebuild_global_knowledge_entry(
+                db,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_bucket=duration_bucket_for_days(duration_days),
+                context_version=context_version,
+                inference_version=inference_version,
+            )
         return existing
 
     _overwrite_cache_entry(
@@ -1356,12 +1481,22 @@ def _upsert_cache_from_external_observation(
         existing.posterior_precision = pp
 
     db.flush()
+    if sync_global:
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket_for_days(duration_days),
+            context_version=context_version,
+            inference_version=inference_version,
+        )
     return existing
 
 
 def _preflight_work_profile_resolution(
     db: Session,
     *,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -1374,6 +1509,7 @@ def _preflight_work_profile_resolution(
     compressed = build_compressed_context(activity_name, level_name, zone_name)
     cached, context_hash = _lookup_cache_with_reduced_context(
         db,
+        project_id,
         item_id,
         asset_type,
         duration_days,
@@ -1383,8 +1519,19 @@ def _preflight_work_profile_resolution(
     )
     tier = work_profile_maturity(cached) if cached is not None else None
     baseline = None
+    global_knowledge = None
     if cached is None:
-        baseline = _find_trusted_baseline(db, item_id, asset_type, duration_days)
+        baseline = _find_trusted_baseline(db, project_id, item_id, asset_type, duration_days)
+        if baseline is None:
+            global_knowledge = get_global_knowledge_entry(
+                db,
+                project_id=project_id,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_days=duration_days,
+                context_version=WORK_PROFILE_CONTEXT_VERSION,
+                inference_version=WORK_PROFILE_INFERENCE_VERSION,
+            )
 
     return WorkProfilePreflight(
         compressed_context=compressed,
@@ -1393,6 +1540,7 @@ def _preflight_work_profile_resolution(
         cached=cached,
         tier=tier,
         trusted_baseline=baseline,
+        global_knowledge=global_knowledge,
     )
 
 
@@ -1407,6 +1555,15 @@ def _preflight_needs_ai(preflight: WorkProfilePreflight) -> tuple[bool, Optional
             return True, hint
         return False, None
     if preflight.trusted_baseline is not None:
+        return False, None
+    if preflight.global_knowledge is not None:
+        if preflight.global_knowledge.confidence_tier == "medium":
+            return True, {
+                "posterior_mean": float(preflight.global_knowledge.posterior_mean),
+                "posterior_precision": float(preflight.global_knowledge.posterior_precision),
+                "sample_count": float(preflight.global_knowledge.sample_count or 0),
+                "confidence": 0.8,
+            }
         return False, None
     return True, None
 
@@ -2151,6 +2308,7 @@ def _apply_manual_cache_values(
 def upsert_manual_context_profile(
     db: Session,
     *,
+    project_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -2159,6 +2317,7 @@ def upsert_manual_context_profile(
     distribution: list[float],
     normalized_distribution: list[float],
     context_hash: str | None = None,
+    sync_global: bool = True,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ItemContextProfile:
@@ -2172,6 +2331,7 @@ def upsert_manual_context_profile(
     )
     existing = lookup_cache(
         db,
+        project_id,
         item_id,
         asset_type,
         duration_days,
@@ -2184,6 +2344,7 @@ def upsert_manual_context_profile(
         savepoint = db.begin_nested()
         try:
             existing = ItemContextProfile(
+                project_id=project_id,
                 item_id=item_id,
                 asset_type=asset_type,
                 duration_days=duration_days,
@@ -2211,6 +2372,7 @@ def upsert_manual_context_profile(
             savepoint.rollback()
             existing = lookup_cache(
                 db,
+                project_id,
                 item_id,
                 asset_type,
                 duration_days,
@@ -2228,6 +2390,15 @@ def upsert_manual_context_profile(
         normalized_distribution=normalized_distribution,
     )
     db.flush()
+    if sync_global:
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket_for_days(duration_days),
+            context_version=context_version,
+            inference_version=inference_version,
+        )
     return existing
 
 
@@ -2326,10 +2497,11 @@ def _resolve_context_profile_compressed_context(
 def _context_profile_merge_key(
     db: Session,
     profile: ItemContextProfile,
-) -> tuple[str, int, int, int, str, str, str, str]:
+) -> tuple[str, str, int, int, int, str, str, str, str]:
     compressed_context = _resolve_context_profile_compressed_context(db, profile)
     if compressed_context is not None:
         return (
+            str(profile.project_id),
             str(profile.asset_type),
             int(profile.duration_days or 0),
             int(profile.context_version or 0),
@@ -2340,6 +2512,7 @@ def _context_profile_merge_key(
             compressed_context["work_type"],
         )
     return (
+        str(profile.project_id),
         str(profile.asset_type),
         int(profile.duration_days or 0),
         int(profile.context_version or 0),
@@ -2468,11 +2641,635 @@ def reconcile_context_profiles_on_merge(
 
 
 # ---------------------------------------------------------------------------
+# 12.5 Stage 10 global knowledge + actuals
+# ---------------------------------------------------------------------------
+
+def _has_valid_posterior(profile: ItemContextProfile) -> bool:
+    return bool(
+        profile.posterior_mean is not None
+        and profile.posterior_precision is not None
+        and float(profile.posterior_mean) > 0
+        and float(profile.posterior_precision) > 0
+    )
+
+
+def _eligible_local_profiles_for_global_entry(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_bucket: int,
+    context_version: int,
+    inference_version: int,
+) -> list[ItemContextProfile]:
+    rows = (
+        db.query(ItemContextProfile)
+        .filter(
+            ItemContextProfile.item_id == item_id,
+            ItemContextProfile.asset_type == asset_type,
+            ItemContextProfile.context_version == context_version,
+            ItemContextProfile.inference_version == inference_version,
+            ItemContextProfile.project_id.isnot(None),
+            ItemContextProfile.source.in_(["ai", "learned"]),
+            ItemContextProfile.low_confidence_flag.is_(False),
+            ItemContextProfile.sample_count >= WORK_PROFILE_CORRECTION_MIN_SAMPLES,
+            ItemContextProfile.correction_count == 0,
+        )
+        .all()
+    )
+    return [
+        row
+        for row in rows
+        if duration_bucket_for_days(int(row.duration_days or 0)) == duration_bucket
+        and _has_valid_posterior(row)
+        and str(row.asset_type) not in {"other", "none"}
+    ]
+
+
+def get_global_knowledge_entry(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_days: int,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+) -> ItemKnowledgeBase | None:
+    if asset_type in {"other", "none"}:
+        return None
+    if not _project_has_asset_type(db, project_id, asset_type):
+        return None
+    duration_bucket = duration_bucket_for_days(duration_days)
+    return (
+        db.query(ItemKnowledgeBase)
+        .filter(
+            ItemKnowledgeBase.item_id == item_id,
+            ItemKnowledgeBase.asset_type == asset_type,
+            ItemKnowledgeBase.duration_bucket == duration_bucket,
+            ItemKnowledgeBase.context_version == context_version,
+            ItemKnowledgeBase.inference_version == inference_version,
+        )
+        .one_or_none()
+    )
+
+
+def rebuild_global_knowledge_entry(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_bucket: int,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+) -> ItemKnowledgeBase | None:
+    existing = (
+        db.query(ItemKnowledgeBase)
+        .filter(
+            ItemKnowledgeBase.item_id == item_id,
+            ItemKnowledgeBase.asset_type == asset_type,
+            ItemKnowledgeBase.duration_bucket == duration_bucket,
+            ItemKnowledgeBase.context_version == context_version,
+            ItemKnowledgeBase.inference_version == inference_version,
+        )
+        .one_or_none()
+    )
+
+    rows = _eligible_local_profiles_for_global_entry(
+        db,
+        item_id=item_id,
+        asset_type=asset_type,
+        duration_bucket=duration_bucket,
+        context_version=context_version,
+        inference_version=inference_version,
+    )
+    if not rows:
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        return None
+
+    combined_mean: float | None = None
+    combined_precision: float | None = None
+    sample_count = 0
+    correction_count = 0
+    contributing_projects: set[uuid.UUID] = set()
+    representative_days = duration_bucket
+    shape_accumulator = [0.0] * representative_days
+    shape_weight_total = 0.0
+
+    for row in rows:
+        row_mean = float(row.posterior_mean)
+        row_precision = float(row.posterior_precision)
+        if combined_mean is None or combined_precision is None:
+            combined_mean = row_mean
+            combined_precision = row_precision
+        else:
+            combined_mean, combined_precision = bayesian_update(
+                combined_mean,
+                combined_precision,
+                row_mean,
+                row_precision,
+            )
+        sample_count += int(row.sample_count or 0)
+        correction_count += int(row.correction_count or 0)
+        contributing_projects.add(row.project_id)
+
+        weight = float(max(int(row.sample_count or 0), 1))
+        resampled_shape = _resample_normalized_distribution(
+            list(row.normalized_distribution_json or []),
+            representative_days,
+        )
+        for idx, value in enumerate(resampled_shape):
+            shape_accumulator[idx] += value * weight
+        shape_weight_total += weight
+
+    if (
+        combined_mean is None
+        or combined_precision is None
+        or combined_mean <= 0
+        or combined_precision <= 0
+    ):
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        return None
+
+    confidence_tier = _global_confidence_tier(
+        posterior_mean=combined_mean,
+        posterior_precision=combined_precision,
+        source_project_count=len(contributing_projects),
+        sample_count=sample_count,
+    )
+    if confidence_tier is None:
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        return None
+
+    normalized_shape = derive_normalized_distribution(
+        [
+            (value / shape_weight_total) if shape_weight_total > 0 else 0.0
+            for value in shape_accumulator
+        ]
+    )
+
+    knowledge = existing
+    if knowledge is None:
+        knowledge = ItemKnowledgeBase(
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket,
+            context_version=context_version,
+            inference_version=inference_version,
+            normalized_shape_json=normalized_shape,
+            confidence_tier=confidence_tier,
+            posterior_mean=combined_mean,
+            posterior_precision=combined_precision,
+            source_project_count=len(contributing_projects),
+            sample_count=sample_count,
+            correction_count=correction_count,
+        )
+        db.add(knowledge)
+    else:
+        knowledge.posterior_mean = combined_mean
+        knowledge.posterior_precision = combined_precision
+        knowledge.source_project_count = len(contributing_projects)
+        knowledge.sample_count = sample_count
+        knowledge.correction_count = correction_count
+        knowledge.normalized_shape_json = normalized_shape
+        knowledge.confidence_tier = confidence_tier
+
+    db.flush()
+    return knowledge
+
+
+def rebuild_global_knowledge_for_item(
+    db: Session,
+    item_id: uuid.UUID,
+) -> None:
+    existing_keys = {
+        (
+            row.asset_type,
+            int(row.duration_bucket or 0),
+            int(row.context_version or 0),
+            int(row.inference_version or 0),
+        )
+        for row in db.query(ItemKnowledgeBase)
+        .filter(ItemKnowledgeBase.item_id == item_id)
+        .all()
+    }
+    local_keys = {
+        (
+            row.asset_type,
+            duration_bucket_for_days(int(row.duration_days or 0)),
+            int(row.context_version or 0),
+            int(row.inference_version or 0),
+        )
+        for row in db.query(ItemContextProfile)
+        .filter(
+            ItemContextProfile.item_id == item_id,
+            ItemContextProfile.project_id.isnot(None),
+        )
+        .all()
+    }
+    for asset_type, duration_bucket, context_version, inference_version in sorted(existing_keys | local_keys):
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket,
+            context_version=context_version,
+            inference_version=inference_version,
+        )
+
+
+def rebuild_all_global_knowledge(db: Session) -> None:
+    item_ids = {
+        row[0]
+        for row in db.query(ItemContextProfile.item_id)
+        .filter(ItemContextProfile.project_id.isnot(None))
+        .distinct()
+        .all()
+    }
+    for item_id in sorted(item_ids, key=str):
+        rebuild_global_knowledge_for_item(db, item_id)
+
+
+def _seed_local_cache_from_global_knowledge(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_days: int,
+    context_hash: str,
+    max_hours_per_day: float,
+    compressed_context: dict,
+    global_knowledge: ItemKnowledgeBase,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+) -> ItemContextProfile:
+    existing = lookup_cache(
+        db,
+        project_id,
+        item_id,
+        asset_type,
+        duration_days,
+        context_hash,
+        context_version,
+        inference_version,
+    )
+    if existing is not None:
+        return existing
+
+    normalized_distribution = list(
+        _build_default_profile_prior(
+            asset_type,
+            duration_days,
+            max_hours_per_day,
+            compressed_context=compressed_context,
+        )["normalized_distribution"]
+    )
+    total_hours = quantize_hours(float(global_knowledge.posterior_mean))
+    distribution = derive_distribution(
+        normalized_distribution,
+        total_hours,
+        max_hours_per_day=max_hours_per_day,
+    )
+    seeded = ItemContextProfile(
+        project_id=project_id,
+        item_id=item_id,
+        asset_type=asset_type,
+        duration_days=duration_days,
+        context_version=context_version,
+        inference_version=inference_version,
+        context_hash=context_hash,
+        total_hours=total_hours,
+        distribution_json=distribution,
+        normalized_distribution_json=normalized_distribution,
+        confidence=0.9,
+        source="learned",
+        low_confidence_flag=False,
+        observation_count=0,
+        evidence_weight=0,
+        posterior_mean=float(global_knowledge.posterior_mean),
+        posterior_precision=float(global_knowledge.posterior_precision),
+        sample_count=0,
+        correction_count=0,
+        actuals_count=0,
+    )
+    db.add(seeded)
+    db.flush()
+    return seeded
+
+
+def _median_with_new_value(
+    existing_median: float | None,
+    existing_count: int,
+    new_value: float,
+) -> float:
+    if existing_count <= 0 or existing_median is None:
+        return new_value
+    if existing_count == 1:
+        values = sorted([existing_median, new_value])
+        return (values[0] + values[1]) / 2.0
+    # Keep the stored value stable and monotonic without persisting full history.
+    return float(existing_median if existing_median == new_value else sorted([existing_median, new_value])[1])
+
+
+def record_actual_hours(
+    db: Session,
+    *,
+    activity_work_profile_id: uuid.UUID,
+    actual_hours_used: float,
+    source: str = "system",
+    recorded_by_user_id: uuid.UUID | None = None,
+    booking_group_id: uuid.UUID | None = None,
+    booking_id: uuid.UUID | None = None,
+) -> AssetUsageActual:
+    profile = (
+        db.query(ActivityWorkProfile)
+        .filter(ActivityWorkProfile.id == activity_work_profile_id)
+        .one_or_none()
+    )
+    if profile is None:
+        raise LookupError(f"Activity work profile {activity_work_profile_id} not found")
+    if actual_hours_used < 0:
+        raise ValueError("actual_hours_used must be non-negative")
+
+    actual = (
+        db.query(AssetUsageActual)
+        .filter(AssetUsageActual.activity_work_profile_id == activity_work_profile_id)
+        .one_or_none()
+    )
+    created_actual = actual is None
+    if actual is None:
+        actual = AssetUsageActual(
+            activity_work_profile_id=activity_work_profile_id,
+            actual_hours_used=actual_hours_used,
+            source=source,
+            recorded_by_user_id=recorded_by_user_id,
+            booking_group_id=booking_group_id,
+            booking_id=booking_id,
+        )
+        db.add(actual)
+    else:
+        actual.actual_hours_used = actual_hours_used
+        actual.source = source
+        actual.recorded_by_user_id = recorded_by_user_id
+        actual.booking_group_id = booking_group_id
+        actual.booking_id = booking_id
+
+    context_profile = None
+    if profile.context_profile_id is not None:
+        context_profile = (
+            db.query(ItemContextProfile)
+            .filter(ItemContextProfile.id == profile.context_profile_id)
+            .one_or_none()
+        )
+
+    if context_profile is not None:
+        if created_actual:
+            previous_actuals_count = int(context_profile.actuals_count or 0)
+            context_profile.actuals_count = previous_actuals_count + 1
+            context_profile.actuals_median = _median_with_new_value(
+                float(context_profile.actuals_median) if context_profile.actuals_median is not None else None,
+                previous_actuals_count,
+                float(actual_hours_used),
+            )
+            if context_profile.source != "manual":
+                context_profile.sample_count = int(context_profile.sample_count or 0) + 1
+                obs_precision = _obs_precision(float(actual_hours_used), "actual")
+                if _has_valid_posterior(context_profile):
+                    mean, precision = bayesian_update(
+                        float(context_profile.posterior_mean),
+                        float(context_profile.posterior_precision),
+                        float(actual_hours_used),
+                        obs_precision,
+                    )
+                else:
+                    mean, precision = _initial_posterior(float(actual_hours_used), 0.95)
+                context_profile.posterior_mean = mean
+                context_profile.posterior_precision = precision
+                context_profile.evidence_weight = float(context_profile.evidence_weight or 0) + 1.0
+
+                rebuild_global_knowledge_entry(
+                    db,
+                    item_id=context_profile.item_id,
+                    asset_type=str(context_profile.asset_type),
+                    duration_bucket=duration_bucket_for_days(int(context_profile.duration_days or 0)),
+                    context_version=int(context_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                    inference_version=int(context_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+                )
+
+    db.flush()
+    return actual
+
+
+def backfill_project_local_context_profiles(
+    db: Session,
+    *,
+    delete_unreferenced_legacy: bool = False,
+) -> dict[str, int]:
+    rows = (
+        db.query(ActivityWorkProfile, ProgrammeActivity, ProgrammeUpload, ItemContextProfile)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityWorkProfile.activity_id)
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .outerjoin(ItemContextProfile, ItemContextProfile.id == ActivityWorkProfile.context_profile_id)
+        .order_by(ActivityWorkProfile.created_at.asc(), ActivityWorkProfile.id.asc())
+        .all()
+    )
+
+    errors: list[str] = []
+    repointed = 0
+    reused = 0
+    seeded = 0
+
+    for activity_profile, activity, upload, linked_profile in rows:
+        if upload.project_id is None:
+            errors.append(f"activity_work_profile:{activity_profile.id}:missing_project_id")
+            continue
+
+        resolved_item_id = (
+            getattr(linked_profile, "item_id", None)
+            or getattr(activity_profile, "item_id", None)
+            or getattr(activity, "item_id", None)
+        )
+        if resolved_item_id is None:
+            errors.append(f"activity_work_profile:{activity_profile.id}:missing_item_id")
+            continue
+
+        compressed_context = build_compressed_context(
+            activity.name or "",
+            level_name=activity.level_name,
+            zone_name=activity.zone_name,
+        )
+        context_hash = str(activity_profile.context_hash or build_context_key(
+            resolved_item_id,
+            str(activity_profile.asset_type),
+            int(activity_profile.duration_days or 0),
+            compressed_context,
+            context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+            inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+        ))
+        duration_days = max(int(activity_profile.duration_days or 0), 1)
+        confidence = float(activity_profile.confidence or 0)
+        linked_source = str(getattr(linked_profile, "source", "") or "")
+        activity_source = str(activity_profile.source or "")
+
+        if linked_source in {"manual", "default", "learned", "ai"}:
+            effective_source = linked_source
+        elif activity_source == "manual":
+            effective_source = "manual"
+        elif activity_source == "default":
+            effective_source = "default"
+        elif activity_source == "ai":
+            effective_source = "ai"
+        else:
+            effective_source = "learned"
+
+        local_profile = lookup_cache(
+            db,
+            upload.project_id,
+            resolved_item_id,
+            str(activity_profile.asset_type),
+            duration_days,
+            context_hash,
+            int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+            int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+        )
+
+        if effective_source == "manual":
+            local_profile = upsert_manual_context_profile(
+                db,
+                project_id=upload.project_id,
+                item_id=resolved_item_id,
+                asset_type=str(activity_profile.asset_type),
+                duration_days=duration_days,
+                compressed_context=compressed_context,
+                total_hours=float(activity_profile.total_hours or 0),
+                distribution=list(activity_profile.distribution_json or []),
+                normalized_distribution=list(activity_profile.normalized_distribution_json or []),
+                context_hash=context_hash,
+                sync_global=False,
+                context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
+            seeded += 1
+        elif local_profile is None and effective_source == "default":
+            local_profile = _write_cache_entry(
+                db,
+                upload.project_id,
+                resolved_item_id,
+                str(activity_profile.asset_type),
+                duration_days,
+                context_hash,
+                float(activity_profile.total_hours or 0),
+                list(activity_profile.distribution_json or []),
+                list(activity_profile.normalized_distribution_json or []),
+                confidence,
+                source="default",
+                low_confidence_flag=bool(activity_profile.low_confidence_flag),
+                sync_global=False,
+                context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
+            seeded += 1
+        elif local_profile is None and activity_source == "cache":
+            local_profile = _write_cache_entry(
+                db,
+                upload.project_id,
+                resolved_item_id,
+                str(activity_profile.asset_type),
+                duration_days,
+                context_hash,
+                float(activity_profile.total_hours or 0),
+                list(activity_profile.distribution_json or []),
+                list(activity_profile.normalized_distribution_json or []),
+                confidence,
+                source=effective_source,
+                low_confidence_flag=bool(activity_profile.low_confidence_flag),
+                sync_global=False,
+                context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
+            seeded += 1
+        elif activity_source == "cache":
+            _update_cache_on_hit(db, local_profile)
+            db.flush()
+            reused += 1
+        else:
+            local_profile = _upsert_cache_from_external_observation(
+                db,
+                project_id=upload.project_id,
+                item_id=resolved_item_id,
+                asset_type=str(activity_profile.asset_type),
+                duration_days=duration_days,
+                context_hash=context_hash,
+                total_hours=float(activity_profile.total_hours or 0),
+                distribution=list(activity_profile.distribution_json or []),
+                normalized_distribution=list(activity_profile.normalized_distribution_json or []),
+                confidence=confidence,
+                source=effective_source,
+                low_confidence_flag=bool(activity_profile.low_confidence_flag),
+                sync_global=False,
+                context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
+            seeded += 1
+
+        if local_profile is None:
+            errors.append(f"activity_work_profile:{activity_profile.id}:unable_to_materialize_local_profile")
+            continue
+
+        if activity_profile.context_profile_id != local_profile.id:
+            activity_profile.context_profile_id = local_profile.id
+            repointed += 1
+
+    if errors:
+        raise RuntimeError(
+            "Stage 10 local-cache backfill aborted due to unresolved provenance: "
+            + "; ".join(errors[:20])
+        )
+
+    rebuild_all_global_knowledge(db)
+
+    deleted_legacy = 0
+    if delete_unreferenced_legacy:
+        referenced_ids = {
+            row[0]
+            for row in db.query(ActivityWorkProfile.context_profile_id)
+            .filter(ActivityWorkProfile.context_profile_id.isnot(None))
+            .all()
+        }
+        legacy_rows = (
+            db.query(ItemContextProfile)
+            .filter(ItemContextProfile.project_id.is_(None))
+            .all()
+        )
+        for legacy_row in legacy_rows:
+            if legacy_row.id not in referenced_ids:
+                db.delete(legacy_row)
+                deleted_legacy += 1
+
+    db.flush()
+    return {
+        "processed_activity_profiles": len(rows),
+        "repointed_activity_profiles": repointed,
+        "reused_local_hits": reused,
+        "materialized_local_profiles": seeded,
+        "deleted_unreferenced_legacy_profiles": deleted_legacy,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 13. Main entry point (first-half: cache + default fallback, no AI yet)
 # ---------------------------------------------------------------------------
 
 def resolve_work_profile(
     db: Session,
+    project_id: uuid.UUID,
     activity_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
@@ -2513,6 +3310,7 @@ def resolve_work_profile(
     # ── Step 1: context ──────────────────────────────────────────────────────
     preflight = preflight or _preflight_work_profile_resolution(
         db,
+        project_id=project_id,
         item_id=item_id,
         asset_type=asset_type,
         duration_days=duration_days,
@@ -2594,6 +3392,7 @@ def resolve_work_profile(
                 confidence = float(ai_payload["confidence"])
                 updated_cache = _upsert_cache_from_external_observation(
                     db,
+                    project_id=project_id,
                     item_id=item_id,
                     asset_type=asset_type,
                     duration_days=duration_days,
@@ -2619,6 +3418,7 @@ def resolve_work_profile(
         )
 
         baseline = preflight.trusted_baseline
+        global_knowledge = preflight.global_knowledge
 
         if baseline is not None:
             final_hours = quantize_hours(baseline)
@@ -2636,6 +3436,7 @@ def resolve_work_profile(
             confidence = 0.6   # moderate confidence for inherited baseline
             new_cache = _upsert_cache_from_external_observation(
                 db,
+                project_id=project_id,
                 item_id=item_id,
                 asset_type=asset_type,
                 duration_days=duration_days,
@@ -2653,9 +3454,53 @@ def resolve_work_profile(
                 "Item %s asset=%s dur=%d: trusted baseline %.2fh",
                 item_id, asset_type, duration_days, final_hours,
             )
+        elif global_knowledge is not None and global_knowledge.confidence_tier == "high":
+            final_hours = quantize_hours(float(global_knowledge.posterior_mean))
+            norm_dist = list(
+                _build_default_profile_prior(
+                    asset_type,
+                    duration_days,
+                    preflight.max_hours_per_day,
+                    compressed_context=preflight.compressed_context,
+                )["normalized_distribution"]
+            )
+            distribution = derive_distribution(
+                norm_dist,
+                final_hours,
+                max_hours_per_day=preflight.max_hours_per_day,
+            )
+            confidence = 0.9
+            seeded_cache = _seed_local_cache_from_global_knowledge(
+                db,
+                project_id=project_id,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_days=duration_days,
+                context_hash=preflight.context_hash,
+                max_hours_per_day=preflight.max_hours_per_day,
+                compressed_context=preflight.compressed_context,
+                global_knowledge=global_knowledge,
+            )
+            context_profile_id = seeded_cache.id
+            activity_source = "cache"
+            logger.debug(
+                "Item %s asset=%s dur=%d: global knowledge HIT (tier=%s)",
+                item_id,
+                asset_type,
+                duration_days,
+                global_knowledge.confidence_tier,
+            )
         else:
             # Full cache miss — try AI first when allowed, otherwise fall back to a deterministic default.
             ai_payload = precomputed_ai_proposal
+            global_hint = None
+            if global_knowledge is not None and global_knowledge.confidence_tier == "medium":
+                global_hint = {
+                    "posterior_mean": float(global_knowledge.posterior_mean),
+                    "posterior_precision": float(global_knowledge.posterior_precision),
+                    "sample_count": float(global_knowledge.sample_count or 0),
+                    "confidence": 0.8,
+                }
             if ai_payload is None and allow_ai and not degraded_mode:
                 ai_payload = _request_validated_ai_proposal_sync(
                     db=db,
@@ -2670,7 +3515,7 @@ def resolve_work_profile(
                     level_name=level_name,
                     zone_name=zone_name,
                     row_confidence=row_confidence,
-                    posterior_hint=None,
+                    posterior_hint=global_hint,
                     trusted_baseline=None,
                     runtime=runtime,
                     execution_context=execution_context,
@@ -2683,6 +3528,7 @@ def resolve_work_profile(
                 confidence = float(ai_payload["confidence"])
                 updated_cache = _upsert_cache_from_external_observation(
                     db,
+                    project_id=project_id,
                     item_id=item_id,
                     asset_type=asset_type,
                     duration_days=duration_days,
@@ -2708,6 +3554,7 @@ def resolve_work_profile(
                 low_flag = True
                 new_cache = _write_cache_entry(
                     db,
+                    project_id,
                     item_id,
                     asset_type,
                     duration_days,
@@ -2792,6 +3639,7 @@ async def materialize_work_profiles_for_upload(
             continue
         preflight = _preflight_work_profile_resolution(
             db,
+            project_id=upload.project_id,
             item_id=activity.item_id,
             asset_type=mapping.asset_type,
             duration_days=max(int(activity.duration_days or 0), 1),
@@ -2952,6 +3800,7 @@ async def materialize_work_profiles_for_upload(
 
             resolve_work_profile(
                 db,
+                project_id=upload.project_id,
                 activity_id=representative_activity.id,
                 item_id=representative_activity.item_id,
                 asset_type=representative_mapping.asset_type,
@@ -2971,6 +3820,7 @@ async def materialize_work_profiles_for_upload(
             for sub_activity, sub_mapping, sub_preflight in group[1:]:
                 sub_preflight = _preflight_work_profile_resolution(
                     db,
+                    project_id=upload.project_id,
                     item_id=sub_activity.item_id,
                     asset_type=sub_mapping.asset_type,
                     duration_days=max(int(sub_activity.duration_days or 0), 1),
@@ -2980,6 +3830,7 @@ async def materialize_work_profiles_for_upload(
                 )
                 resolve_work_profile(
                     db,
+                    project_id=upload.project_id,
                     activity_id=sub_activity.id,
                     item_id=sub_activity.item_id,
                     asset_type=sub_mapping.asset_type,

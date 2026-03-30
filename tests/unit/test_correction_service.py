@@ -134,6 +134,7 @@ def test_apply_mapping_correction_propagates_manual_truth(monkeypatch):
     assert suggestion_log.correction == "forklift"
 
     assert classification_calls["args"] == (item_id, "forklift", user_id)
+    assert cache_calls["project_id"] == upload.project_id
     assert cache_calls["item_id"] == item_id
     assert cache_calls["asset_type"] == "forklift"
     assert cache_calls["total_hours"] == 16.0
