@@ -3061,21 +3061,6 @@ def _seed_local_cache_from_global_knowledge(
             raise
         return existing
 
-
-def _median_with_new_value(
-    existing_median: float | None,
-    existing_count: int,
-    new_value: float,
-) -> float:
-    if existing_count <= 0 or existing_median is None:
-        return new_value
-    if existing_count == 1:
-        values = sorted([existing_median, new_value])
-        return (values[0] + values[1]) / 2.0
-    # Keep the stored value stable and monotonic without persisting full history.
-    return float(existing_median if existing_median == new_value else sorted([existing_median, new_value])[1])
-
-
 def _median_of_values(values: list[float]) -> float | None:
     if not values:
         return None
