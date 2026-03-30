@@ -1337,21 +1337,13 @@ def _write_cache_entry(
         correction_count=0,
         actuals_count=0,
     )
+    savepoint = db.begin_nested()
     db.add(profile)
     try:
         db.flush()
-        if sync_global and source != "default":
-            rebuild_global_knowledge_entry(
-                db,
-                item_id=item_id,
-                asset_type=asset_type,
-                duration_bucket=duration_bucket_for_days(duration_days),
-                context_version=context_version,
-                inference_version=inference_version,
-            )
-        return profile
+        savepoint.commit()
     except IntegrityError:
-        db.rollback()
+        savepoint.rollback()
         existing = (
             db.query(ItemContextProfile)
             .filter(
@@ -1368,6 +1360,16 @@ def _write_cache_entry(
         if existing is None:
             raise
         return existing
+    if sync_global and source != "default":
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket_for_days(duration_days),
+            context_version=context_version,
+            inference_version=inference_version,
+        )
+    return profile
 
 
 def _overwrite_cache_entry(
@@ -3037,9 +3039,27 @@ def _seed_local_cache_from_global_knowledge(
         correction_count=0,
         actuals_count=0,
     )
+    savepoint = db.begin_nested()
     db.add(seeded)
-    db.flush()
-    return seeded
+    try:
+        db.flush()
+        savepoint.commit()
+        return seeded
+    except IntegrityError:
+        savepoint.rollback()
+        existing = lookup_cache(
+            db,
+            project_id,
+            item_id,
+            asset_type,
+            duration_days,
+            context_hash,
+            context_version,
+            inference_version,
+        )
+        if existing is None:
+            raise
+        return existing
 
 
 def _median_with_new_value(
@@ -3649,21 +3669,6 @@ def resolve_work_profile(
                 item_id, asset_type, duration_days, final_hours,
             )
         elif global_knowledge is not None and global_knowledge.confidence_tier == "high":
-            final_hours = quantize_hours(float(global_knowledge.posterior_mean))
-            norm_dist = list(
-                _build_default_profile_prior(
-                    asset_type,
-                    duration_days,
-                    preflight.max_hours_per_day,
-                    compressed_context=preflight.compressed_context,
-                )["normalized_distribution"]
-            )
-            distribution = derive_distribution(
-                norm_dist,
-                final_hours,
-                max_hours_per_day=preflight.max_hours_per_day,
-            )
-            confidence = 0.9
             seeded_cache = _seed_local_cache_from_global_knowledge(
                 db,
                 project_id=project_id,
@@ -3675,8 +3680,13 @@ def resolve_work_profile(
                 compressed_context=preflight.compressed_context,
                 global_knowledge=global_knowledge,
             )
+            final_hours = float(seeded_cache.total_hours)
+            distribution = list(seeded_cache.distribution_json or [])
+            norm_dist = list(seeded_cache.normalized_distribution_json or [])
+            confidence = float(seeded_cache.confidence or 0.9)
             context_profile_id = seeded_cache.id
-            activity_source = "cache"
+            activity_source = _activity_profile_source_for_cache(str(seeded_cache.source))
+            low_flag = low_flag or bool(getattr(seeded_cache, "low_confidence_flag", False))
             logger.debug(
                 "Item %s asset=%s dur=%d: global knowledge HIT (tier=%s)",
                 item_id,

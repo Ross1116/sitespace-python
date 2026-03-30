@@ -392,6 +392,8 @@ class TestWriteCacheEntry:
     def test_integrity_error_reuses_existing_row(self):
         db = MagicMock()
         existing = MagicMock(spec=ItemContextProfile)
+        savepoint = MagicMock()
+        db.begin_nested.return_value = savepoint
         db.flush.side_effect = IntegrityError("insert", {}, Exception("duplicate"))
         db.query.return_value.filter.return_value.one_or_none.return_value = existing
 
@@ -410,7 +412,7 @@ class TestWriteCacheEntry:
         )
 
         assert result is existing
-        db.rollback.assert_called_once()
+        savepoint.rollback.assert_called_once()
 
 
 # â”€â”€â”€ bayesian_update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

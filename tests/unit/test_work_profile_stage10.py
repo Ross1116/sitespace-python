@@ -271,11 +271,56 @@ def test_seed_local_cache_from_global_knowledge_prefers_learned_global_shape(mon
     assert seeded.distribution_json[0] > seeded.distribution_json[1] > seeded.distribution_json[2]
 
 
+def test_seed_local_cache_from_global_knowledge_recovers_from_insert_race(monkeypatch):
+    db = MagicMock()
+    db.begin_nested.return_value = MagicMock()
+    existing = SimpleNamespace(id=uuid4(), total_hours=12.0)
+    db.flush.side_effect = [IntegrityError("insert", {}, Exception("duplicate key"))]
+
+    item_id = uuid4()
+    project_id = uuid4()
+    monkeypatch.setattr(
+        "app.services.work_profile_service.lookup_cache",
+        lambda *args, **kwargs: existing,
+    )
+
+    seeded = _seed_local_cache_from_global_knowledge(
+        db,
+        project_id=project_id,
+        item_id=item_id,
+        asset_type="crane",
+        duration_days=5,
+        context_hash="exact-hash",
+        max_hours_per_day=10.0,
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        },
+        global_knowledge=SimpleNamespace(
+            posterior_mean=12.0,
+            posterior_precision=4.0,
+            normalized_shape_json=[],
+        ),
+    )
+
+    assert seeded is existing
+
+
 def test_resolve_work_profile_high_global_hit_seeds_local_cache_without_ai():
     db = MagicMock()
     project_id = uuid4()
     item_id = uuid4()
-    seeded_cache = SimpleNamespace(id=uuid4())
+    seeded_cache = SimpleNamespace(
+        id=uuid4(),
+        total_hours=12.0,
+        distribution_json=[4.0, 3.0, 2.0, 2.0, 1.0],
+        normalized_distribution_json=[1 / 3.0, 0.25, 1 / 6.0, 1 / 6.0, 1 / 12.0],
+        confidence=0.9,
+        source="learned",
+        low_confidence_flag=False,
+    )
     written_profile = MagicMock()
     preflight = WorkProfilePreflight(
         compressed_context={
@@ -316,6 +361,9 @@ def test_resolve_work_profile_high_global_hit_seeds_local_cache_without_ai():
     ai_mock.assert_not_called()
     assert write_mock.call_args.kwargs["source"] == "cache"
     assert write_mock.call_args.kwargs["context_profile_id"] == seeded_cache.id
+    assert write_mock.call_args.kwargs["total_hours"] == seeded_cache.total_hours
+    assert write_mock.call_args.kwargs["distribution"] == seeded_cache.distribution_json
+    assert write_mock.call_args.kwargs["normalized_distribution"] == seeded_cache.normalized_distribution_json
 
 
 def test_resolve_work_profile_medium_global_hit_passes_posterior_hint_to_ai():

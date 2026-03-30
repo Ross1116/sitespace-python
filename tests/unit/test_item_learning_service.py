@@ -27,6 +27,9 @@ class _QueryChain:
     def all(self):
         return self.result
 
+    def one(self):
+        return self.result
+
     def count(self):
         if isinstance(self.result, int):
             return self.result
@@ -46,18 +49,10 @@ def test_get_item_statistics_counts_actuals_for_merged_family_context_profiles(m
     db.get.return_value = merged_item
     db.query.side_effect = [
         _QueryChain(2),
-        _QueryChain([(SimpleNamespace(item_id=merged_id), SimpleNamespace(project_id=uuid4(), created_at=now))]),
+        _QueryChain((1, 1, now)),
         _QueryChain([]),
         _QueryChain([]),
-        _QueryChain(
-            [
-                (
-                    SimpleNamespace(actual_hours_used=6.5),
-                    SimpleNamespace(item_id=merged_id),
-                    SimpleNamespace(item_id=merged_id),
-                )
-            ]
-        ),
+        _QueryChain((1, 6.5)),
     ]
 
     monkeypatch.setattr(item_learning_service, "follow_item_redirect", lambda db, item: canonical_item)
@@ -76,10 +71,7 @@ def test_get_item_statistics_counts_actuals_for_merged_family_context_profiles(m
 def test_item_occurrence_stats_ignores_none_project_ids():
     now = datetime(2026, 3, 31, tzinfo=timezone.utc)
     db = MagicMock()
-    db.query.return_value.join.return_value.filter.return_value.all.return_value = [
-        (SimpleNamespace(item_id=uuid4()), SimpleNamespace(project_id=None, created_at=now)),
-        (SimpleNamespace(item_id=uuid4()), SimpleNamespace(project_id=uuid4(), created_at=now)),
-    ]
+    db.query.return_value.join.return_value.filter.return_value.one.return_value = (2, 1, now)
 
     occurrence_count, distinct_project_count, last_seen_at = item_learning_service._item_occurrence_stats(db, [uuid4()])
 
@@ -102,6 +94,29 @@ def test_family_item_ids_matches_redirect_cycle_semantics():
     family = item_learning_service._family_item_ids(db, item_b.id)
 
     assert set(family) == {item_a.id, item_b.id}
+
+
+def test_batched_item_occurrence_stats_counts_cycle_family_once():
+    item_a = SimpleNamespace(id=uuid4(), identity_status="merged", merged_into_item_id=None)
+    item_b = SimpleNamespace(id=uuid4(), identity_status="merged", merged_into_item_id=item_a.id)
+    item_a.merged_into_item_id = item_b.id
+    now = datetime(2026, 3, 31, tzinfo=timezone.utc)
+
+    db = MagicMock()
+    db.query.side_effect = [
+        _QueryChain([item_a, item_b]),
+        _QueryChain(
+            [
+                (SimpleNamespace(item_id=item_a.id), SimpleNamespace(project_id=uuid4(), created_at=now)),
+                (SimpleNamespace(item_id=item_b.id), SimpleNamespace(project_id=uuid4(), created_at=now)),
+            ]
+        ),
+    ]
+
+    stats = item_learning_service._batched_item_occurrence_stats(db, item_ids=[item_a.id, item_b.id])
+
+    assert stats[item_a.id][0] == 2
+    assert stats[item_b.id][0] == 2
 
 
 def test_list_other_review_items_uses_batched_stats(monkeypatch):

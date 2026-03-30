@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import uuid
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from ..models.item_identity import Item, ItemAlias
@@ -79,23 +79,13 @@ def _family_item_ids(
     item_map: dict[uuid.UUID, Item] | None = None,
 ) -> list[uuid.UUID]:
     item_map = item_map or _load_related_item_map(db, [canonical_item_id])
-
-    def _resolve(item: Item) -> uuid.UUID:
-        current = item
-        seen: set[uuid.UUID] = set()
-        while current.identity_status == "merged" and current.merged_into_item_id:
-            if current.merged_into_item_id in seen:
-                break
-            seen.add(current.id)
-            next_item = item_map.get(current.merged_into_item_id)
-            if next_item is None:
-                break
-            current = next_item
-        return current.id
-
-    family = [item.id for item in item_map.values() if _resolve(item) == canonical_item_id]
-    if canonical_item_id not in family:
-        family.append(canonical_item_id)
+    canonical_by_item_id, family_by_canonical_id = _canonical_family_maps(
+        db,
+        item_ids=[canonical_item_id],
+        item_map=item_map,
+    )
+    canonical_id = canonical_by_item_id.get(canonical_item_id, canonical_item_id)
+    family = family_by_canonical_id.get(canonical_id, [canonical_item_id])
     return sorted(set(family), key=str)
 
 
@@ -103,24 +93,17 @@ def _item_occurrence_stats(
     db: Session,
     family_item_ids: list[uuid.UUID],
 ) -> tuple[int, int, datetime | None]:
-    activity_rows = (
-        db.query(ProgrammeActivity, ProgrammeUpload)
+    occurrence_count, distinct_project_count, last_seen_at = (
+        db.query(
+            func.count(ProgrammeActivity.id),
+            func.count(func.distinct(ProgrammeUpload.project_id)),
+            func.max(ProgrammeUpload.created_at),
+        )
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
         .filter(ProgrammeActivity.item_id.in_(family_item_ids))
-        .all()
+        .one()
     )
-    if not activity_rows:
-        return 0, 0, None
-    occurrence_count = len(activity_rows)
-    distinct_project_count = len(
-        {
-            upload.project_id
-            for _activity, upload in activity_rows
-            if upload.project_id is not None
-        }
-    )
-    last_seen_at = max((upload.created_at for _activity, upload in activity_rows if upload.created_at is not None), default=None)
-    return occurrence_count, distinct_project_count, last_seen_at
+    return int(occurrence_count or 0), int(distinct_project_count or 0), last_seen_at
 
 
 def _canonical_family_maps(
@@ -135,25 +118,37 @@ def _canonical_family_maps(
         else:
             item_map = _load_related_item_map(db, item_ids)
 
-    def _resolve(item: Item) -> uuid.UUID:
-        current = item
-        seen: set[uuid.UUID] = set()
-        while current.identity_status == "merged" and current.merged_into_item_id:
-            if current.merged_into_item_id in seen:
-                break
-            seen.add(current.id)
-            next_item = item_map.get(current.merged_into_item_id)
-            if next_item is None:
-                break
-            current = next_item
-        return current.id
+    adjacency: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for item_id in item_map:
+        adjacency.setdefault(item_id, set())
+    for item in item_map.values():
+        merged_into = getattr(item, "merged_into_item_id", None)
+        if merged_into is None:
+            continue
+        adjacency.setdefault(item.id, set()).add(merged_into)
+        adjacency.setdefault(merged_into, set()).add(item.id)
 
+    seen: set[uuid.UUID] = set()
     canonical_by_item_id: dict[uuid.UUID, uuid.UUID] = {}
     family_by_canonical_id: dict[uuid.UUID, list[uuid.UUID]] = {}
-    for item in item_map.values():
-        canonical_id = _resolve(item)
-        canonical_by_item_id[item.id] = canonical_id
-        family_by_canonical_id.setdefault(canonical_id, []).append(item.id)
+    for item_id in sorted(adjacency, key=str):
+        if item_id in seen:
+            continue
+        stack = [item_id]
+        component: set[uuid.UUID] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            component.add(current)
+            stack.extend(neighbor for neighbor in adjacency.get(current, set()) if neighbor not in seen)
+
+        canonical_id = min(component, key=str)
+        members = sorted(component, key=str)
+        family_by_canonical_id[canonical_id] = members
+        for member_id in members:
+            canonical_by_item_id[member_id] = canonical_id
 
     if item_ids is not None:
         for item_id in item_ids:
@@ -275,8 +270,11 @@ def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayloa
             global_knowledge_counts_by_tier.get(str(row.confidence_tier), 0) + 1
         )
 
-    actual_rows = (
-        db.query(AssetUsageActual, ActivityWorkProfile, ItemContextProfile)
+    actuals_count, actual_hours_total = (
+        db.query(
+            func.count(AssetUsageActual.id),
+            func.coalesce(func.sum(AssetUsageActual.actual_hours_used), 0),
+        )
         .join(ActivityWorkProfile, ActivityWorkProfile.id == AssetUsageActual.activity_work_profile_id)
         .outerjoin(ItemContextProfile, ItemContextProfile.id == ActivityWorkProfile.context_profile_id)
         .filter(
@@ -288,12 +286,7 @@ def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayloa
                 ),
             )
         )
-        .all()
-    )
-    actuals_count = len(actual_rows)
-    actual_hours_total = round(
-        sum(float(actual.actual_hours_used or 0) for actual, _awp, _profile in actual_rows),
-        4,
+        .one()
     )
 
     active_classification = get_active_classification(db, canonical_item.id)
@@ -304,8 +297,8 @@ def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayloa
         occurrence_count=occurrence_count,
         distinct_project_count=distinct_project_count,
         last_seen_at=last_seen_at,
-        actuals_count=actuals_count,
-        actual_hours_total=actual_hours_total,
+        actuals_count=int(actuals_count or 0),
+        actual_hours_total=round(float(actual_hours_total or 0), 4),
         active_classification=active_classification,
         local_profile_counts_by_source=local_profile_counts_by_source,
         local_profile_counts_by_maturity=local_profile_counts_by_maturity,
