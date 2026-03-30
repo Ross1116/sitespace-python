@@ -94,7 +94,10 @@ def test_family_item_ids_matches_redirect_cycle_semantics():
     item_a.merged_into_item_id = item_b.id
 
     db = MagicMock()
-    db.query.return_value.all.return_value = [item_a, item_b]
+    db.query.return_value.filter.return_value.all.side_effect = [
+        [item_a, item_b],
+        [],
+    ]
 
     family = item_learning_service._family_item_ids(db, item_b.id)
 

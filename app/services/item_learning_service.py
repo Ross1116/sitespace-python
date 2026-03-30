@@ -38,9 +38,47 @@ class ItemStatisticsPayload:
     global_knowledge_entries: list[ItemKnowledgeBase]
 
 
-def _family_item_ids(db: Session, canonical_item_id: uuid.UUID) -> list[uuid.UUID]:
-    items = db.query(Item).all()
-    item_map = {item.id: item for item in items}
+def _load_related_item_map(
+    db: Session,
+    seed_item_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, Item]:
+    item_map: dict[uuid.UUID, Item] = {}
+    frontier = {item_id for item_id in seed_item_ids if item_id is not None}
+    discovered = set(frontier)
+
+    while frontier:
+        rows = (
+            db.query(Item)
+            .filter(
+                or_(
+                    Item.id.in_(frontier),
+                    Item.merged_into_item_id.in_(frontier),
+                )
+            )
+            .all()
+        )
+        next_frontier: set[uuid.UUID] = set()
+        for row in rows:
+            item_map[row.id] = row
+            if row.id not in discovered:
+                discovered.add(row.id)
+                next_frontier.add(row.id)
+            merged_into = getattr(row, "merged_into_item_id", None)
+            if merged_into is not None and merged_into not in discovered:
+                discovered.add(merged_into)
+                next_frontier.add(merged_into)
+        frontier = next_frontier
+
+    return item_map
+
+
+def _family_item_ids(
+    db: Session,
+    canonical_item_id: uuid.UUID,
+    *,
+    item_map: dict[uuid.UUID, Item] | None = None,
+) -> list[uuid.UUID]:
+    item_map = item_map or _load_related_item_map(db, [canonical_item_id])
 
     def _resolve(item: Item) -> uuid.UUID:
         current = item
@@ -55,7 +93,7 @@ def _family_item_ids(db: Session, canonical_item_id: uuid.UUID) -> list[uuid.UUI
             current = next_item
         return current.id
 
-    family = [item.id for item in items if _resolve(item) == canonical_item_id]
+    family = [item.id for item in item_map.values() if _resolve(item) == canonical_item_id]
     if canonical_item_id not in family:
         family.append(canonical_item_id)
     return sorted(set(family), key=str)
@@ -89,9 +127,13 @@ def _canonical_family_maps(
     db: Session,
     *,
     item_ids: list[uuid.UUID] | None = None,
+    item_map: dict[uuid.UUID, Item] | None = None,
 ) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, list[uuid.UUID]]]:
-    items = db.query(Item).all()
-    item_map = {item.id: item for item in items}
+    if item_map is None:
+        if item_ids is None:
+            item_map = {item.id: item for item in db.query(Item).all()}
+        else:
+            item_map = _load_related_item_map(db, item_ids)
 
     def _resolve(item: Item) -> uuid.UUID:
         current = item
@@ -108,7 +150,7 @@ def _canonical_family_maps(
 
     canonical_by_item_id: dict[uuid.UUID, uuid.UUID] = {}
     family_by_canonical_id: dict[uuid.UUID, list[uuid.UUID]] = {}
-    for item in items:
+    for item in item_map.values():
         canonical_id = _resolve(item)
         canonical_by_item_id[item.id] = canonical_id
         family_by_canonical_id.setdefault(canonical_id, []).append(item.id)

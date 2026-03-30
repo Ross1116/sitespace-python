@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.services.work_profile_service import (
     WorkProfilePreflight,
@@ -137,6 +138,59 @@ def test_rebuild_global_knowledge_entry_downgrades_for_corrected_locals(monkeypa
     assert result is not None
     assert result.confidence_tier == "medium"
     assert result.correction_count == 3
+
+
+def test_rebuild_global_knowledge_entry_recovers_from_insert_race(monkeypatch):
+    item_id = uuid4()
+    existing_row = SimpleNamespace(
+        item_id=item_id,
+        asset_type="crane",
+        duration_bucket=7,
+        context_version=1,
+        inference_version=1,
+        normalized_shape_json=[1 / 7.0] * 7,
+        confidence_tier="medium",
+        posterior_mean=10.0,
+        posterior_precision=5.0,
+        source_project_count=1,
+        sample_count=4,
+        correction_count=0,
+    )
+    db = MagicMock()
+    db.begin_nested.return_value = MagicMock()
+    db.flush.side_effect = [
+        IntegrityError("insert", {}, Exception("duplicate key")),
+        None,
+    ]
+    query_results = iter([None, existing_row])
+
+    monkeypatch.setattr(
+        "app.services.work_profile_service._query_item_knowledge_entry",
+        lambda *args, **kwargs: next(query_results),
+    )
+    monkeypatch.setattr(
+        "app.services.work_profile_service._eligible_local_profiles_for_global_entry",
+        lambda *args, **kwargs: [
+            SimpleNamespace(
+                project_id=uuid4(),
+                posterior_mean=10.0,
+                posterior_precision=100.0,
+                sample_count=4,
+                correction_count=0,
+                normalized_distribution_json=[1 / 7.0] * 7,
+            )
+        ],
+    )
+
+    result = rebuild_global_knowledge_entry(
+        db,
+        item_id=item_id,
+        asset_type="crane",
+        duration_bucket=7,
+    )
+
+    assert result is existing_row
+    assert existing_row.confidence_tier == "medium"
 
 
 def test_seed_local_cache_from_global_knowledge_initializes_zero_evidence_counts(monkeypatch):
@@ -345,6 +399,7 @@ def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():
         _QueryStub(profile),
         _QueryStub(None),
         _QueryStub(context_profile),
+        _QueryStub([]),
     ]
 
     with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
@@ -391,6 +446,7 @@ def test_record_actual_hours_preserves_manual_profile_authority():
         _QueryStub(profile),
         _QueryStub(None),
         _QueryStub(context_profile),
+        _QueryStub([(9.0,), (10.0,)]),
     ]
 
     with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
@@ -441,6 +497,7 @@ def test_record_actual_hours_updating_existing_row_triggers_learning_refresh():
         _QueryStub(profile),
         _QueryStub(existing_actual),
         _QueryStub(context_profile),
+        _QueryStub([(10.0,), (11.0,), (12.0,)]),
     ]
 
     with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
@@ -453,9 +510,9 @@ def test_record_actual_hours_updating_existing_row_triggers_learning_refresh():
 
     assert actual is existing_actual
     assert float(existing_actual.actual_hours_used) == 14.0
-    assert context_profile.actuals_count == 4
-    assert context_profile.sample_count == 7
-    assert float(context_profile.evidence_weight) == 5.0
+    assert context_profile.actuals_count == 3
+    assert context_profile.sample_count == 6
+    assert float(context_profile.evidence_weight) == 4.0
     rebuild_mock.assert_called_once()
 
 
@@ -503,9 +560,10 @@ def test_backfill_project_local_context_profiles_repoints_existing_profile(monke
         "app.services.work_profile_service.lookup_cache",
         lambda *args, **kwargs: local_profile,
     )
+    rebuild_calls: list[object] = []
     monkeypatch.setattr(
         "app.services.work_profile_service.rebuild_all_global_knowledge",
-        lambda _db: None,
+        lambda _db: rebuild_calls.append(_db),
     )
 
     result = backfill_project_local_context_profiles(db)
@@ -513,6 +571,7 @@ def test_backfill_project_local_context_profiles_repoints_existing_profile(monke
     assert activity_profile.context_profile_id == local_profile.id
     assert result["processed_activity_profiles"] == 1
     assert result["repointed_activity_profiles"] == 1
+    assert rebuild_calls == [db]
 
 
 def test_backfill_project_local_context_profiles_fails_closed_on_missing_project():
@@ -598,7 +657,7 @@ def test_backfill_project_local_context_profiles_skips_when_already_repointed(mo
     )
     monkeypatch.setattr(
         "app.services.work_profile_service.rebuild_all_global_knowledge",
-        lambda _db: None,
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not rebuild global knowledge")),
     )
     monkeypatch.setattr(
         "app.services.work_profile_service._update_cache_on_hit",

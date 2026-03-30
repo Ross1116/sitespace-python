@@ -2706,12 +2706,33 @@ def get_global_knowledge_entry(
     duration_days: int,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
-) -> ItemKnowledgeBase | None:
+    ) -> ItemKnowledgeBase | None:
     if asset_type in {"other", "none"}:
         return None
     if not _project_has_asset_type(db, project_id, asset_type):
         return None
     duration_bucket = duration_bucket_for_days(duration_days)
+    return (
+        _query_item_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=asset_type,
+            duration_bucket=duration_bucket,
+            context_version=context_version,
+            inference_version=inference_version,
+        )
+    )
+
+
+def _query_item_knowledge_entry(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_bucket: int,
+    context_version: int,
+    inference_version: int,
+) -> ItemKnowledgeBase | None:
     return (
         db.query(ItemKnowledgeBase)
         .filter(
@@ -2725,6 +2746,27 @@ def get_global_knowledge_entry(
     )
 
 
+def _apply_item_knowledge_payload(
+    knowledge: ItemKnowledgeBase,
+    *,
+    normalized_shape: list[float],
+    confidence_tier: str,
+    posterior_mean: float,
+    posterior_precision: float,
+    source_project_count: int,
+    sample_count: int,
+    correction_count: int,
+) -> ItemKnowledgeBase:
+    knowledge.posterior_mean = posterior_mean
+    knowledge.posterior_precision = posterior_precision
+    knowledge.source_project_count = source_project_count
+    knowledge.sample_count = sample_count
+    knowledge.correction_count = correction_count
+    knowledge.normalized_shape_json = normalized_shape
+    knowledge.confidence_tier = confidence_tier
+    return knowledge
+
+
 def rebuild_global_knowledge_entry(
     db: Session,
     *,
@@ -2734,16 +2776,13 @@ def rebuild_global_knowledge_entry(
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ItemKnowledgeBase | None:
-    existing = (
-        db.query(ItemKnowledgeBase)
-        .filter(
-            ItemKnowledgeBase.item_id == item_id,
-            ItemKnowledgeBase.asset_type == asset_type,
-            ItemKnowledgeBase.duration_bucket == duration_bucket,
-            ItemKnowledgeBase.context_version == context_version,
-            ItemKnowledgeBase.inference_version == inference_version,
-        )
-        .one_or_none()
+    existing = _query_item_knowledge_entry(
+        db,
+        item_id=item_id,
+        asset_type=asset_type,
+        duration_bucket=duration_bucket,
+        context_version=context_version,
+        inference_version=inference_version,
     )
 
     rows = _eligible_local_profiles_for_global_entry(
@@ -2828,29 +2867,49 @@ def rebuild_global_knowledge_entry(
 
     knowledge = existing
     if knowledge is None:
-        knowledge = ItemKnowledgeBase(
-            item_id=item_id,
-            asset_type=asset_type,
-            duration_bucket=duration_bucket,
-            context_version=context_version,
-            inference_version=inference_version,
-            normalized_shape_json=normalized_shape,
-            confidence_tier=confidence_tier,
-            posterior_mean=combined_mean,
-            posterior_precision=combined_precision,
-            source_project_count=len(contributing_projects),
-            sample_count=sample_count,
-            correction_count=correction_count,
-        )
-        db.add(knowledge)
-    else:
-        knowledge.posterior_mean = combined_mean
-        knowledge.posterior_precision = combined_precision
-        knowledge.source_project_count = len(contributing_projects)
-        knowledge.sample_count = sample_count
-        knowledge.correction_count = correction_count
-        knowledge.normalized_shape_json = normalized_shape
-        knowledge.confidence_tier = confidence_tier
+        savepoint = db.begin_nested()
+        try:
+            knowledge = ItemKnowledgeBase(
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_bucket=duration_bucket,
+                context_version=context_version,
+                inference_version=inference_version,
+                normalized_shape_json=normalized_shape,
+                confidence_tier=confidence_tier,
+                posterior_mean=combined_mean,
+                posterior_precision=combined_precision,
+                source_project_count=len(contributing_projects),
+                sample_count=sample_count,
+                correction_count=correction_count,
+            )
+            db.add(knowledge)
+            db.flush()
+            savepoint.commit()
+            return knowledge
+        except IntegrityError:
+            savepoint.rollback()
+            knowledge = _query_item_knowledge_entry(
+                db,
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_bucket=duration_bucket,
+                context_version=context_version,
+                inference_version=inference_version,
+            )
+            if knowledge is None:
+                raise
+
+    _apply_item_knowledge_payload(
+        knowledge,
+        normalized_shape=normalized_shape,
+        confidence_tier=confidence_tier,
+        posterior_mean=combined_mean,
+        posterior_precision=combined_precision,
+        source_project_count=len(contributing_projects),
+        sample_count=sample_count,
+        correction_count=correction_count,
+    )
 
     db.flush()
     return knowledge
@@ -2997,6 +3056,76 @@ def _median_with_new_value(
     return float(existing_median if existing_median == new_value else sorted([existing_median, new_value])[1])
 
 
+def _median_of_values(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+
+def _replace_first_value(values: list[float], old_value: float, new_value: float) -> list[float]:
+    updated = list(values)
+    for index, value in enumerate(updated):
+        if value == old_value:
+            updated[index] = new_value
+            return updated
+    updated.append(new_value)
+    return updated
+
+
+def _reverse_actual_observations_from_posterior(
+    context_profile: ItemContextProfile,
+    previous_actual_values: list[float],
+) -> tuple[float | None, float | None]:
+    if not _has_valid_posterior(context_profile):
+        return None, None
+
+    precision = float(context_profile.posterior_precision)
+    weighted_sum = float(context_profile.posterior_mean) * precision
+    for actual_value in previous_actual_values:
+        obs_precision = _obs_precision(float(actual_value), "actual")
+        precision -= obs_precision
+        weighted_sum -= obs_precision * float(actual_value)
+
+    if precision <= 0:
+        return None, None
+
+    mean = weighted_sum / precision
+    if mean <= 0:
+        return None, None
+    return mean, precision
+
+
+def _apply_actual_observations_to_posterior(
+    base_mean: float | None,
+    base_precision: float | None,
+    actual_values: list[float],
+) -> tuple[float | None, float | None]:
+    ordered_values = [float(value) for value in actual_values]
+    if not ordered_values:
+        return base_mean, base_precision
+
+    if base_mean is not None and base_precision is not None and base_precision > 0:
+        mean = float(base_mean)
+        precision = float(base_precision)
+        start_index = 0
+    else:
+        mean, precision = _initial_posterior(float(ordered_values[0]), 0.95)
+        start_index = 1
+
+    for value in ordered_values[start_index:]:
+        mean, precision = bayesian_update(
+            mean,
+            precision,
+            float(value),
+            _obs_precision(float(value), "actual"),
+        )
+    return mean, precision
+
+
 def record_actual_hours(
     db: Session,
     *,
@@ -3047,47 +3176,77 @@ def record_actual_hours(
         actual.booking_id = booking_id
 
     context_profile = None
+    previous_context_actual_values: list[float] = []
     if profile.context_profile_id is not None:
         context_profile = (
             db.query(ItemContextProfile)
             .filter(ItemContextProfile.id == profile.context_profile_id)
             .one_or_none()
         )
+        if context_profile is not None:
+            previous_context_actual_values = [
+                float(row[0])
+                for row in db.query(AssetUsageActual.actual_hours_used)
+                .join(
+                    ActivityWorkProfile,
+                    ActivityWorkProfile.id == AssetUsageActual.activity_work_profile_id,
+                )
+                .filter(ActivityWorkProfile.context_profile_id == context_profile.id)
+                .all()
+            ]
 
     if context_profile is not None:
-        is_new_or_changed = created_actual or previous_actual_hours != float(actual_hours_used) or previous_source != source
-        if is_new_or_changed:
-            previous_actuals_count = int(context_profile.actuals_count or 0)
-            context_profile.actuals_count = previous_actuals_count + 1
-            context_profile.actuals_median = _median_with_new_value(
-                float(context_profile.actuals_median) if context_profile.actuals_median is not None else None,
-                previous_actuals_count,
+        if created_actual:
+            next_context_actual_values = previous_context_actual_values + [float(actual_hours_used)]
+        elif previous_actual_hours == float(actual_hours_used) and previous_source == source:
+            next_context_actual_values = previous_context_actual_values
+        else:
+            next_context_actual_values = _replace_first_value(
+                previous_context_actual_values,
+                float(previous_actual_hours or 0.0),
                 float(actual_hours_used),
             )
-            if context_profile.source != "manual":
-                context_profile.sample_count = int(context_profile.sample_count or 0) + 1
-                obs_precision = _obs_precision(float(actual_hours_used), "actual")
-                if _has_valid_posterior(context_profile):
-                    mean, precision = bayesian_update(
-                        float(context_profile.posterior_mean),
-                        float(context_profile.posterior_precision),
-                        float(actual_hours_used),
-                        obs_precision,
-                    )
-                else:
-                    mean, precision = _initial_posterior(float(actual_hours_used), 0.95)
-                context_profile.posterior_mean = mean
-                context_profile.posterior_precision = precision
-                context_profile.evidence_weight = float(context_profile.evidence_weight or 0) + 1.0
 
-                rebuild_global_knowledge_entry(
-                    db,
-                    item_id=context_profile.item_id,
-                    asset_type=str(context_profile.asset_type),
-                    duration_bucket=duration_bucket_for_days(int(context_profile.duration_days or 0)),
-                    context_version=int(context_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
-                    inference_version=int(context_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
-                )
+        context_profile.actuals_count = len(next_context_actual_values)
+        context_profile.actuals_median = _median_of_values(next_context_actual_values)
+        if context_profile.source != "manual" and (
+            created_actual
+            or previous_actual_hours != float(actual_hours_used)
+            or previous_source != source
+        ):
+            base_sample_count = max(
+                int(context_profile.sample_count or 0) - len(previous_context_actual_values),
+                0,
+            )
+            base_evidence_weight = max(
+                float(context_profile.evidence_weight or 0) - float(len(previous_context_actual_values)),
+                0.0,
+            )
+            base_mean, base_precision = _reverse_actual_observations_from_posterior(
+                context_profile,
+                previous_context_actual_values,
+            )
+            mean, precision = _apply_actual_observations_to_posterior(
+                base_mean,
+                base_precision,
+                next_context_actual_values,
+            )
+            context_profile.sample_count = base_sample_count + len(next_context_actual_values)
+            context_profile.evidence_weight = round(
+                base_evidence_weight + float(len(next_context_actual_values)),
+                4,
+            )
+            context_profile.posterior_mean = mean
+            context_profile.posterior_precision = precision
+
+            rebuild_global_knowledge_entry(
+                db,
+                item_id=context_profile.item_id,
+                asset_type=str(context_profile.asset_type),
+                duration_bucket=duration_bucket_for_days(int(context_profile.duration_days or 0)),
+                context_version=int(context_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+                inference_version=int(context_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
 
     db.flush()
     return actual
@@ -3111,6 +3270,7 @@ def backfill_project_local_context_profiles(
     repointed = 0
     reused = 0
     seeded = 0
+    local_learning_changed = False
 
     for activity_profile, activity, upload, linked_profile in rows:
         if upload.project_id is None:
@@ -3185,6 +3345,7 @@ def backfill_project_local_context_profiles(
                 inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
             )
             seeded += 1
+            local_learning_changed = True
         elif local_profile is None and effective_source == "default":
             local_profile = _write_cache_entry(
                 db,
@@ -3204,6 +3365,7 @@ def backfill_project_local_context_profiles(
                 inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
             )
             seeded += 1
+            local_learning_changed = True
         elif local_profile is None and activity_source == "cache":
             local_profile = _write_cache_entry(
                 db,
@@ -3223,10 +3385,12 @@ def backfill_project_local_context_profiles(
                 inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
             )
             seeded += 1
+            local_learning_changed = True
         elif activity_source == "cache":
             _update_cache_on_hit(db, local_profile)
             db.flush()
             reused += 1
+            local_learning_changed = True
         else:
             local_profile = _upsert_cache_from_external_observation(
                 db,
@@ -3246,6 +3410,7 @@ def backfill_project_local_context_profiles(
                 inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
             )
             seeded += 1
+            local_learning_changed = True
 
         if local_profile is None:
             errors.append(f"activity_work_profile:{activity_profile.id}:unable_to_materialize_local_profile")
@@ -3261,7 +3426,8 @@ def backfill_project_local_context_profiles(
             + "; ".join(errors[:20])
         )
 
-    rebuild_all_global_knowledge(db)
+    if local_learning_changed:
+        rebuild_all_global_knowledge(db)
 
     deleted_legacy = 0
     if delete_unreferenced_legacy:
