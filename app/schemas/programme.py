@@ -24,6 +24,10 @@ class ProgrammeUploadStatus(BaseSchema):
 
     upload_id: UUID
     status: str
+    processing_outcome: Optional[str] = None
+    is_active_version: bool = False
+    is_terminal_success: bool = False
+    has_warnings: bool = False
     completeness_score: Optional[float] = None
     completeness_notes: Optional[dict] = None
     version_number: Optional[int] = None
@@ -40,6 +44,10 @@ class ProgrammeVersionSummary(BaseSchema):
     version_number: Optional[int] = None
     file_name: Optional[str] = None
     status: Optional[str] = None
+    processing_outcome: Optional[str] = None
+    is_active_version: bool = False
+    is_terminal_success: bool = False
+    has_warnings: bool = False
     completeness_score: Optional[float] = None
     ai_tokens_used: Optional[int] = None
     ai_cost_usd: Optional[float] = None

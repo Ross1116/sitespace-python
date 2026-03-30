@@ -42,6 +42,11 @@ from ..core.constants import (
 from .ai_service import suggest_subcontractor_asset_types
 from .metadata_confidence_service import asset_is_planning_ready, subcontractor_is_planning_ready
 from .lookahead_policy_service import ensure_project_alert_policy
+from .programme_upload_service import (
+    PLANNING_SUCCESSFUL_UPLOAD_STATUSES_WITH_LEGACY,
+    get_active_programme_upload,
+    upload_has_warnings,
+)
 from .work_profile_service import build_compressed_context, build_default_profile, derive_distribution
 
 logger = logging.getLogger(__name__)
@@ -318,15 +323,7 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
 
 
 def _get_latest_processed_upload(project_id: uuid.UUID, db: Session) -> ProgrammeUpload | None:
-    return (
-        db.query(ProgrammeUpload)
-        .filter(
-            ProgrammeUpload.project_id == project_id,
-            ProgrammeUpload.status.in_(["committed", "degraded"]),
-        )
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
+    return get_active_programme_upload(project_id, db)
 
 
 def _compute_anomaly_flags(
@@ -661,6 +658,8 @@ def _sync_thresholded_notifications(
     db: Session,
     *,
     project_id: uuid.UUID,
+    latest_upload_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
     snapshot_date: date,
     row_payloads: list[dict[str, object]],
     suppress_external: bool,
@@ -754,6 +753,8 @@ def _sync_thresholded_notifications(
         existing_row = existing_by_key.get(row["key"])
         if existing_row is not None:
             existing_row.severity_score = row["severity_score"]
+            existing_row.programme_upload_id = latest_upload_id
+            existing_row.snapshot_id = snapshot_id
             continue
         db.add(
             Notification(
@@ -765,13 +766,47 @@ def _sync_thresholded_notifications(
                 trigger_type="lookahead",
                 status="pending",
                 severity_score=row["severity_score"],
+                programme_upload_id=latest_upload_id,
+                snapshot_id=snapshot_id,
             )
         )
 
+    cancelled_current_lineage = 0
+    cancelled_stale_lineage = 0
+    cancelled_legacy_lineage = 0
     for row in existing:
         key = (row.project_id, row.sub_id, row.asset_type, row.week_start)
-        if key not in surviving_keys and row.status in ("pending", "sent"):
+        if key in surviving_keys or row.status not in ("pending", "sent"):
+            continue
+
+        if row.programme_upload_id is None and row.snapshot_id is None:
+            cancelled_legacy_lineage += 1
             row.status = "cancelled"
+            continue
+
+        if row.programme_upload_id != latest_upload_id or row.snapshot_id != snapshot_id:
+            cancelled_stale_lineage += 1
+            row.status = "cancelled"
+            continue
+
+        if row.programme_upload_id == latest_upload_id and row.snapshot_id == snapshot_id:
+            cancelled_current_lineage += 1
+            row.status = "cancelled"
+
+    sentry_sdk.add_breadcrumb(
+        category="lookahead.notifications",
+        message="Thresholded notification sync completed",
+        level="info",
+        data={
+            "project_id": str(project_id),
+            "snapshot_id": str(snapshot_id),
+            "programme_upload_id": str(latest_upload_id),
+            "surviving_count": len(surviving),
+            "cancelled_current_lineage": cancelled_current_lineage,
+            "cancelled_stale_lineage": cancelled_stale_lineage,
+            "cancelled_legacy_lineage": cancelled_legacy_lineage,
+        },
+    )
 
 
 def _upsert_snapshot(
@@ -994,13 +1029,12 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         anomaly_flags=anomaly_flags,
         row_payloads=row_payloads,
     )
-    suppress_external = (
-        latest_upload.status == "degraded"
-        or getattr(latest_upload, "processing_outcome", None) == "completed_with_warnings"
-    )
+    suppress_external = upload_has_warnings(latest_upload)
     _sync_thresholded_notifications(
         db,
         project_id=project_id,
+        latest_upload_id=latest_upload.id,
+        snapshot_id=snapshot.id,
         snapshot_date=snapshot_date,
         row_payloads=row_payloads,
         suppress_external=suppress_external,
@@ -1255,7 +1289,7 @@ def nightly_lookahead_job() -> None:
                 row[0]
                 for row in (
                     db.query(ProgrammeUpload.project_id)
-                    .filter(ProgrammeUpload.status.in_(["committed", "degraded"]))
+                    .filter(ProgrammeUpload.status.in_(PLANNING_SUCCESSFUL_UPLOAD_STATUSES_WITH_LEGACY))
                     .distinct()
                     .all()
                 )

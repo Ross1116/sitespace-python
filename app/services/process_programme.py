@@ -11,7 +11,7 @@ Flow:
      - high + medium → activity_asset_mappings with auto_committed=True
      - low → activity_asset_mappings with auto_committed=False, asset_type=None
      - all suggestions logged to ai_suggestion_logs
-  6. Set programme_uploads.status = "committed"
+  6. Set programme_uploads.status = "committed" or "completed_with_warnings"
 
 Called from POST /api/programmes/upload via FastAPI BackgroundTasks.
 Never raises to the caller — all exceptions are caught, logged, and result
@@ -148,7 +148,7 @@ def process_programme(upload_id: str) -> None:
                 db.rollback()
             except Exception:
                 logger.exception("Rollback failed in process_programme for upload %s", upload_id)
-            _mark_failed_as_committed(upload_id, db, SAFE_FAILURE_REASON)
+            _mark_failed_upload(upload_id, db, SAFE_FAILURE_REASON)
         finally:
             db.close()
 
@@ -227,7 +227,12 @@ async def _run(upload_id: str, db: Session) -> None:
 
     guard_db, advisory_locked = _acquire_project_processing_guard(upload.project_id, upload_id)
     if guard_db is None:
-        _commit_degraded(upload, db, completeness_score=0.0, notes=["project_processing_conflict"])
+        _commit_failed(
+            upload,
+            db,
+            notes=["project_processing_conflict"],
+            reason="Another upload is already processing for this project.",
+        )
         return
     upload.processing_outcome = "processing"
 
@@ -255,7 +260,12 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.exception("Could not read file for upload %s", upload_id)
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload:
-            _commit_degraded(upload, db, completeness_score=0.0, notes=["file_read_error"])
+            _commit_failed(
+                upload,
+                db,
+                notes=["file_read_error"],
+                reason="The uploaded file could not be read from storage.",
+            )
         _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
@@ -265,7 +275,12 @@ async def _run(upload_id: str, db: Session) -> None:
         logger.warning("Could not parse file for upload %s: %s", upload_id, parse_error)
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload:
-            _commit_degraded(upload, db, completeness_score=0.0, notes=["parse_error"])
+            _commit_failed(
+                upload,
+                db,
+                notes=["parse_error"],
+                reason="The uploaded file could not be parsed into a usable programme.",
+            )
         _release_project_processing_guard(guard_db, uuid.UUID(_project_id), advisory_locked)
         return
 
@@ -471,7 +486,7 @@ async def _run(upload_id: str, db: Session) -> None:
                     db.rollback()
                 except Exception as rb_exc:
                     logger.warning("Rollback failed during degraded classification cleanup for upload %s: %s", upload_id, rb_exc)
-                _mark_failed_as_committed(
+                _mark_failed_upload(
                     upload_id,
                     db,
                     "DB connection lost during classification persistence — re-upload to retry.",
@@ -496,7 +511,7 @@ async def _run(upload_id: str, db: Session) -> None:
                 db.rollback()
             except Exception as rb_exc:
                 logger.warning("Rollback failed during degraded subcontractor assignment for upload %s: %s", upload_id, rb_exc)
-            _mark_failed_as_committed(
+            _mark_failed_upload(
                 upload_id,
                 db,
                 "DB connection lost during subcontractor assignment — re-upload to retry.",
@@ -540,7 +555,7 @@ async def _run(upload_id: str, db: Session) -> None:
                     upload_id,
                     rb_exc,
                 )
-            _mark_failed_as_committed(
+            _mark_failed_upload(
                 upload_id,
                 db,
                 "DB connection lost during work-profile materialization - re-upload to retry.",
@@ -553,11 +568,11 @@ async def _run(upload_id: str, db: Session) -> None:
             notes_dict["work_profile_ai_suppressed"] = True
         notes_dict["ai_quota_exhausted"] = ai_execution_context.quota_exhausted
         upload.completeness_notes = _normalize_completeness_notes(notes_dict)
-        upload.status = "degraded"
+        upload.status = "completed_with_warnings"
         upload.processing_outcome = "completed_with_warnings"
 
     # 10. Mark committed
-    if upload.status != "degraded":
+    if upload.status != "completed_with_warnings":
         upload.status = "committed"
         upload.processing_outcome = "committed"
 
@@ -1268,35 +1283,46 @@ def _sync_subcontractor_asset_type_assignments(
             row.is_active = False
 
 
-def _commit_degraded(
+def _commit_with_warnings(
     upload: ProgrammeUpload,
     db: Session,
     completeness_score: float,
     notes: list[str],
 ) -> None:
-    """Mark upload as degraded terminal state instead of committed source data."""
+    """Mark upload as completed with warnings but still readable for planning."""
     upload.completeness_score = completeness_score
     notes_dict = _normalize_completeness_notes(upload.completeness_notes)
     notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], *notes]))
     notes_dict["notes"] = "Processing degraded."
     upload.completeness_notes = _normalize_completeness_notes(notes_dict)
-    upload.status = "degraded"
+    upload.status = "completed_with_warnings"
     upload.processing_outcome = "completed_with_warnings"
     db.commit()
 
 
-def _mark_failed_as_committed(upload_id: str, db: Session, reason: str) -> None:
-    """Last-resort: if _run raises, mark as degraded without leaking internals."""
+def _commit_failed(
+    upload: ProgrammeUpload,
+    db: Session,
+    *,
+    notes: list[str],
+    reason: str,
+) -> None:
+    """Mark upload as terminally failed and not readable for planning."""
+    upload.completeness_score = 0.0
+    notes_dict = _normalize_completeness_notes(upload.completeness_notes)
+    notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], *notes]))
+    notes_dict["notes"] = reason
+    upload.completeness_notes = _normalize_completeness_notes(notes_dict)
+    upload.status = "failed"
+    upload.processing_outcome = "failed"
+    db.commit()
+
+
+def _mark_failed_upload(upload_id: str, db: Session, reason: str) -> None:
+    """Last-resort: if _run raises, mark the upload as failed without leaking internals."""
     try:
         upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
         if upload and upload.status == "processing":
-            upload.completeness_score = 0.0
-            notes_dict = _normalize_completeness_notes(upload.completeness_notes)
-            notes_dict["missing_fields"] = list(dict.fromkeys([*notes_dict["missing_fields"], "unknown_error"]))
-            notes_dict["notes"] = reason
-            upload.completeness_notes = _normalize_completeness_notes(notes_dict)
-            upload.status = "degraded"
-            upload.processing_outcome = "failed"
-            db.commit()
+            _commit_failed(upload, db, notes=["unknown_error"], reason=reason)
     except Exception:
-        logger.exception("Could not mark upload %s as committed after failure", upload_id)
+        logger.exception("Could not mark upload %s as failed after runtime failure", upload_id)

@@ -167,3 +167,118 @@ def test_load_max_hours_by_type_propagates_non_sqlalchemy_failures(monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         lookahead_engine._load_max_hours_by_type(MagicMock(), {"forklift"})
+
+
+def test_sync_thresholded_notifications_stamps_lineage_and_cancels_stale_rows(monkeypatch):
+    project_id = uuid4()
+    latest_upload_id = uuid4()
+    snapshot_id = uuid4()
+    week_start = date(2026, 4, 6)
+    surviving_sub_id = uuid4()
+    new_sub_id = uuid4()
+
+    assignments = [
+        SimpleNamespace(asset_type="forklift", subcontractor_id=surviving_sub_id, is_active=True),
+        SimpleNamespace(asset_type="forklift", subcontractor_id=new_sub_id, is_active=True),
+    ]
+    surviving_existing = SimpleNamespace(
+        project_id=project_id,
+        sub_id=surviving_sub_id,
+        asset_type="forklift",
+        week_start=week_start,
+        status="pending",
+        severity_score=0.1,
+        programme_upload_id=uuid4(),
+        snapshot_id=uuid4(),
+    )
+    stale_existing = SimpleNamespace(
+        project_id=project_id,
+        sub_id=uuid4(),
+        asset_type="crane",
+        week_start=week_start,
+        status="sent",
+        severity_score=0.2,
+        programme_upload_id=uuid4(),
+        snapshot_id=uuid4(),
+    )
+    legacy_existing = SimpleNamespace(
+        project_id=project_id,
+        sub_id=uuid4(),
+        asset_type="excavator",
+        week_start=week_start,
+        status="pending",
+        severity_score=0.3,
+        programme_upload_id=None,
+        snapshot_id=None,
+    )
+    acted_existing = SimpleNamespace(
+        project_id=project_id,
+        sub_id=uuid4(),
+        asset_type="grader",
+        week_start=week_start,
+        status="acted",
+        severity_score=0.4,
+        programme_upload_id=uuid4(),
+        snapshot_id=uuid4(),
+    )
+
+    query_results = iter(
+        [
+            _RowsQuery(assignments),
+            _RowsQuery([surviving_existing, stale_existing, legacy_existing, acted_existing]),
+        ]
+    )
+    added_notifications = []
+    db = SimpleNamespace(query=lambda *args, **kwargs: next(query_results), add=added_notifications.append)
+
+    monkeypatch.setattr(
+        lookahead_engine,
+        "ensure_project_alert_policy",
+        lambda db, project_id: SimpleNamespace(
+            mode="notify",
+            external_enabled=True,
+            max_alerts_per_subcontractor_per_week=5,
+            max_alerts_per_project_per_week=5,
+            min_demand_hours=1,
+            min_gap_hours=1,
+            min_gap_ratio=0.1,
+            min_lead_weeks=0,
+        ),
+    )
+    breadcrumb_mock = MagicMock()
+    monkeypatch.setattr(lookahead_engine.sentry_sdk, "add_breadcrumb", breadcrumb_mock)
+
+    lookahead_engine._sync_thresholded_notifications(
+        db,
+        project_id=project_id,
+        latest_upload_id=latest_upload_id,
+        snapshot_id=snapshot_id,
+        snapshot_date=week_start,
+        row_payloads=[
+            {
+                "week_start": week_start,
+                "asset_type": "forklift",
+                "demand_hours": 12.0,
+                "gap_hours": 4.0,
+                "anomaly_flags_json": {},
+                "is_anomalous": False,
+            }
+        ],
+        suppress_external=False,
+    )
+
+    assert surviving_existing.programme_upload_id == latest_upload_id
+    assert surviving_existing.snapshot_id == snapshot_id
+    assert surviving_existing.status == "pending"
+    assert stale_existing.status == "cancelled"
+    assert legacy_existing.status == "cancelled"
+    assert acted_existing.status == "acted"
+
+    assert len(added_notifications) == 1
+    added_notification = added_notifications[0]
+    assert added_notification.sub_id == new_sub_id
+    assert added_notification.project_id == project_id
+    assert added_notification.programme_upload_id == latest_upload_id
+    assert added_notification.snapshot_id == snapshot_id
+    assert added_notification.status == "pending"
+    breadcrumb_mock.assert_called_once()
