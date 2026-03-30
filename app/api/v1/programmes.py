@@ -61,6 +61,11 @@ from ...utils.programme_notes import normalize_programme_completeness_notes
 from ...services.metadata_confidence_service import asset_is_planning_ready
 from ...services.lookahead_engine import resolve_activity_distribution
 from ...services.process_programme import preflight_validate, process_programme
+from ...services.correction_service import (
+    MappingCorrectionValidationError,
+    apply_mapping_correction,
+    load_mapping_correction_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1012,41 +1017,44 @@ def correct_activity_mapping(
     Expected JSON body:
       {"asset_type": "telehandler"}
     """
-    new_asset_type = payload.asset_type
+    try:
+        context = load_mapping_correction_context(db, mapping_id)
+        if context is None:
+            raise HTTPException(status_code=404, detail="Mapping not found")
 
-    mapping = db.query(ActivityAssetMapping).filter(ActivityAssetMapping.id == mapping_id).first()
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
+        _check_project_access(context.upload.project_id, current_user, db)
 
-    activity = db.query(ProgrammeActivity).filter(ProgrammeActivity.id == mapping.programme_activity_id).first()
-    if not activity:
-        raise HTTPException(status_code=404, detail="Mapped activity not found")
+        result = apply_mapping_correction(
+            db,
+            context=context,
+            corrected_by_user_id=current_user.id,
+            asset_type=payload.asset_type,
+            manual_total_hours=payload.manual_total_hours,
+            manual_normalized_distribution=payload.manual_normalized_distribution,
+        )
+        db.commit()
+        db.refresh(result.context.mapping)
+    except HTTPException:
+        raise
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MappingCorrectionValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to apply Stage 8 mapping correction for mapping %s", mapping_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to apply mapping correction",
+        ) from exc
 
-    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == activity.programme_upload_id).first()
-    if not upload:
-        raise HTTPException(status_code=404, detail="Upload not found")
-
-    _check_project_access(upload.project_id, current_user, db)
-
-    previous_suggestion = mapping.asset_type
-
-    mapping.asset_type = new_asset_type
-    mapping.source = "manual"
-    mapping.manually_corrected = True
-    mapping.corrected_by = current_user.id
-    mapping.corrected_at = datetime.now(timezone.utc)
-    mapping.auto_committed = False
-
-    correction_log = AISuggestionLog(
-        id=uuid.uuid4(),
-        activity_id=mapping.programme_activity_id,
-        suggested_asset_type=previous_suggestion,
-        confidence=mapping.confidence,
-        accepted=False,
-        correction=new_asset_type,
+    return _serialize_mapping(
+        result.context.mapping,
+        result.context.activity.name,
+        result.context.activity.item_id,
     )
-    db.add(correction_log)
-    db.commit()
-    db.refresh(mapping)
-
-    return _serialize_mapping(mapping, activity.name, activity.item_id)

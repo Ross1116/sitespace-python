@@ -9,6 +9,7 @@ materialization for construction programme activities.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -124,6 +125,14 @@ class WorkProfileAIOutcome:
     log_tokens_used: Optional[int] = None
     log_cost_usd: Decimal | None = None
     latency_ms: Optional[int] = None
+
+
+@dataclass
+class PreparedManualWorkProfile:
+    total_hours: float
+    distribution: list[float]
+    normalized_distribution: list[float]
+    max_hours_per_day: float
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +649,19 @@ def _uniform_normalized(duration_days: int) -> list[float]:
     weights = [unit] * duration_days
     weights[-1] = round(1.0 - sum(weights[:-1]), 6)
     return weights
+
+
+def _coerce_manual_distribution(
+    *,
+    duration_days: int,
+    normalized_distribution: list[float] | None,
+    distribution: list[float] | None,
+) -> list[float]:
+    if normalized_distribution is not None and len(normalized_distribution) == duration_days:
+        return derive_normalized_distribution([max(0.0, float(value)) for value in normalized_distribution])
+    if distribution is not None and len(distribution) == duration_days:
+        return derive_normalized_distribution([max(0.0, float(value)) for value in distribution])
+    return _uniform_normalized(duration_days)
 
 
 # ---------------------------------------------------------------------------
@@ -2011,6 +2033,334 @@ def _write_activity_profile(
     awp.context_profile_id = context_profile_id
     db.flush()
     return awp
+
+
+def prepare_manual_work_profile(
+    *,
+    asset_type: str,
+    duration_days: int,
+    max_hours_per_day: float,
+    manual_total_hours: float | None = None,
+    manual_normalized_distribution: list[float] | None = None,
+    existing_total_hours: float | None = None,
+    existing_distribution: list[float] | None = None,
+    existing_normalized_distribution: list[float] | None = None,
+) -> PreparedManualWorkProfile:
+    duration_days = max(1, int(duration_days or 1))
+
+    if asset_type == "none":
+        return PreparedManualWorkProfile(
+            total_hours=0.0,
+            distribution=[0.0] * duration_days,
+            normalized_distribution=[0.0] * duration_days,
+            max_hours_per_day=max_hours_per_day,
+        )
+
+    if manual_total_hours is not None and manual_normalized_distribution is not None:
+        seed_total_hours = float(manual_total_hours)
+        normalized_distribution = _coerce_manual_distribution(
+            duration_days=duration_days,
+            normalized_distribution=manual_normalized_distribution,
+            distribution=None,
+        )
+    elif existing_total_hours is not None:
+        seed_total_hours = float(existing_total_hours)
+        normalized_distribution = _coerce_manual_distribution(
+            duration_days=duration_days,
+            normalized_distribution=existing_normalized_distribution,
+            distribution=existing_distribution,
+        )
+    else:
+        raise ValueError("Manual work-profile preparation requires manual input or an existing profile")
+
+    bounded_seed_total_hours = max(
+        0.0,
+        min(float(seed_total_hours), max_hours_per_day * duration_days),
+    )
+
+    final_hours = finalize_total_hours(
+        bounded_seed_total_hours,
+        asset_type,
+        duration_days,
+        max_hours_per_day,
+        manual_truth=bounded_seed_total_hours,
+    )
+    if final_hours <= 0:
+        normalized_distribution = [0.0] * duration_days
+
+    distribution = derive_distribution(
+        normalized_distribution,
+        final_hours,
+        max_hours_per_day=max_hours_per_day,
+    )
+    validation = validate_stage_d(
+        final_hours,
+        distribution,
+        normalized_distribution,
+        asset_type,
+        duration_days,
+        max_hours_per_day,
+    )
+    if not validation.valid:
+        raise ValueError("; ".join(validation.errors))
+
+    return PreparedManualWorkProfile(
+        total_hours=final_hours,
+        distribution=distribution,
+        normalized_distribution=normalized_distribution,
+        max_hours_per_day=max_hours_per_day,
+    )
+
+
+def _apply_manual_cache_values(
+    profile: ItemContextProfile,
+    *,
+    total_hours: float,
+    distribution: list[float],
+    normalized_distribution: list[float],
+) -> ItemContextProfile:
+    previous_observation_count = int(profile.observation_count or 0)
+    previous_evidence_weight = float(profile.evidence_weight or 0)
+    previous_sample_count = int(profile.sample_count or 0)
+
+    profile.total_hours = total_hours
+    profile.distribution_json = distribution
+    profile.normalized_distribution_json = normalized_distribution
+    profile.confidence = 1.0
+    profile.source = "manual"
+    profile.low_confidence_flag = False
+    profile.observation_count = max(previous_observation_count, 0) + 1
+    profile.evidence_weight = round(previous_evidence_weight + 1.0, 4)
+    profile.sample_count = max(previous_sample_count, 0) + 1
+    profile.posterior_mean = total_hours if total_hours > 0 else None
+    profile.posterior_precision = (
+        _obs_precision(total_hours, "manual") if total_hours > 0 else None
+    )
+    return profile
+
+
+def upsert_manual_context_profile(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_days: int,
+    compressed_context: dict,
+    total_hours: float,
+    distribution: list[float],
+    normalized_distribution: list[float],
+    context_hash: str | None = None,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+) -> ItemContextProfile:
+    context_hash = context_hash or build_context_key(
+        item_id,
+        asset_type,
+        duration_days,
+        compressed_context,
+        context_version,
+        inference_version,
+    )
+    existing = lookup_cache(
+        db,
+        item_id,
+        asset_type,
+        duration_days,
+        context_hash,
+        context_version,
+        inference_version,
+    )
+
+    if existing is None:
+        savepoint = db.begin_nested()
+        try:
+            existing = ItemContextProfile(
+                item_id=item_id,
+                asset_type=asset_type,
+                duration_days=duration_days,
+                context_version=context_version,
+                inference_version=inference_version,
+                context_hash=context_hash,
+                total_hours=total_hours,
+                distribution_json=distribution,
+                normalized_distribution_json=normalized_distribution,
+                confidence=1.0,
+                source="manual",
+                low_confidence_flag=False,
+                observation_count=0,
+                evidence_weight=0,
+                posterior_mean=None,
+                posterior_precision=None,
+                sample_count=0,
+                correction_count=0,
+                actuals_count=int(0),
+            )
+            db.add(existing)
+            db.flush()
+            savepoint.commit()
+        except IntegrityError:
+            savepoint.rollback()
+            existing = lookup_cache(
+                db,
+                item_id,
+                asset_type,
+                duration_days,
+                context_hash,
+                context_version,
+                inference_version,
+            )
+            if existing is None:
+                raise
+
+    _apply_manual_cache_values(
+        existing,
+        total_hours=total_hours,
+        distribution=distribution,
+        normalized_distribution=normalized_distribution,
+    )
+    db.flush()
+    return existing
+
+
+def write_manual_activity_profile(
+    db: Session,
+    *,
+    activity_id: uuid.UUID,
+    item_id: uuid.UUID,
+    asset_type: str,
+    duration_days: int,
+    total_hours: float,
+    distribution: list[float],
+    normalized_distribution: list[float],
+    context_hash: str,
+    context_profile_id: uuid.UUID | None = None,
+    context_version: int = WORK_PROFILE_CONTEXT_VERSION,
+    inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+) -> ActivityWorkProfile:
+    return _write_activity_profile(
+        db,
+        activity_id=activity_id,
+        item_id=item_id,
+        asset_type=asset_type,
+        duration_days=duration_days,
+        total_hours=total_hours,
+        distribution=distribution,
+        normalized_distribution=normalized_distribution,
+        confidence=1.0,
+        source="manual",
+        context_hash=context_hash,
+        context_profile_id=context_profile_id,
+        low_confidence_flag=False,
+        context_version=context_version,
+        inference_version=inference_version,
+    )
+
+
+_CONTEXT_PROFILE_SOURCE_PRIORITY: dict[str, int] = {
+    "manual": 4,
+    "learned": 3,
+    "ai": 2,
+    "default": 1,
+}
+
+
+def _context_profile_merge_key(profile: ItemContextProfile) -> tuple[str, int, int, int, str]:
+    return (
+        str(profile.asset_type),
+        int(profile.duration_days or 0),
+        int(profile.context_version or 0),
+        int(profile.inference_version or 0),
+        str(profile.context_hash or ""),
+    )
+
+
+def _context_profile_rank(profile: ItemContextProfile) -> tuple[int, float, float, int, datetime, str]:
+    updated_at = profile.updated_at or profile.created_at or datetime.min.replace(tzinfo=timezone.utc)
+    return (
+        _CONTEXT_PROFILE_SOURCE_PRIORITY.get(str(profile.source or ""), 0),
+        float(profile.confidence or 0),
+        float(profile.evidence_weight or 0),
+        int(profile.observation_count or 0),
+        updated_at,
+        str(profile.id),
+    )
+
+
+def _copy_context_profile_payload(
+    target: ItemContextProfile,
+    source: ItemContextProfile,
+) -> ItemContextProfile:
+    target.asset_type = source.asset_type
+    target.duration_days = source.duration_days
+    target.context_version = source.context_version
+    target.inference_version = source.inference_version
+    target.context_hash = source.context_hash
+    target.total_hours = source.total_hours
+    target.distribution_json = list(source.distribution_json or [])
+    target.normalized_distribution_json = list(source.normalized_distribution_json or [])
+    target.confidence = source.confidence
+    target.source = source.source
+    target.low_confidence_flag = bool(source.low_confidence_flag)
+    target.posterior_mean = source.posterior_mean
+    target.posterior_precision = source.posterior_precision
+    if source.actuals_median is not None:
+        target.actuals_median = source.actuals_median
+    return target
+
+
+def _merge_context_profile_counters(
+    winner: ItemContextProfile,
+    loser: ItemContextProfile,
+) -> ItemContextProfile:
+    winner.observation_count = int(winner.observation_count or 0) + int(loser.observation_count or 0)
+    winner.evidence_weight = float(winner.evidence_weight or 0) + float(loser.evidence_weight or 0)
+    winner.sample_count = int(winner.sample_count or 0) + int(loser.sample_count or 0)
+    winner.correction_count = int(winner.correction_count or 0) + int(loser.correction_count or 0)
+    winner.actuals_count = int(winner.actuals_count or 0) + int(loser.actuals_count or 0)
+    if loser.actuals_median is not None and (
+        winner.actuals_median is None or int(loser.actuals_count or 0) > int(winner.actuals_count or 0)
+    ):
+        winner.actuals_median = loser.actuals_median
+    return winner
+
+
+def reconcile_context_profiles_on_merge(
+    db: Session,
+    source_item_id: uuid.UUID,
+    target_item_id: uuid.UUID,
+) -> None:
+    source_profiles = (
+        db.query(ItemContextProfile)
+        .filter(ItemContextProfile.item_id == source_item_id)
+        .with_for_update()
+        .all()
+    )
+    if not source_profiles:
+        return
+
+    target_profiles = (
+        db.query(ItemContextProfile)
+        .filter(ItemContextProfile.item_id == target_item_id)
+        .with_for_update()
+        .all()
+    )
+    target_by_key = {
+        _context_profile_merge_key(profile): profile for profile in target_profiles
+    }
+
+    for source_profile in source_profiles:
+        key = _context_profile_merge_key(source_profile)
+        target_profile = target_by_key.get(key)
+        if target_profile is None:
+            source_profile.item_id = target_item_id
+            target_by_key[key] = source_profile
+            continue
+
+        if _context_profile_rank(source_profile) > _context_profile_rank(target_profile):
+            _copy_context_profile_payload(target_profile, source_profile)
+        _merge_context_profile_counters(target_profile, source_profile)
+
+    db.flush()
 
 
 # ---------------------------------------------------------------------------

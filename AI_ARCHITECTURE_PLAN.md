@@ -4084,12 +4084,18 @@ Add:
 
 ## Stage 8 — Corrections + identity maintenance
 
-Add:
+Completed:
 
-- correction endpoint
-- transactional propagation
-- manual merge admin endpoint
-- cache overwrite on manual truth
+- [x] correction endpoint
+- [x] transactional propagation
+- [x] manual merge admin endpoint
+- [x] merge-time context-profile reconciliation
+- [x] alias-add admin endpoint
+- [x] cache overwrite on manual truth
+
+Remaining in current Stage 8 scope:
+
+- [x] none
 
 ## Stage 9 — Re-upload refinement
 
@@ -4187,8 +4193,8 @@ Only if earned.
 
 ## Next
 
-26. correction propagation
-27. manual item merge operations
+26. [x] correction propagation
+27. [x] manual item merge operations
 
 ## Later
 
@@ -4260,7 +4266,7 @@ Only if earned.
 
 ## Add next
 
-- correction propagation
+- [x] correction propagation
 
 ## Add next (after corrections)
 

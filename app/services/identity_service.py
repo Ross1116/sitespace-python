@@ -164,6 +164,83 @@ class MergeError(ValueError):
     """Raised when a merge operation is invalid."""
 
 
+class AliasConflictError(ValueError):
+    """Raised when a manual alias collides with a different active canonical item."""
+
+
+def add_manual_alias(
+    db: Session,
+    item_id: uuid.UUID,
+    raw_alias: str,
+    performed_by_user_id: Optional[uuid.UUID] = None,
+    normalizer_version: int = NORMALIZER_VERSION,
+) -> ItemAlias:
+    item = db.get(Item, item_id)
+    if item is None:
+        raise LookupError(f"Item {item_id} not found")
+    if item.identity_status == "merged":
+        raise LookupError(f"Item {item_id} has been merged into another item")
+
+    normalised = normalize_activity_name(raw_alias)
+    if not normalised:
+        raise ValueError("Alias cannot be empty after normalization")
+
+    existing = (
+        db.query(ItemAlias)
+        .filter_by(alias_normalised_name=normalised, normalizer_version=normalizer_version)
+        .first()
+    )
+    if existing is not None:
+        active_item = follow_item_redirect(db, existing.item)
+        if active_item.id == item.id:
+            return existing
+        raise AliasConflictError(
+            f"Alias '{normalised}' already belongs to item {active_item.id}"
+        )
+
+    savepoint = db.begin_nested()
+    try:
+        alias = ItemAlias(
+            item_id=item.id,
+            alias_normalised_name=normalised,
+            normalizer_version=normalizer_version,
+            alias_type="manual",
+            confidence="high",
+            source="manual",
+        )
+        db.add(alias)
+        db.flush()
+
+        event = ItemIdentityEvent(
+            event_type="alias_add",
+            target_item_id=item.id,
+            details_json={
+                "raw_alias": raw_alias,
+                "normalized_alias": normalised,
+            },
+            created_by_user_id=performed_by_user_id,
+        )
+        db.add(event)
+        db.flush()
+        savepoint.commit()
+        return alias
+    except IntegrityError as exc:
+        savepoint.rollback()
+        existing = (
+            db.query(ItemAlias)
+            .filter_by(alias_normalised_name=normalised, normalizer_version=normalizer_version)
+            .first()
+        )
+        if existing is not None:
+            active_item = follow_item_redirect(db, existing.item)
+            if active_item.id == item.id:
+                return existing
+            raise AliasConflictError(
+                f"Alias '{normalised}' already belongs to item {active_item.id}"
+            ) from exc
+        raise
+
+
 def merge_items(
     db: Session,
     source_item_id: uuid.UUID,
@@ -246,6 +323,24 @@ def merge_items(
     except Exception as exc:
         logger.warning(
             "Classification reconciliation import/setup failed for merge %s->%s: %s",
+            source_item_id, target_item_id, exc,
+        )
+
+    try:
+        from .work_profile_service import reconcile_context_profiles_on_merge
+        sp = db.begin_nested()
+        try:
+            reconcile_context_profiles_on_merge(db, source_item_id, target_item_id)
+            sp.commit()
+        except Exception as exc:
+            sp.rollback()
+            logger.warning(
+                "Context-profile reconciliation failed for merge %s->%s: %s — merge itself succeeded",
+                source_item_id, target_item_id, exc,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Context-profile reconciliation import/setup failed for merge %s->%s: %s",
             source_item_id, target_item_id, exc,
         )
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .base import BaseSchema
 from ..core.constants import ALLOWED_ASSET_TYPES
@@ -61,17 +61,63 @@ class ProgrammeDiff(BaseSchema):
 class MappingCorrectionRequest(BaseSchema):
     """Request body for PM correction of an activity mapping."""
 
-    asset_type: str = Field(..., min_length=1, max_length=50)
+    asset_type: str | None = Field(default=None, min_length=1, max_length=50)
+    manual_total_hours: float | None = Field(default=None, ge=0)
+    manual_normalized_distribution: list[float] | None = None
 
     @field_validator("asset_type", mode="before")
     @classmethod
-    def normalize_and_validate_asset_type(cls, v: str) -> str:
+    def normalize_and_validate_asset_type(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         normalized = str(v).strip().lower()
         if normalized not in ALLOWED_ASSET_TYPES:
             raise ValueError(
                 "Invalid asset_type. Allowed values: " + ", ".join(sorted(ALLOWED_ASSET_TYPES))
             )
         return normalized
+
+    @field_validator("manual_normalized_distribution")
+    @classmethod
+    def validate_manual_distribution(cls, v: list[float] | None) -> list[float] | None:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("manual_normalized_distribution cannot be empty")
+        normalized = [float(value) for value in v]
+        if any(value < 0 for value in normalized):
+            raise ValueError("manual_normalized_distribution cannot contain negative values")
+        total = sum(normalized)
+        if total > 0 and abs(total - 1.0) > 1e-6:
+            raise ValueError("manual_normalized_distribution must sum to 1.0 when non-zero")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "MappingCorrectionRequest":
+        if (
+            self.asset_type is None
+            and self.manual_total_hours is None
+            and self.manual_normalized_distribution is None
+        ):
+            raise ValueError("At least one correction must be supplied")
+
+        if (self.manual_total_hours is None) != (self.manual_normalized_distribution is None):
+            raise ValueError(
+                "manual_total_hours and manual_normalized_distribution must be supplied together"
+            )
+
+        if self.manual_total_hours is not None and self.manual_normalized_distribution is not None:
+            distribution_total = sum(self.manual_normalized_distribution)
+            if self.manual_total_hours > 0 and abs(distribution_total - 1.0) > 1e-6:
+                raise ValueError(
+                    "manual_normalized_distribution must sum to 1.0 when manual_total_hours is non-zero"
+                )
+            if self.manual_total_hours == 0 and distribution_total > 1e-6:
+                raise ValueError(
+                    "manual_normalized_distribution must be all zeros when manual_total_hours is zero"
+                )
+
+        return self
 
 
 class ProgrammeActivityItem(BaseSchema):

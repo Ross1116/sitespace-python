@@ -28,6 +28,8 @@ from ...models.item_identity import Item, ItemClassificationEvent
 from ...models.user import User
 from ...schemas.enums import UserRole
 from ...schemas.item_identity import (
+    ItemAliasCreateRequest,
+    ItemAliasResponse,
     ItemClassificationEventResponse,
     ItemClassificationOverrideRequest,
     ItemClassificationResponse,
@@ -40,7 +42,7 @@ from ...services.classification_service import (
     get_active_classification,
     maturity_tier,
 )
-from ...services.identity_service import MergeError, merge_items
+from ...services.identity_service import AliasConflictError, MergeError, add_manual_alias, merge_items
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,20 @@ def _classification_response(cls) -> ItemClassificationResponse:
     )
 
 
+def _alias_response(alias) -> ItemAliasResponse:
+    return ItemAliasResponse(
+        id=alias.id,
+        item_id=alias.item_id,
+        alias_normalised_name=alias.alias_normalised_name,
+        normalizer_version=alias.normalizer_version,
+        alias_type=alias.alias_type,
+        confidence=alias.confidence,
+        source=alias.source,
+        created_at=alias.created_at,
+        updated_at=alias.updated_at,
+    )
+
+
 @router.get("/{item_id}/classification", response_model=ItemClassificationResponse)
 def get_item_classification(
     item_id: UUID,
@@ -167,6 +183,43 @@ def override_item_classification(
         logger.exception("Failed to apply manual classification for item %s", item_id)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Classification update failed") from exc
     return _classification_response(cls)
+
+
+@router.post("/{item_id}/aliases", response_model=ItemAliasResponse)
+def add_item_alias(
+    item_id: UUID,
+    body: ItemAliasCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN])),
+):
+    """Add a manual alias to an active canonical item."""
+    try:
+        alias = add_manual_alias(
+            db=db,
+            item_id=item_id,
+            raw_alias=body.alias,
+            performed_by_user_id=current_user.id,
+        )
+        db.commit()
+        db.refresh(alias)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AliasConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to add manual alias for item %s", item_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Alias update failed",
+        ) from exc
+
+    return _alias_response(alias)
 
 
 @router.get("/{item_id}/classification/history", response_model=list[ItemClassificationEventResponse])

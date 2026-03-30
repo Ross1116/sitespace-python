@@ -98,8 +98,10 @@ def _resolve_booking_asset(
     asset_id: UUID,
     asset: Optional[Asset] = None,
 ) -> Optional[Asset]:
-    if asset is not None and _ids_match(asset, asset_id):
-        return asset
+    if asset is not None:
+        asset_identity = getattr(asset, "id", getattr(asset, "pk", None))
+        if asset_identity is None or str(asset_identity) == str(asset_id):
+            return asset
     return _load_booking_asset(db, asset_id)
 
 def _overlapping_time_filter(start_time: Union[time, ColumnElement], end_time: Union[time, ColumnElement]) -> ColumnElement:
