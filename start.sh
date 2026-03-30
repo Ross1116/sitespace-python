@@ -14,6 +14,8 @@ echo "🔗 DATABASE_URL: ${DATABASE_URL:0:50}..."
 WAIT_ATTEMPTS=15
 WAIT_DELAY=2
 DB_READY=0
+STAGE10_REVISION_A="l2m3n4o5p6q7"
+STAGE10_REVISION_B="m3n4o5p6q7r8"
 
 echo "⏱️ Waiting for PostgreSQL to become available..."
 for i in $(seq 1 $WAIT_ATTEMPTS); do
@@ -53,22 +55,40 @@ if [ $DB_READY -eq 0 ]; then
 else
     echo "✅ PostgreSQL is running and accepting connections."
 
-    # --- STANDARD MIGRATION LOGIC (SAFE) ---
-    echo "🔄 Running Alembic database migrations (upgrade head)..."
-    alembic upgrade head
-    if [ $? -ne 0 ]; then
-        echo "❌ ERROR: Alembic command failed (upgrade head)."
-        exit 1
-    fi
-    echo "✅ Migrations successful."
-
-    # --- Optional one-time Stage 10 backfill hook ---
     if [ "${RUN_STAGE10_BACKFILL_ON_STARTUP}" = "true" ] || [ "${RUN_STAGE10_BACKFILL_ON_STARTUP}" = "1" ]; then
-        echo "🔁 RUN_STAGE10_BACKFILL_ON_STARTUP enabled; running Stage 10 learning backfill..."
+        echo "🔁 RUN_STAGE10_BACKFILL_ON_STARTUP enabled; preparing staged Stage 10 rollout..."
         STAGE10_BACKFILL_ARGS=""
         if [ "${STAGE10_BACKFILL_DELETE_LEGACY}" = "true" ] || [ "${STAGE10_BACKFILL_DELETE_LEGACY}" = "1" ]; then
             STAGE10_BACKFILL_ARGS="--delete-unreferenced-legacy"
             echo "🧹 Stage 10 backfill will delete unreferenced legacy null-project cache rows."
+        fi
+
+        CURRENT_ALEMBIC_REVISION=$(python -c "
+import os
+from sqlalchemy import create_engine, text
+
+url = os.environ.get('DATABASE_URL')
+if not url:
+    print('')
+    raise SystemExit(0)
+
+engine = create_engine(url, connect_args={'connect_timeout': 5})
+with engine.connect() as conn:
+    row = conn.execute(text('SELECT version_num FROM alembic_version LIMIT 1')).first()
+print(row[0] if row else '')
+")
+        echo "ℹ️ Current Alembic revision: ${CURRENT_ALEMBIC_REVISION:-<unknown>}"
+
+        if [ "$CURRENT_ALEMBIC_REVISION" != "$STAGE10_REVISION_B" ]; then
+            echo "🔄 Running staged Alembic migration to ${STAGE10_REVISION_A} before Stage 10 backfill..."
+            alembic upgrade "$STAGE10_REVISION_A"
+            if [ $? -ne 0 ]; then
+                echo "❌ ERROR: Alembic command failed (upgrade ${STAGE10_REVISION_A})."
+                exit 1
+            fi
+            echo "✅ Stage 10 migration A applied successfully."
+        else
+            echo "ℹ️ Stage 10 final revision already applied; skipping pre-backfill staged migration."
         fi
 
         python -m scripts.backfill_stage10_learning $STAGE10_BACKFILL_ARGS
@@ -77,7 +97,23 @@ else
             exit 1
         fi
         echo "✅ Stage 10 backfill completed successfully."
+
+        echo "🔄 Running Alembic database migrations (upgrade head)..."
+        alembic upgrade head
+        if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Alembic command failed (upgrade head)."
+            exit 1
+        fi
+        echo "✅ Migrations successful."
     else
+        # --- STANDARD MIGRATION LOGIC (SAFE) ---
+        echo "🔄 Running Alembic database migrations (upgrade head)..."
+        alembic upgrade head
+        if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Alembic command failed (upgrade head)."
+            exit 1
+        fi
+        echo "✅ Migrations successful."
         echo "ℹ️ Stage 10 backfill hook disabled."
     fi
 

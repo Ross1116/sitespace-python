@@ -103,17 +103,23 @@ If you want startup to prune unreferenced legacy null-project `item_context_prof
 STAGE10_BACKFILL_DELETE_LEGACY=true
 ```
 
-This hook runs:
+This hook now performs the Stage 10 rollout in the required order:
 
 ```bash
+alembic upgrade l2m3n4o5p6q7
 python -m scripts.backfill_stage10_learning
+alembic upgrade head
 ```
 
-or:
+or, when legacy cleanup is enabled:
 
 ```bash
+alembic upgrade l2m3n4o5p6q7
 python -m scripts.backfill_stage10_learning --delete-unreferenced-legacy
+alembic upgrade head
 ```
+
+If the database is already at Stage 10 revision B (`m3n4o5p6q7r8`), startup skips the pre-backfill staged migration and only reruns the idempotent backfill before continuing.
 
 After the Stage 10 rollout is complete, set both variables back to `false` (or remove them).
 
