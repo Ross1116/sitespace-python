@@ -86,6 +86,37 @@ The startup flow runs Alembic migrations via `start.sh`. Ensure the deployed com
 alembic upgrade head
 ```
 
+### 4.1 Optional Stage 10 backfill rollout hook
+
+`start.sh` also supports a temporary, opt-in Stage 10 rollout hook. This does **not** run by default.
+
+Enable these Railway variables only for the rollout where you want startup to execute the Stage 10 learning replay:
+
+```bash
+RUN_STAGE10_BACKFILL_ON_STARTUP=true
+STAGE10_BACKFILL_DELETE_LEGACY=false
+```
+
+If you want startup to prune unreferenced legacy null-project `item_context_profiles` after repointing, set:
+
+```bash
+STAGE10_BACKFILL_DELETE_LEGACY=true
+```
+
+This hook runs:
+
+```bash
+python -m scripts.backfill_stage10_learning
+```
+
+or:
+
+```bash
+python -m scripts.backfill_stage10_learning --delete-unreferenced-legacy
+```
+
+After the Stage 10 rollout is complete, set both variables back to `false` (or remove them).
+
 ### 5. Verify deployment
 
 Check these endpoints:

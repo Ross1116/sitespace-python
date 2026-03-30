@@ -62,6 +62,25 @@ else
     fi
     echo "✅ Migrations successful."
 
+    # --- Optional one-time Stage 10 backfill hook ---
+    if [ "${RUN_STAGE10_BACKFILL_ON_STARTUP}" = "true" ] || [ "${RUN_STAGE10_BACKFILL_ON_STARTUP}" = "1" ]; then
+        echo "🔁 RUN_STAGE10_BACKFILL_ON_STARTUP enabled; running Stage 10 learning backfill..."
+        STAGE10_BACKFILL_ARGS=""
+        if [ "${STAGE10_BACKFILL_DELETE_LEGACY}" = "true" ] || [ "${STAGE10_BACKFILL_DELETE_LEGACY}" = "1" ]; then
+            STAGE10_BACKFILL_ARGS="--delete-unreferenced-legacy"
+            echo "🧹 Stage 10 backfill will delete unreferenced legacy null-project cache rows."
+        fi
+
+        python -m scripts.backfill_stage10_learning $STAGE10_BACKFILL_ARGS
+        if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Stage 10 backfill failed."
+            exit 1
+        fi
+        echo "✅ Stage 10 backfill completed successfully."
+    else
+        echo "ℹ️ Stage 10 backfill hook disabled."
+    fi
+
 fi
 
 # --- Application Startup ---

@@ -65,6 +65,7 @@ from app.models.work_profile import ItemContextProfile
 def _make_profile(
     *,
     source: str = "ai",
+    project_id: uuid.UUID | None = None,
     posterior_mean: float | None = None,
     posterior_precision: float | None = None,
     sample_count: int = 1,
@@ -74,6 +75,7 @@ def _make_profile(
     low_confidence_flag: bool = False,
 ) -> ItemContextProfile:
     p = MagicMock(spec=ItemContextProfile)
+    p.project_id = project_id or uuid.uuid4()
     p.source = source
     p.posterior_mean = posterior_mean
     p.posterior_precision = posterior_precision
@@ -267,6 +269,7 @@ class TestFindTrustedBaseline:
 
     def test_requires_at_least_three_rows(self):
         db = MagicMock()
+        project_id = uuid.uuid4()
         row1 = _make_profile(source="learned", posterior_mean=10.0, sample_count=3)
         row2 = _make_profile(source="ai", posterior_mean=12.0, sample_count=4)
         db.query.return_value.filter.return_value.all.side_effect = [
@@ -274,12 +277,13 @@ class TestFindTrustedBaseline:
             [row1, row2],
         ]
 
-        baseline = _find_trusted_baseline(db, uuid.uuid4(), "crane", 5)
+        baseline = _find_trusted_baseline(db, project_id, uuid.uuid4(), "crane", 5)
 
         assert baseline is None
 
     def test_uses_median_across_rows(self):
         db = MagicMock()
+        project_id = uuid.uuid4()
         row1 = _make_profile(source="learned", posterior_mean=10.0, sample_count=3)
         row2 = _make_profile(source="ai", posterior_mean=12.0, sample_count=4)
         row3 = _make_profile(source="learned", posterior_mean=14.0, sample_count=5)
@@ -288,12 +292,13 @@ class TestFindTrustedBaseline:
             [row1, row2, row3],
         ]
 
-        baseline = _find_trusted_baseline(db, uuid.uuid4(), "crane", 5)
+        baseline = _find_trusted_baseline(db, project_id, uuid.uuid4(), "crane", 5)
 
         assert baseline == 12.0
 
     def test_manual_rows_bypass_sample_count_threshold(self):
         db = MagicMock()
+        project_id = uuid.uuid4()
         manual_row = _make_profile(source="manual", posterior_mean=None, total_hours=9.5, sample_count=0)
         learned_rows = [_make_profile(source="learned", posterior_mean=10.0, sample_count=3)]
         db.query.return_value.filter.return_value.all.side_effect = [
@@ -301,7 +306,7 @@ class TestFindTrustedBaseline:
             learned_rows,
         ]
 
-        baseline = _find_trusted_baseline(db, uuid.uuid4(), "crane", 5)
+        baseline = _find_trusted_baseline(db, project_id, uuid.uuid4(), "crane", 5)
 
         assert baseline == 9.5
 
@@ -329,12 +334,14 @@ class TestReducedContextFallback:
             "area_type": "internal",
             "work_type": "slab",
         }
+        project_id = uuid.uuid4()
         item_id = uuid.uuid4()
         cached_profile = _make_profile(source="learned")
 
         with patch("app.services.work_profile_service.lookup_cache", side_effect=[None, cached_profile]) as lookup:
             cached, matched_hash = _lookup_cache_with_reduced_context(
                 MagicMock(),
+                project_id,
                 item_id,
                 "crane",
                 5,
@@ -385,11 +392,14 @@ class TestWriteCacheEntry:
     def test_integrity_error_reuses_existing_row(self):
         db = MagicMock()
         existing = MagicMock(spec=ItemContextProfile)
+        savepoint = MagicMock()
+        db.begin_nested.return_value = savepoint
         db.flush.side_effect = IntegrityError("insert", {}, Exception("duplicate"))
         db.query.return_value.filter.return_value.one_or_none.return_value = existing
 
         result = _write_cache_entry(
             db,
+            project_id=uuid.uuid4(),
             item_id=uuid.uuid4(),
             asset_type="crane",
             duration_days=2,
@@ -402,7 +412,7 @@ class TestWriteCacheEntry:
         )
 
         assert result is existing
-        db.rollback.assert_called_once()
+        savepoint.rollback.assert_called_once()
 
 
 # â”€â”€â”€ bayesian_update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -814,6 +824,7 @@ class TestResolveWorkProfile:
     def test_trusted_baseline_writes_activity_profile_with_cache_source(self):
         db = MagicMock()
         activity_id = uuid.uuid4()
+        project_id = uuid.uuid4()
         item_id = uuid.uuid4()
         cache_row = MagicMock()
         cache_row.id = uuid.uuid4()
@@ -826,6 +837,7 @@ class TestResolveWorkProfile:
              patch("app.core.constants.get_max_hours_for_type", return_value=10.0):
             result = resolve_work_profile(
                 db,
+                project_id=project_id,
                 activity_id=activity_id,
                 item_id=item_id,
                 asset_type="crane",
@@ -839,6 +851,7 @@ class TestResolveWorkProfile:
 
     def test_stage_d_failure_marks_activity_profile_low_confidence(self):
         db = MagicMock()
+        project_id = uuid.uuid4()
         cached = MagicMock()
         cached.id = uuid.uuid4()
         cached.posterior_mean = 10.0
@@ -856,6 +869,7 @@ class TestResolveWorkProfile:
              patch("app.core.constants.get_max_hours_for_type", return_value=10.0):
             resolve_work_profile(
                 db,
+                project_id=project_id,
                 activity_id=uuid.uuid4(),
                 item_id=uuid.uuid4(),
                 asset_type="crane",

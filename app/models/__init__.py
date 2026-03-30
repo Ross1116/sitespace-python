@@ -23,7 +23,14 @@ from .programme import (
 from .item_identity import Item, ItemAlias, ItemIdentityEvent, ItemClassification, ItemClassificationEvent
 from .stored_file import StoredFile
 from .site_plan import SitePlan
-from .work_profile import InferencePolicy, ItemContextProfile, ActivityWorkProfile, WorkProfileAILog
+from .work_profile import (
+    InferencePolicy,
+    ItemContextProfile,
+    ActivityWorkProfile,
+    WorkProfileAILog,
+    ItemKnowledgeBase,
+    AssetUsageActual,
+)
 
 __all__ = [
     "User",
@@ -55,4 +62,6 @@ __all__ = [
     "ItemContextProfile",
     "ActivityWorkProfile",
     "WorkProfileAILog",
+    "ItemKnowledgeBase",
+    "AssetUsageActual",
 ]

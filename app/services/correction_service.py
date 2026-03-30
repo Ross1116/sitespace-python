@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 import uuid
 from typing import Optional
 
@@ -22,7 +23,9 @@ from .identity_service import follow_item_redirect
 from .work_profile_service import (
     build_compressed_context,
     build_context_key,
+    duration_bucket_for_days,
     prepare_manual_work_profile,
+    rebuild_global_knowledge_entry,
     upsert_manual_context_profile,
     write_manual_activity_profile,
 )
@@ -38,6 +41,7 @@ class MappingCorrectionContext:
     activity: ProgrammeActivity
     upload: ProgrammeUpload
     activity_profile: ActivityWorkProfile | None = None
+    context_profile: ItemContextProfile | None = None
     suggestion_log: AISuggestionLog | None = None
     canonical_item: Item | None = None
 
@@ -99,6 +103,13 @@ def load_mapping_correction_context(
         .filter(ActivityWorkProfile.activity_id == activity.id)
         .one_or_none()
     )
+    context_profile = None
+    if activity_profile is not None and activity_profile.context_profile_id is not None:
+        context_profile = (
+            db.query(ItemContextProfile)
+            .filter(ItemContextProfile.id == activity_profile.context_profile_id)
+            .one_or_none()
+        )
     suggestion_log = _find_relevant_suggestion_log(
         db,
         activity_id=activity.id,
@@ -111,6 +122,7 @@ def load_mapping_correction_context(
         activity=activity,
         upload=upload,
         activity_profile=activity_profile,
+        context_profile=context_profile,
         suggestion_log=suggestion_log,
         canonical_item=canonical_item,
     )
@@ -217,6 +229,7 @@ def apply_mapping_correction(
 
     context_profile: ItemContextProfile | None = None
     activity_profile: ActivityWorkProfile | None = None
+    old_global_key: tuple[uuid.UUID, str, int, int, int] | None = None
     if should_materialize_profile and profile_item_id is not None:
         prepared = prepare_manual_work_profile(
             asset_type=corrected_asset_type,
@@ -252,9 +265,40 @@ def apply_mapping_correction(
             compressed_context,
         )
 
+        previous_context_profile = context.context_profile
+        if previous_context_profile is not None and previous_context_profile.source != "manual":
+            previous_distribution = (
+                list(context.activity_profile.normalized_distribution_json or [])
+                if context.activity_profile is not None
+                else []
+            )
+            existing_hours = (
+                float(context.activity_profile.total_hours)
+                if context.activity_profile is not None and context.activity_profile.total_hours is not None
+                else None
+            )
+            profile_changed = (
+                corrected_asset_type != str(previous_context_profile.asset_type)
+                or (
+                    existing_hours is None
+                    or not math.isclose(existing_hours, prepared.total_hours, rel_tol=1e-9, abs_tol=1e-6)
+                )
+                or previous_distribution != prepared.normalized_distribution
+            )
+            if profile_changed:
+                previous_context_profile.correction_count = int(previous_context_profile.correction_count or 0) + 1
+                old_global_key = (
+                    previous_context_profile.item_id,
+                    str(previous_context_profile.asset_type),
+                    duration_bucket_for_days(int(previous_context_profile.duration_days or 0)),
+                    int(previous_context_profile.context_version or 0),
+                    int(previous_context_profile.inference_version or 0),
+                )
+
         if memory_item is not None:
             context_profile = upsert_manual_context_profile(
                 db,
+                project_id=context.upload.project_id,
                 item_id=memory_item.id,
                 asset_type=corrected_asset_type,
                 duration_days=duration_days,
@@ -279,6 +323,15 @@ def apply_mapping_correction(
         )
 
     db.flush()
+    if old_global_key is not None:
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=old_global_key[0],
+            asset_type=old_global_key[1],
+            duration_bucket=old_global_key[2],
+            context_version=old_global_key[3],
+            inference_version=old_global_key[4],
+        )
     return MappingCorrectionResult(
         context=context,
         classification=classification,

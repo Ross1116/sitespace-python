@@ -16,6 +16,7 @@ from app.services.work_profile_service import (
 
 def _make_context_profile(
     *,
+    project_id=None,
     item_id,
     asset_type: str,
     source: str,
@@ -43,6 +44,7 @@ def _make_context_profile(
     )
     return SimpleNamespace(
         id=uuid4(),
+        project_id=project_id or uuid4(),
         item_id=item_id,
         asset_type=asset_type,
         duration_days=2,
@@ -136,7 +138,9 @@ def test_prepare_manual_work_profile_uses_uniform_distribution_for_manual_total_
 
 def test_upsert_manual_context_profile_overwrites_existing_non_manual(monkeypatch):
     item_id = uuid4()
+    project_id = uuid4()
     existing = _make_context_profile(
+        project_id=project_id,
         item_id=item_id,
         asset_type="forklift",
         source="ai",
@@ -151,6 +155,7 @@ def test_upsert_manual_context_profile_overwrites_existing_non_manual(monkeypatc
 
     result = upsert_manual_context_profile(
         db,
+        project_id=project_id,
         item_id=item_id,
         asset_type="forklift",
         duration_days=2,
@@ -171,7 +176,9 @@ def test_upsert_manual_context_profile_overwrites_existing_non_manual(monkeypatc
 def test_reconcile_context_profiles_on_merge_moves_non_conflicting_rows():
     source_item_id = uuid4()
     target_item_id = uuid4()
+    project_id = uuid4()
     source_profile = _make_context_profile(
+        project_id=project_id,
         item_id=source_item_id,
         asset_type="crane",
         source="ai",
@@ -200,7 +207,9 @@ def test_reconcile_context_profiles_on_merge_moves_non_conflicting_rows():
 def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict():
     source_item_id = uuid4()
     target_item_id = uuid4()
+    project_id = uuid4()
     source_profile = _make_context_profile(
+        project_id=project_id,
         item_id=source_item_id,
         asset_type="forklift",
         source="manual",
@@ -217,6 +226,7 @@ def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict
         sample_count=3,
     )
     target_profile = _make_context_profile(
+        project_id=project_id,
         item_id=target_item_id,
         asset_type="forklift",
         source="ai",

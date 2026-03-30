@@ -59,6 +59,12 @@ class ItemContextProfile(Base):
     __tablename__ = "item_context_profiles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     item_id = Column(
         UUID(as_uuid=True),
         ForeignKey("items.id", ondelete="CASCADE"),
@@ -108,6 +114,7 @@ class ItemContextProfile(Base):
 
     __table_args__ = (
         UniqueConstraint(
+            "project_id",
             "item_id",
             "asset_type",
             "duration_days",
@@ -134,12 +141,13 @@ class ItemContextProfile(Base):
         ),
     )
 
+    project = relationship("SiteProject", foreign_keys=[project_id])
     item = relationship("Item", foreign_keys=[item_id])
     inference_policy = relationship("InferencePolicy", foreign_keys=[inference_version])
 
     def __repr__(self) -> str:
         return (
-            f"<ItemContextProfile(item={self.item_id}, asset='{self.asset_type}', "
+            f"<ItemContextProfile(project={self.project_id}, item={self.item_id}, asset='{self.asset_type}', "
             f"dur={self.duration_days}, source='{self.source}')>"
         )
 
@@ -293,4 +301,152 @@ class WorkProfileAILog(Base):
         return (
             f"<WorkProfileAILog(activity={self.activity_id}, item={self.item_id}, "
             f"version={self.inference_version})>"
+        )
+
+
+class ItemKnowledgeBase(Base):
+    """
+    Cross-project promoted knowledge for a canonical (item, asset_type, duration bucket).
+
+    This is the only Stage 10 global work-profile tier. It intentionally does
+    not store project_id.
+    """
+
+    __tablename__ = "item_knowledge_base"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    asset_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    duration_bucket = Column(SmallInteger, nullable=False)
+    context_version = Column(SmallInteger, nullable=False)
+    inference_version = Column(
+        SmallInteger,
+        ForeignKey("inference_policies.version", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    posterior_mean = Column(Numeric(10, 4), nullable=False)
+    posterior_precision = Column(Numeric(20, 8), nullable=False)
+    source_project_count = Column(Integer, nullable=False, default=0, server_default="0")
+    sample_count = Column(Integer, nullable=False, default=0, server_default="0")
+    correction_count = Column(Integer, nullable=False, default=0, server_default="0")
+    normalized_shape_json = Column(JSONB, nullable=False)
+    confidence_tier = Column(String(10), nullable=False)
+    promoted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id",
+            "asset_type",
+            "duration_bucket",
+            "context_version",
+            "inference_version",
+            name="uq_item_knowledge_base_key",
+        ),
+        CheckConstraint(
+            "duration_bucket > 0",
+            name="ck_item_knowledge_base_duration_bucket",
+        ),
+        CheckConstraint(
+            "posterior_mean >= 0",
+            name="ck_item_knowledge_base_posterior_mean",
+        ),
+        CheckConstraint(
+            "posterior_precision > 0",
+            name="ck_item_knowledge_base_posterior_precision",
+        ),
+        CheckConstraint(
+            "confidence_tier IN ('medium', 'high')",
+            name="ck_item_knowledge_base_confidence_tier",
+        ),
+    )
+
+    item = relationship("Item", foreign_keys=[item_id])
+    inference_policy = relationship("InferencePolicy", foreign_keys=[inference_version])
+
+    def __repr__(self) -> str:
+        return (
+            f"<ItemKnowledgeBase(item={self.item_id}, asset='{self.asset_type}', "
+            f"bucket={self.duration_bucket}, tier='{self.confidence_tier}')>"
+        )
+
+
+class AssetUsageActual(Base):
+    """
+    Internal actual-hours foundation keyed to one materialised activity work profile.
+    """
+
+    __tablename__ = "asset_usage_actuals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    activity_work_profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_work_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    booking_group_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_booking_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    booking_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("slot_bookings.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    actual_hours_used = Column(Numeric(10, 4), nullable=False)
+    source = Column(String(20), nullable=False, default="system", server_default="system")
+    recorded_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "actual_hours_used >= 0",
+            name="ck_asset_usage_actuals_actual_hours_used",
+        ),
+        CheckConstraint(
+            "source IN ('system', 'manual', 'import')",
+            name="ck_asset_usage_actuals_source",
+        ),
+    )
+
+    activity_work_profile = relationship("ActivityWorkProfile", foreign_keys=[activity_work_profile_id])
+    booking_group = relationship("ActivityBookingGroup", foreign_keys=[booking_group_id])
+    booking = relationship("SlotBooking", foreign_keys=[booking_id])
+    recorded_by_user = relationship("User", foreign_keys=[recorded_by_user_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<AssetUsageActual(activity_work_profile={self.activity_work_profile_id}, "
+            f"hours={self.actual_hours_used}, source='{self.source}')>"
         )

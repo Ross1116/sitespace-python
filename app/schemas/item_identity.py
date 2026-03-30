@@ -76,3 +76,48 @@ class ItemClassificationEventResponse(BaseSchema):
     performed_by_user_id: Optional[UUID] = None
     details_json: Optional[Dict[str, Any]] = None
     created_at: datetime
+
+
+class ItemClassificationSummary(BaseSchema):
+    asset_type: str
+    source: str
+    confidence: str
+    maturity_tier: str
+
+
+class ItemKnowledgeEntrySummary(BaseSchema):
+    asset_type: str
+    duration_bucket: int
+    confidence_tier: str
+    source_project_count: int
+    sample_count: int
+    correction_count: int
+    posterior_mean: float
+    last_updated_at: datetime
+
+
+class ItemStatisticsResponse(BaseSchema):
+    item_id: UUID
+    display_name: str
+    alias_count: int
+    occurrence_count: int
+    distinct_project_count: int
+    actuals_count: int
+    actual_hours_total: float
+    last_seen_at: Optional[datetime] = None
+    active_classification: Optional[ItemClassificationSummary] = None
+    local_profile_counts_by_source: Dict[str, int]
+    local_profile_counts_by_maturity: Dict[str, int]
+    global_knowledge_counts_by_tier: Dict[str, int]
+    global_knowledge_entries: list[ItemKnowledgeEntrySummary]
+
+
+class ItemOtherReviewResponse(BaseSchema):
+    item_id: UUID
+    display_name: str
+    occurrence_count: int
+    distinct_project_count: int
+    last_seen_at: Optional[datetime] = None
+    classification_source: str
+    classification_confidence: str
+    classification_maturity_tier: str
