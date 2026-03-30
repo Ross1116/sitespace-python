@@ -46,7 +46,7 @@ def _family_item_ids(db: Session, canonical_item_id: uuid.UUID) -> list[uuid.UUI
         current = item
         seen: set[uuid.UUID] = set()
         while current.identity_status == "merged" and current.merged_into_item_id:
-            if current.id in seen:
+            if current.merged_into_item_id in seen:
                 break
             seen.add(current.id)
             next_item = item_map.get(current.merged_into_item_id)
@@ -97,7 +97,7 @@ def _canonical_family_maps(
         current = item
         seen: set[uuid.UUID] = set()
         while current.identity_status == "merged" and current.merged_into_item_id:
-            if current.id in seen:
+            if current.merged_into_item_id in seen:
                 break
             seen.add(current.id)
             next_item = item_map.get(current.merged_into_item_id)

@@ -88,6 +88,19 @@ def test_item_occurrence_stats_ignores_none_project_ids():
     assert last_seen_at == now
 
 
+def test_family_item_ids_matches_redirect_cycle_semantics():
+    item_a = SimpleNamespace(id=uuid4(), identity_status="merged", merged_into_item_id=None)
+    item_b = SimpleNamespace(id=uuid4(), identity_status="merged", merged_into_item_id=item_a.id)
+    item_a.merged_into_item_id = item_b.id
+
+    db = MagicMock()
+    db.query.return_value.all.return_value = [item_a, item_b]
+
+    family = item_learning_service._family_item_ids(db, item_b.id)
+
+    assert set(family) == {item_a.id, item_b.id}
+
+
 def test_list_other_review_items_uses_batched_stats(monkeypatch):
     item_id = uuid4()
     rows = [

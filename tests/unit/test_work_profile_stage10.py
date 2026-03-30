@@ -9,6 +9,8 @@ import pytest
 
 from app.services.work_profile_service import (
     WorkProfilePreflight,
+    build_compressed_context,
+    build_context_key,
     _seed_local_cache_from_global_knowledge,
     backfill_project_local_context_profiles,
     get_global_knowledge_entry,
@@ -101,6 +103,42 @@ def test_rebuild_global_knowledge_entry_promotes_eligible_local_rows(monkeypatch
     db.add.assert_called_once()
 
 
+def test_rebuild_global_knowledge_entry_downgrades_for_corrected_locals(monkeypatch):
+    item_id = uuid4()
+    row_project_ids = [uuid4(), uuid4(), uuid4()]
+    rows = [
+        SimpleNamespace(
+            project_id=row_project_ids[idx],
+            posterior_mean=10.0 + idx,
+            posterior_precision=100.0,
+            sample_count=4,
+            correction_count=1,
+            normalized_distribution_json=[0.2, 0.2, 0.2, 0.1, 0.1, 0.1, 0.1],
+            duration_days=7,
+            asset_type="crane",
+        )
+        for idx in range(3)
+    ]
+    db = MagicMock()
+    db.query.return_value.filter.return_value.one_or_none.return_value = None
+
+    monkeypatch.setattr(
+        "app.services.work_profile_service._eligible_local_profiles_for_global_entry",
+        lambda *args, **kwargs: rows,
+    )
+
+    result = rebuild_global_knowledge_entry(
+        db,
+        item_id=item_id,
+        asset_type="crane",
+        duration_bucket=7,
+    )
+
+    assert result is not None
+    assert result.confidence_tier == "medium"
+    assert result.correction_count == 3
+
+
 def test_seed_local_cache_from_global_knowledge_initializes_zero_evidence_counts(monkeypatch):
     db = MagicMock()
     item_id = uuid4()
@@ -141,6 +179,42 @@ def test_seed_local_cache_from_global_knowledge_initializes_zero_evidence_counts
     assert float(seeded.posterior_mean) == 12.0
     db.add.assert_called_once()
     db.flush.assert_called_once()
+
+
+def test_seed_local_cache_from_global_knowledge_prefers_learned_global_shape(monkeypatch):
+    db = MagicMock()
+    item_id = uuid4()
+    project_id = uuid4()
+    global_row = SimpleNamespace(
+        posterior_mean=12.0,
+        posterior_precision=4.0,
+        normalized_shape_json=[0.6, 0.3, 0.1],
+    )
+
+    monkeypatch.setattr(
+        "app.services.work_profile_service.lookup_cache",
+        lambda *args, **kwargs: None,
+    )
+
+    seeded = _seed_local_cache_from_global_knowledge(
+        db,
+        project_id=project_id,
+        item_id=item_id,
+        asset_type="crane",
+        duration_days=3,
+        context_hash="exact-hash",
+        max_hours_per_day=10.0,
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        },
+        global_knowledge=global_row,
+    )
+
+    assert seeded.normalized_distribution_json == [0.6, 0.3, 0.1]
+    assert seeded.distribution_json[0] > seeded.distribution_json[1] > seeded.distribution_json[2]
 
 
 def test_resolve_work_profile_high_global_hit_seeds_local_cache_without_ai():
@@ -537,3 +611,80 @@ def test_backfill_project_local_context_profiles_skips_when_already_repointed(mo
     assert result["repointed_activity_profiles"] == 0
     assert result["reused_local_hits"] == 0
     assert result["materialized_local_profiles"] == 0
+
+
+def test_backfill_project_local_context_profiles_normalizes_duration_before_hash(monkeypatch):
+    project_id = uuid4()
+    item_id = uuid4()
+    activity_profile = SimpleNamespace(
+        id=uuid4(),
+        activity_id=uuid4(),
+        item_id=item_id,
+        asset_type="crane",
+        duration_days=0,
+        context_version=1,
+        inference_version=1,
+        total_hours=10.0,
+        distribution_json=[10.0],
+        normalized_distribution_json=[1.0],
+        confidence=0.8,
+        source="cache",
+        context_hash=None,
+        low_confidence_flag=False,
+        context_profile_id=None,
+        created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    activity = SimpleNamespace(
+        id=activity_profile.activity_id,
+        programme_upload_id=uuid4(),
+        item_id=item_id,
+        name="Lift panels",
+        level_name="Level 1",
+        zone_name="Zone A",
+    )
+    upload = SimpleNamespace(id=activity.programme_upload_id, project_id=project_id)
+    db = MagicMock()
+    db.query.return_value.join.return_value.join.return_value.outerjoin.return_value.order_by.return_value.all.return_value = [
+        (activity_profile, activity, upload, None),
+    ]
+
+    captured: dict[str, object] = {}
+
+    def _lookup_cache(
+        _db,
+        _project_id,
+        _item_id,
+        _asset_type,
+        duration_days,
+        context_hash,
+        _context_version,
+        _inference_version,
+    ):
+        captured["duration_days"] = duration_days
+        captured["context_hash"] = context_hash
+        return SimpleNamespace(id=uuid4(), source="learned", observation_count=0)
+
+    monkeypatch.setattr("app.services.work_profile_service.lookup_cache", _lookup_cache)
+    monkeypatch.setattr(
+        "app.services.work_profile_service.rebuild_all_global_knowledge",
+        lambda _db: None,
+    )
+
+    backfill_project_local_context_profiles(db)
+
+    compressed_context = build_compressed_context(
+        activity.name,
+        level_name=activity.level_name,
+        zone_name=activity.zone_name,
+    )
+    expected_hash = build_context_key(
+        item_id,
+        "crane",
+        1,
+        compressed_context,
+        context_version=1,
+        inference_version=1,
+    )
+
+    assert captured["duration_days"] == 1
+    assert captured["context_hash"] == expected_hash

@@ -360,15 +360,27 @@ def _global_confidence_tier(
     posterior_precision: float,
     source_project_count: int,
     sample_count: int,
+    correction_count: int = 0,
 ) -> str | None:
     if posterior_mean <= 0 or posterior_precision <= 0:
         return None
     cv = _coefficient_of_variation(posterior_mean, posterior_precision)
+    base_tier: str | None = None
     if sample_count >= 10 and source_project_count >= 3 and cv < WORK_PROFILE_CV_TRUSTED:
-        return "high"
-    if sample_count >= 3 and source_project_count >= 1 and cv < WORK_PROFILE_CV_CONFIRMED:
+        base_tier = "high"
+    elif sample_count >= 3 and source_project_count >= 1 and cv < WORK_PROFILE_CV_CONFIRMED:
+        base_tier = "medium"
+    if base_tier is None:
+        return None
+
+    if (
+        sample_count >= WORK_PROFILE_CORRECTION_MIN_SAMPLES
+        and correction_count > 0
+        and correction_count / sample_count > WORK_PROFILE_CORRECTION_RATE_THRESHOLD
+    ):
         return "medium"
-    return None
+
+    return base_tier
 
 
 # ---------------------------------------------------------------------------
@@ -2673,7 +2685,6 @@ def _eligible_local_profiles_for_global_entry(
             ItemContextProfile.source.in_(["ai", "learned"]),
             ItemContextProfile.low_confidence_flag.is_(False),
             ItemContextProfile.sample_count >= WORK_PROFILE_CORRECTION_MIN_SAMPLES,
-            ItemContextProfile.correction_count == 0,
         )
         .all()
     )
@@ -2800,6 +2811,7 @@ def rebuild_global_knowledge_entry(
         posterior_precision=combined_precision,
         source_project_count=len(contributing_projects),
         sample_count=sample_count,
+        correction_count=correction_count,
     )
     if confidence_tier is None:
         if existing is not None:
@@ -2923,14 +2935,21 @@ def _seed_local_cache_from_global_knowledge(
     if existing is not None:
         return existing
 
-    normalized_distribution = list(
-        _build_default_profile_prior(
-            asset_type,
+    learned_shape = list(getattr(global_knowledge, "normalized_shape_json", []) or [])
+    if learned_shape:
+        normalized_distribution = _resample_normalized_distribution(
+            learned_shape,
             duration_days,
-            max_hours_per_day,
-            compressed_context=compressed_context,
-        )["normalized_distribution"]
-    )
+        )
+    else:
+        normalized_distribution = list(
+            _build_default_profile_prior(
+                asset_type,
+                duration_days,
+                max_hours_per_day,
+                compressed_context=compressed_context,
+            )["normalized_distribution"]
+        )
     total_hours = quantize_hours(float(global_knowledge.posterior_mean))
     distribution = derive_distribution(
         normalized_distribution,
@@ -3112,15 +3131,15 @@ def backfill_project_local_context_profiles(
             level_name=activity.level_name,
             zone_name=activity.zone_name,
         )
+        duration_days = max(int(activity_profile.duration_days or 0), 1)
         context_hash = str(activity_profile.context_hash or build_context_key(
             resolved_item_id,
             str(activity_profile.asset_type),
-            int(activity_profile.duration_days or 0),
+            duration_days,
             compressed_context,
             context_version=int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
             inference_version=int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
         ))
-        duration_days = max(int(activity_profile.duration_days or 0), 1)
         confidence = float(activity_profile.confidence or 0)
         linked_source = str(getattr(linked_profile, "source", "") or "")
         activity_source = str(activity_profile.source or "")
