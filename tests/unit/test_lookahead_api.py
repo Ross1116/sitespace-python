@@ -5,62 +5,13 @@ from uuid import uuid4
 from unittest.mock import MagicMock
 
 from app.api.v1 import lookahead
-from app.models import programme as programme_models
-
-
-class _FakeColumn:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __eq__(self, other):
-        return ("eq", self.name, other)
-
-    def in_(self, values):
-        return ("in", self.name, tuple(values))
-
-    def desc(self):
-        return ("desc", self.name)
-
-
-class _FakeProgrammeUpload:
-    project_id = _FakeColumn("project_id")
-    status = _FakeColumn("status")
-    version_number = _FakeColumn("version_number")
-
-
-class _FakeQuery:
-    def __init__(self, first_result):
-        self._first_result = first_result
-        self.filters = []
-        self.orderings = []
-
-    def filter(self, *conditions):
-        self.filters.extend(conditions)
-        return self
-
-    def order_by(self, *orderings):
-        self.orderings.extend(orderings)
-        return self
-
-    def first(self):
-        return self._first_result(self.filters)
 
 
 def test_get_fresh_snapshot_uses_degraded_upload_when_no_committed_exists(monkeypatch):
     project_id = uuid4()
     degraded_upload = SimpleNamespace(id=uuid4())
-
-    def _first_result(filters):
-        has_project_filter = ("eq", "project_id", project_id) in filters
-        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
-        if has_project_filter and has_status_filter:
-            return degraded_upload
-        return None
-
     db = MagicMock()
-    db.query.return_value = _FakeQuery(_first_result)
-
-    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_active_programme_upload", lambda project_id, db: degraded_upload)
     monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: None)
     monkeypatch.setattr(lookahead, "get_latest_booking_update_for_project", lambda project_id, db: None)
 
@@ -82,18 +33,8 @@ def test_get_fresh_snapshot_recalculates_when_booking_is_newer(monkeypatch):
         created_at=datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
         data={"generated_at": "2026-03-27T08:00:00+00:00"},
     )
-
-    def _first_result(filters):
-        has_project_filter = ("eq", "project_id", project_id) in filters
-        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
-        if has_project_filter and has_status_filter:
-            return degraded_upload
-        return None
-
     db = MagicMock()
-    db.query.return_value = _FakeQuery(_first_result)
-
-    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_active_programme_upload", lambda project_id, db: degraded_upload)
     monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: stale_snapshot)
     monkeypatch.setattr(
         lookahead,
@@ -119,18 +60,8 @@ def test_get_fresh_snapshot_uses_generated_at_to_avoid_repeated_recalculation(mo
         created_at=datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
         data={"generated_at": "2026-03-27T10:00:00+00:00"},
     )
-
-    def _first_result(filters):
-        has_project_filter = ("eq", "project_id", project_id) in filters
-        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
-        if has_project_filter and has_status_filter:
-            return degraded_upload
-        return None
-
     db = MagicMock()
-    db.query.return_value = _FakeQuery(_first_result)
-
-    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_active_programme_upload", lambda project_id, db: degraded_upload)
     monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: refreshed_snapshot)
     monkeypatch.setattr(
         lookahead,
@@ -155,18 +86,8 @@ def test_get_fresh_snapshot_normalizes_naive_booking_timestamp(monkeypatch):
         created_at=datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
         data={"generated_at": "2026-03-27T08:00:00+00:00"},
     )
-
-    def _first_result(filters):
-        has_project_filter = ("eq", "project_id", project_id) in filters
-        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
-        if has_project_filter and has_status_filter:
-            return degraded_upload
-        return None
-
     db = MagicMock()
-    db.query.return_value = _FakeQuery(_first_result)
-
-    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_active_programme_upload", lambda project_id, db: degraded_upload)
     monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: stale_snapshot)
     monkeypatch.setattr(
         lookahead,
@@ -192,18 +113,8 @@ def test_get_fresh_snapshot_normalizes_naive_snapshot_timestamp(monkeypatch):
         created_at=datetime(2026, 3, 27, 10, 0),
         data={},
     )
-
-    def _first_result(filters):
-        has_project_filter = ("eq", "project_id", project_id) in filters
-        has_status_filter = ("in", "status", ("committed", "degraded")) in filters
-        if has_project_filter and has_status_filter:
-            return degraded_upload
-        return None
-
     db = MagicMock()
-    db.query.return_value = _FakeQuery(_first_result)
-
-    monkeypatch.setattr(programme_models, "ProgrammeUpload", _FakeProgrammeUpload)
+    monkeypatch.setattr(lookahead, "get_active_programme_upload", lambda project_id, db: degraded_upload)
     monkeypatch.setattr(lookahead, "get_latest_snapshot", lambda project_id, db: refreshed_snapshot)
     monkeypatch.setattr(
         lookahead,

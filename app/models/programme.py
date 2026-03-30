@@ -13,6 +13,10 @@ class ProgrammeUpload(Base):
         UniqueConstraint("project_id", "version_number", name="uq_programme_upload_project_version"),
         CheckConstraint("work_days_per_week BETWEEN 1 AND 7", name="ck_programme_uploads_work_days"),
         CheckConstraint("ai_cost_usd IS NULL OR ai_cost_usd >= 0", name="ck_programme_uploads_ai_cost_usd_nonneg"),
+        CheckConstraint(
+            "status IN ('processing', 'committed', 'completed_with_warnings', 'failed')",
+            name="ck_programme_uploads_status_stage9",
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -38,7 +42,7 @@ class ProgrammeUpload(Base):
     version_number = Column(Integer, nullable=False, default=1)
     completeness_score = Column(Float, nullable=True)       # 0.0-1.0
     completeness_notes = Column(JSONB, nullable=True)       # list of degradation reason strings
-    status = Column(String(20), nullable=False, default="processing")  # processing | committed
+    status = Column(String(30), nullable=False, default="processing")  # processing | committed | completed_with_warnings | failed
     processing_outcome = Column(String(30), nullable=True)
     ai_tokens_used = Column(Integer, nullable=True)
     ai_cost_usd = Column(Numeric(12, 6), nullable=True)

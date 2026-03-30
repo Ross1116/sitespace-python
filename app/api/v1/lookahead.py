@@ -33,6 +33,7 @@ from ...services.lookahead_engine import (
     get_sub_notifications,
     get_sub_asset_suggestions_for_project,
 )
+from ...services.programme_upload_service import get_active_programme_upload
 
 router = APIRouter(prefix="/lookahead", tags=["Lookahead"])
 
@@ -84,17 +85,7 @@ def _snapshot_refreshed_at(snapshot) -> datetime | None:
 
 def _get_fresh_snapshot(project_id: UUID, db: Session):
     """Return the current snapshot, recalculating if it is stale relative to the latest processed upload."""
-    from ...models.programme import ProgrammeUpload
-
-    latest_upload = (
-        db.query(ProgrammeUpload)
-        .filter(
-            ProgrammeUpload.project_id == project_id,
-            ProgrammeUpload.status.in_(["committed", "degraded"]),
-        )
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
+    latest_upload = get_active_programme_upload(project_id, db)
     if latest_upload is None:
         return None
     snapshot = get_latest_snapshot(project_id, db)

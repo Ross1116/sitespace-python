@@ -206,9 +206,23 @@ class Notification(Base):
         ForeignKey("slot_bookings.id", ondelete="SET NULL"),
         nullable=True,
     )
+    programme_upload_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("programme_uploads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("lookahead_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     subcontractor = relationship("Subcontractor", foreign_keys=[sub_id])
     project = relationship("SiteProject", foreign_keys=[project_id])
     activity = relationship("ProgrammeActivity", foreign_keys=[activity_id])
     booking = relationship("SlotBooking", foreign_keys=[booking_id])
+    programme_upload = relationship("ProgrammeUpload", foreign_keys=[programme_upload_id])
+    snapshot = relationship("LookaheadSnapshot", foreign_keys=[snapshot_id])

@@ -5,8 +5,11 @@ from uuid import uuid4
 from app.api.v1.programmes import (
     _build_suggested_booking_dates,
     _normalize_completeness_notes,
+    _require_readable_upload,
+    _serialize_programme_upload,
     _serialize_mapping,
 )
+from fastapi import HTTPException
 
 
 def test_normalize_completeness_notes_includes_stable_defaults():
@@ -101,3 +104,46 @@ def test_build_suggested_booking_dates_includes_daily_gap_and_ignores_cancelled_
     assert suggestions[1].demand_hours == 2.5
     assert suggestions[1].booked_hours == 0.0
     assert suggestions[1].gap_hours == 2.5
+
+
+def test_serialize_programme_upload_normalizes_legacy_status_and_flags():
+    upload_id = uuid4()
+    upload = SimpleNamespace(
+        id=upload_id,
+        status="degraded",
+        processing_outcome="completed_with_warnings",
+        completeness_score=0.75,
+        completeness_notes={"notes": "warning"},
+        version_number=3,
+        file_name="programme.pdf",
+        ai_tokens_used=123,
+        ai_cost_usd=4.56,
+        created_at=datetime(2026, 3, 30, tzinfo=timezone.utc),
+    )
+
+    payload = _serialize_programme_upload(upload, active_upload_id=upload_id, include_notes=True)
+
+    assert payload["status"] == "completed_with_warnings"
+    assert payload["processing_outcome"] == "completed_with_warnings"
+    assert payload["is_active_version"] is True
+    assert payload["is_terminal_success"] is True
+    assert payload["has_warnings"] is True
+    assert payload["completeness_notes"]["notes"] == "warning"
+
+
+def test_require_readable_upload_distinguishes_processing_and_failed_states():
+    try:
+        _require_readable_upload(SimpleNamespace(status="processing"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail == "Programme is still processing."
+    else:
+        raise AssertionError("Expected processing upload to raise HTTPException")
+
+    try:
+        _require_readable_upload(SimpleNamespace(status="failed"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail == "Programme processing did not complete successfully."
+    else:
+        raise AssertionError("Expected failed upload to raise HTTPException")

@@ -38,6 +38,7 @@ from app.crud.booking_audit import log_booking_audit, build_changes_dict
 from .asset import sync_maintenance_status
 from ..services.metadata_confidence_service import asset_is_planning_ready
 from ..services.lookahead_engine import build_eligible_activity_mapping_filters
+from ..services.programme_upload_service import is_upload_readable
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +161,7 @@ def _get_activity_expected_asset_type(
         .filter(ProgrammeUpload.id == activity.programme_upload_id)
         .first()
     )
-    if upload is None or upload.status not in {"committed", "degraded"}:
+    if upload is None or not is_upload_readable(upload):
         raise BookingValidationError("Programme activity is not available for booking")
 
     mapping = (

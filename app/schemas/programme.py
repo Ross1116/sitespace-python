@@ -19,7 +19,14 @@ class ProgrammeUploadAccepted(BaseSchema):
     message: str
 
 
-class ProgrammeUploadStatus(BaseSchema):
+class UploadLifecycleBase(BaseSchema):
+    processing_outcome: Optional[str] = None
+    is_active_version: bool = False
+    is_terminal_success: bool = False
+    has_warnings: bool = False
+
+
+class ProgrammeUploadStatus(UploadLifecycleBase):
     """Processing status for a programme upload."""
 
     upload_id: UUID
@@ -33,7 +40,7 @@ class ProgrammeUploadStatus(BaseSchema):
     created_at: Optional[str] = None
 
 
-class ProgrammeVersionSummary(BaseSchema):
+class ProgrammeVersionSummary(UploadLifecycleBase):
     """Summary of a single programme version in a list."""
 
     upload_id: UUID

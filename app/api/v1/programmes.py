@@ -61,6 +61,15 @@ from ...utils.programme_notes import normalize_programme_completeness_notes
 from ...services.metadata_confidence_service import asset_is_planning_ready
 from ...services.lookahead_engine import resolve_activity_distribution
 from ...services.process_programme import preflight_validate, process_programme
+from ...services.programme_upload_service import (
+    get_active_programme_upload,
+    get_previous_successful_programme_upload,
+    get_upload_status as get_normalized_upload_status,
+    is_upload_processing,
+    is_upload_readable,
+    is_upload_terminal_success,
+    upload_has_warnings,
+)
 from ...services.correction_service import (
     MappingCorrectionValidationError,
     apply_mapping_correction,
@@ -121,6 +130,42 @@ def _serialize_mapping(
 
 def _normalize_completeness_notes(notes: dict | None) -> dict:
     return normalize_programme_completeness_notes(notes)
+
+
+def _serialize_programme_upload(
+    upload: ProgrammeUpload,
+    *,
+    active_upload_id: UUID | None = None,
+    include_notes: bool = False,
+) -> dict[str, object]:
+    normalized_status = get_normalized_upload_status(upload)
+    payload: dict[str, object] = {
+        "upload_id": upload.id,
+        "status": normalized_status,
+        "processing_outcome": upload.processing_outcome,
+        "is_active_version": bool(active_upload_id and str(upload.id) == str(active_upload_id)),
+        "is_terminal_success": is_upload_terminal_success(upload),
+        "has_warnings": upload_has_warnings(upload),
+        "completeness_score": (
+            None if upload.completeness_score is None else round(upload.completeness_score * 100)
+        ),
+        "version_number": upload.version_number,
+        "file_name": upload.file_name,
+        "ai_tokens_used": upload.ai_tokens_used,
+        "ai_cost_usd": None if upload.ai_cost_usd is None else float(upload.ai_cost_usd),
+        "created_at": upload.created_at.isoformat() if upload.created_at else None,
+    }
+    if include_notes:
+        payload["completeness_notes"] = _normalize_completeness_notes(upload.completeness_notes)
+    return payload
+
+
+def _require_readable_upload(upload: ProgrammeUpload) -> None:
+    if is_upload_readable(upload):
+        return
+    if is_upload_processing(upload):
+        raise HTTPException(status_code=409, detail="Programme is still processing.")
+    raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
 
 
 def _normalize_week_start(selected_week_start: date | None) -> date | None:
@@ -410,17 +455,14 @@ def get_upload_status(
         raise HTTPException(status_code=404, detail="Upload not found")
 
     _check_project_access(upload.project_id, current_user, db)
+    active_upload = get_active_programme_upload(upload.project_id, db)
 
     return ProgrammeUploadStatus(
-        upload_id=upload.id,
-        status=upload.status,
-        completeness_score=None if upload.completeness_score is None else round(upload.completeness_score * 100),
-        completeness_notes=_normalize_completeness_notes(upload.completeness_notes),
-        version_number=upload.version_number,
-        file_name=upload.file_name,
-        ai_tokens_used=upload.ai_tokens_used,
-        ai_cost_usd=None if upload.ai_cost_usd is None else float(upload.ai_cost_usd),
-        created_at=upload.created_at.isoformat() if upload.created_at else None,
+        **_serialize_programme_upload(
+            upload,
+            active_upload_id=getattr(active_upload, "id", None),
+            include_notes=True,
+        )
     )
 
 
@@ -443,17 +485,11 @@ def list_programme_versions(
         .order_by(ProgrammeUpload.version_number.desc())
         .all()
     )
+    active_upload = get_active_programme_upload(project_id, db)
 
     return [
         ProgrammeVersionSummary(
-            upload_id=u.id,
-            version_number=u.version_number,
-            file_name=u.file_name,
-            status=u.status,
-            completeness_score=None if u.completeness_score is None else round(u.completeness_score * 100),
-            ai_tokens_used=u.ai_tokens_used,
-            ai_cost_usd=None if u.ai_cost_usd is None else float(u.ai_cost_usd),
-            created_at=u.created_at.isoformat() if u.created_at else None,
+            **_serialize_programme_upload(u, active_upload_id=getattr(active_upload, "id", None))
         )
         for u in uploads
     ]
@@ -481,10 +517,7 @@ def get_activities(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if upload.status != "committed":
-        if upload.status in {"degraded", "failed"}:
-            raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
-        raise HTTPException(status_code=409, detail="Programme is still processing.")
+    _require_readable_upload(upload)
 
     role = normalize_role(getattr(current_entity, "role", "subcontractor"))
     is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
@@ -576,8 +609,7 @@ def get_activity_booking_context(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == activity.programme_upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if upload.status not in {"committed", "degraded"}:
-        raise HTTPException(status_code=409, detail="Programme activity is not available for booking.")
+    _require_readable_upload(upload)
 
     role = normalize_role(getattr(current_entity, "role", "subcontractor"))
     is_subcontractor = role == UserRole.SUBCONTRACTOR.value or isinstance(current_entity, Subcontractor)
@@ -834,24 +866,12 @@ def get_programme_diff(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if upload.status != "committed":
-        if upload.status in {"degraded", "failed"}:
-            raise HTTPException(status_code=409, detail="Programme processing did not complete successfully.")
-        raise HTTPException(status_code=409, detail="Programme is still processing.")
+    _require_readable_upload(upload)
 
     _check_project_access(upload.project_id, current_user, db)
 
     # Find previous version
-    previous = (
-        db.query(ProgrammeUpload)
-        .filter(
-            ProgrammeUpload.project_id == upload.project_id,
-            ProgrammeUpload.version_number < upload.version_number,
-            ProgrammeUpload.status == "committed",
-        )
-        .order_by(ProgrammeUpload.version_number.desc())
-        .first()
-    )
+    previous = get_previous_successful_programme_upload(upload.project_id, upload.version_number, db)
 
     current_count = (
         db.query(ProgrammeActivity)
@@ -908,7 +928,7 @@ def delete_programme_upload(
 
     _check_project_access(upload.project_id, current_user, db)
 
-    if upload.status == "processing":
+    if is_upload_processing(upload):
         raise HTTPException(
             status_code=409,
             detail="Cannot delete an upload that is still processing.",
@@ -956,6 +976,7 @@ def get_activity_mappings(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
+    _require_readable_upload(upload)
 
     _check_project_access(upload.project_id, current_user, db)
 
@@ -983,6 +1004,7 @@ def get_unclassified_activity_mappings(
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
+    _require_readable_upload(upload)
 
     _check_project_access(upload.project_id, current_user, db)
 
