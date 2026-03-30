@@ -27,6 +27,23 @@ class ItemMergeResponse(BaseSchema):
     message: str
 
 
+class ItemAliasCreateRequest(BaseSchema):
+    """Body for adding a manual alias to an item (ADMIN only)."""
+    alias: str
+
+
+class ItemAliasResponse(BaseSchema):
+    id: UUID
+    item_id: UUID
+    alias_normalised_name: str
+    normalizer_version: int
+    alias_type: str
+    confidence: str
+    source: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ItemClassificationResponse(BaseSchema):
     """Active classification for an item, including computed maturity tier."""
     id: UUID

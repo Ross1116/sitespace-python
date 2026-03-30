@@ -163,6 +163,69 @@ def test_create_booking_reloads_asset_when_preloaded_asset_mismatches(monkeypatc
     assert acted_assets == [canonical_asset]
 
 
+def test_create_booking_reloads_asset_when_preloaded_asset_has_no_identity(monkeypatch):
+    project_id = uuid4()
+    asset_id = uuid4()
+    manager_id = uuid4()
+    booking_data = SimpleNamespace(
+        project_id=project_id,
+        asset_id=asset_id,
+        booking_date=SimpleNamespace(),
+        start_time=SimpleNamespace(),
+        end_time=SimpleNamespace(),
+        manager_id=None,
+        subcontractor_id=None,
+        programme_activity_id=None,
+        selected_week_start=None,
+        purpose="purpose",
+        notes="notes",
+    )
+    canonical_asset = SimpleNamespace(
+        id=asset_id,
+        name="Crane 1",
+        canonical_type="crane",
+        type_resolution_status="confirmed",
+        status=AssetStatus.AVAILABLE,
+        maintenance_start_date=None,
+        maintenance_end_date=None,
+    )
+    asset_query = MagicMock()
+    asset_query.filter.return_value = asset_query
+    asset_query.first.return_value = canonical_asset
+
+    db = MagicMock()
+    db.query.return_value = asset_query
+
+    monkeypatch.setattr(
+        booking_crud,
+        "_resolve_booking_actor",
+        lambda **kwargs: (manager_id, None, BookingStatus.CONFIRMED),
+    )
+    monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(booking_crud, "log_booking_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        booking_crud,
+        "_auto_deny_competing_pending_bookings",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        booking_crud,
+        "_mark_matching_lookahead_notifications_acted",
+        lambda *args, **kwargs: [],
+    )
+
+    booking_crud.create_booking(
+        db=db,
+        booking_data=booking_data,
+        created_by_id=manager_id,
+        created_by_role=UserRole.MANAGER,
+        project=SimpleNamespace(id=project_id, managers=[], subcontractors=[]),
+        asset=SimpleNamespace(id=None),
+    )
+
+    db.query.assert_called_once_with(booking_crud.Asset)
+
+
 def test_create_booking_reuses_matching_preloaded_asset(monkeypatch):
     project_id = uuid4()
     asset_id = uuid4()
