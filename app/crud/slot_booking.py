@@ -100,7 +100,7 @@ def _resolve_booking_asset(
 ) -> Optional[Asset]:
     if asset is not None:
         asset_identity = getattr(asset, "id", getattr(asset, "pk", None))
-        if asset_identity is None or str(asset_identity) == str(asset_id):
+        if asset_identity is not None and str(asset_identity) == str(asset_id):
             return asset
     return _load_booking_asset(db, asset_id)
 
@@ -266,7 +266,12 @@ def _mark_matching_lookahead_notifications_acted(
     if booking.status != BookingStatus.CONFIRMED or booking.subcontractor_id is None:
         return []
 
-    resolved_asset = _resolve_booking_asset(db, booking.asset_id, asset=asset)
+    asset_identity = getattr(asset, "id", getattr(asset, "pk", None)) if asset is not None else None
+    resolved_asset = asset if asset is not None and asset_identity is None else _resolve_booking_asset(
+        db,
+        booking.asset_id,
+        asset=asset,
+    )
     if resolved_asset is None or not asset_is_planning_ready(resolved_asset):
         return []
 

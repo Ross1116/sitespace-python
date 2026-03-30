@@ -108,10 +108,6 @@ class MappingCorrectionRequest(BaseSchema):
 
         if self.manual_total_hours is not None and self.manual_normalized_distribution is not None:
             distribution_total = sum(self.manual_normalized_distribution)
-            if self.manual_total_hours > 0 and abs(distribution_total - 1.0) > 1e-6:
-                raise ValueError(
-                    "manual_normalized_distribution must sum to 1.0 when manual_total_hours is non-zero"
-                )
             if self.manual_total_hours == 0 and distribution_total > 1e-6:
                 raise ValueError(
                     "manual_normalized_distribution must be all zeros when manual_total_hours is zero"

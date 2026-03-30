@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
@@ -2056,22 +2056,29 @@ def prepare_manual_work_profile(
             max_hours_per_day=max_hours_per_day,
         )
 
-    if manual_total_hours is not None and manual_normalized_distribution is not None:
+    if manual_total_hours is not None:
         seed_total_hours = float(manual_total_hours)
-        normalized_distribution = _coerce_manual_distribution(
-            duration_days=duration_days,
-            normalized_distribution=manual_normalized_distribution,
-            distribution=None,
-        )
     elif existing_total_hours is not None:
         seed_total_hours = float(existing_total_hours)
-        normalized_distribution = _coerce_manual_distribution(
-            duration_days=duration_days,
-            normalized_distribution=existing_normalized_distribution,
-            distribution=existing_distribution,
-        )
     else:
         raise ValueError("Manual work-profile preparation requires manual input or an existing profile")
+
+    if (
+        manual_normalized_distribution is None
+        and existing_normalized_distribution is None
+        and existing_distribution is None
+    ):
+        raise ValueError("Manual work-profile preparation requires manual input or an existing profile")
+
+    normalized_distribution = _coerce_manual_distribution(
+        duration_days=duration_days,
+        normalized_distribution=(
+            manual_normalized_distribution
+            if manual_normalized_distribution is not None
+            else existing_normalized_distribution
+        ),
+        distribution=existing_distribution,
+    )
 
     bounded_seed_total_hours = max(
         0.0,
@@ -2312,13 +2319,17 @@ def _merge_context_profile_counters(
     winner: ItemContextProfile,
     loser: ItemContextProfile,
 ) -> ItemContextProfile:
+    original_winner_actuals_count = int(winner.actuals_count or 0)
     winner.observation_count = int(winner.observation_count or 0) + int(loser.observation_count or 0)
     winner.evidence_weight = float(winner.evidence_weight or 0) + float(loser.evidence_weight or 0)
     winner.sample_count = int(winner.sample_count or 0) + int(loser.sample_count or 0)
     winner.correction_count = int(winner.correction_count or 0) + int(loser.correction_count or 0)
     winner.actuals_count = int(winner.actuals_count or 0) + int(loser.actuals_count or 0)
+    # Combined counters invalidate the previous posterior unless we recompute it from the merged evidence.
+    winner.posterior_mean = None
+    winner.posterior_precision = None
     if loser.actuals_median is not None and (
-        winner.actuals_median is None or int(loser.actuals_count or 0) > int(winner.actuals_count or 0)
+        winner.actuals_median is None or int(loser.actuals_count or 0) > original_winner_actuals_count
     ):
         winner.actuals_median = loser.actuals_median
     return winner

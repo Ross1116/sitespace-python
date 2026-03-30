@@ -27,6 +27,14 @@ def test_mapping_correction_request_requires_paired_manual_fields():
         MappingCorrectionRequest(manual_total_hours=8.0)
 
 
+def test_mapping_correction_request_requires_zero_hours_distribution_to_be_all_zero():
+    with pytest.raises(ValueError, match="must be all zeros when manual_total_hours is zero"):
+        MappingCorrectionRequest(
+            manual_total_hours=0.0,
+            manual_normalized_distribution=[1.0, 0.0],
+        )
+
+
 def test_apply_mapping_correction_propagates_manual_truth(monkeypatch):
     mapping_id = uuid4()
     activity_id = uuid4()

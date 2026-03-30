@@ -84,6 +84,29 @@ def test_merge_items_invokes_context_profile_reconciliation():
     context_mock.assert_called_once_with(db, source_id, target_id)
 
 
+def test_merge_items_raises_when_context_profile_reconciliation_fails():
+    source_id = uuid4()
+    target_id = uuid4()
+    source = _make_item(item_id=source_id, display_name="Source")
+    target = _make_item(item_id=target_id, display_name="Target")
+    db = MagicMock()
+    savepoint = MagicMock()
+    db.begin_nested.return_value = savepoint
+    db.query.return_value.filter.return_value.order_by.return_value.with_for_update.return_value.all.return_value = [
+        source,
+        target,
+    ]
+
+    with patch("app.services.classification_service.reconcile_classifications_on_merge"), patch(
+        "app.services.work_profile_service.reconcile_context_profiles_on_merge",
+        side_effect=RuntimeError("context merge boom"),
+    ):
+        with pytest.raises(RuntimeError, match="context merge boom"):
+            merge_items(db, source_id, target_id)
+
+    savepoint.rollback.assert_called_once()
+
+
 def test_add_item_alias_route_returns_created_alias(monkeypatch):
     item_id = uuid4()
     user_id = uuid4()

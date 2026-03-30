@@ -328,21 +328,24 @@ def merge_items(
 
     try:
         from .work_profile_service import reconcile_context_profiles_on_merge
-        sp = db.begin_nested()
-        try:
-            reconcile_context_profiles_on_merge(db, source_item_id, target_item_id)
-            sp.commit()
-        except Exception as exc:
-            sp.rollback()
-            logger.warning(
-                "Context-profile reconciliation failed for merge %s->%s: %s — merge itself succeeded",
-                source_item_id, target_item_id, exc,
-            )
     except Exception as exc:
         logger.warning(
             "Context-profile reconciliation import/setup failed for merge %s->%s: %s",
             source_item_id, target_item_id, exc,
         )
+        raise
+
+    sp = db.begin_nested()
+    try:
+        reconcile_context_profiles_on_merge(db, source_item_id, target_item_id)
+        sp.commit()
+    except Exception as exc:
+        sp.rollback()
+        logger.warning(
+            "Context-profile reconciliation failed for merge %s->%s: %s",
+            source_item_id, target_item_id, exc,
+        )
+        raise
 
     logger.info(
         "Merged item %s ('%s') into %s ('%s') by user %s",
