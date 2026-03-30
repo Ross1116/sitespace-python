@@ -2,7 +2,9 @@
 Item identity routes.
 
 GET  /api/items                              — search / list items
+GET  /api/items/review/other                 — list active items classified as `other`
 POST /api/items/merge                        — manually merge two items (admin)
+GET  /api/items/{item_id}/statistics         — learning / usage statistics for an item
 GET  /api/items/{item_id}/classification     — active classification for an item
 POST /api/items/{item_id}/classification     — manually override classification (admin)
 GET  /api/items/{item_id}/classification/history — classification audit trail

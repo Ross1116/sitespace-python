@@ -63,11 +63,10 @@ def test_get_item_statistics_endpoint_serializes_learning_payload(monkeypatch):
 def test_get_item_statistics_endpoint_maps_lookup_error_to_404(monkeypatch):
     item_id = uuid4()
 
-    monkeypatch.setattr(
-        items_api,
-        "get_item_statistics",
-        lambda db, item_id: (_ for _ in ()).throw(LookupError("missing")),
-    )
+    def _raise_lookup_error(db, item_id):
+        raise LookupError("missing")
+
+    monkeypatch.setattr(items_api, "get_item_statistics", _raise_lookup_error)
 
     with pytest.raises(HTTPException) as exc_info:
         items_api.get_item_statistics_endpoint(

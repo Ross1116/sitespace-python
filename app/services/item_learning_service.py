@@ -74,9 +74,111 @@ def _item_occurrence_stats(
     if not activity_rows:
         return 0, 0, None
     occurrence_count = len(activity_rows)
-    distinct_project_count = len({upload.project_id for _activity, upload in activity_rows})
+    distinct_project_count = len(
+        {
+            upload.project_id
+            for _activity, upload in activity_rows
+            if upload.project_id is not None
+        }
+    )
     last_seen_at = max((upload.created_at for _activity, upload in activity_rows if upload.created_at is not None), default=None)
     return occurrence_count, distinct_project_count, last_seen_at
+
+
+def _canonical_family_maps(
+    db: Session,
+    *,
+    item_ids: list[uuid.UUID] | None = None,
+) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, list[uuid.UUID]]]:
+    items = db.query(Item).all()
+    item_map = {item.id: item for item in items}
+
+    def _resolve(item: Item) -> uuid.UUID:
+        current = item
+        seen: set[uuid.UUID] = set()
+        while current.identity_status == "merged" and current.merged_into_item_id:
+            if current.id in seen:
+                break
+            seen.add(current.id)
+            next_item = item_map.get(current.merged_into_item_id)
+            if next_item is None:
+                break
+            current = next_item
+        return current.id
+
+    canonical_by_item_id: dict[uuid.UUID, uuid.UUID] = {}
+    family_by_canonical_id: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for item in items:
+        canonical_id = _resolve(item)
+        canonical_by_item_id[item.id] = canonical_id
+        family_by_canonical_id.setdefault(canonical_id, []).append(item.id)
+
+    if item_ids is not None:
+        for item_id in item_ids:
+            canonical_by_item_id.setdefault(item_id, item_id)
+            family_by_canonical_id.setdefault(canonical_by_item_id[item_id], []).append(item_id)
+
+    return (
+        canonical_by_item_id,
+        {
+            canonical_id: sorted(set(member_ids), key=str)
+            for canonical_id, member_ids in family_by_canonical_id.items()
+        },
+    )
+
+
+def _batched_item_occurrence_stats(
+    db: Session,
+    *,
+    item_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[int, int, datetime | None]]:
+    if not item_ids:
+        return {}
+
+    canonical_by_item_id, family_by_canonical_id = _canonical_family_maps(db, item_ids=item_ids)
+    requested_canonical_ids = {canonical_by_item_id[item_id] for item_id in item_ids}
+    relevant_family_ids = {
+        family_item_id
+        for canonical_id in requested_canonical_ids
+        for family_item_id in family_by_canonical_id.get(canonical_id, [canonical_id])
+    }
+    family_lookup = {
+        family_item_id: canonical_id
+        for canonical_id in requested_canonical_ids
+        for family_item_id in family_by_canonical_id.get(canonical_id, [canonical_id])
+    }
+
+    grouped: dict[uuid.UUID, list[tuple[ProgrammeActivity, ProgrammeUpload]]] = {
+        canonical_id: []
+        for canonical_id in requested_canonical_ids
+    }
+    activity_rows = (
+        db.query(ProgrammeActivity, ProgrammeUpload)
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .filter(ProgrammeActivity.item_id.in_(relevant_family_ids))
+        .all()
+    )
+    for activity, upload in activity_rows:
+        canonical_id = family_lookup.get(activity.item_id)
+        if canonical_id is not None:
+            grouped.setdefault(canonical_id, []).append((activity, upload))
+
+    summary_by_canonical_id: dict[uuid.UUID, tuple[int, int, datetime | None]] = {}
+    for canonical_id in requested_canonical_ids:
+        rows = grouped.get(canonical_id, [])
+        if not rows:
+            summary_by_canonical_id[canonical_id] = (0, 0, None)
+            continue
+        summary_by_canonical_id[canonical_id] = (
+            len(rows),
+            len({upload.project_id for _activity, upload in rows if upload.project_id is not None}),
+            max((upload.created_at for _activity, upload in rows if upload.created_at is not None), default=None),
+        )
+
+    return {
+        item_id: summary_by_canonical_id.get(canonical_by_item_id[item_id], (0, 0, None))
+        for item_id in item_ids
+    }
 
 
 def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayload:
@@ -193,15 +295,19 @@ def list_other_review_items(
         .all()
     )
     payload: list[dict[str, object]] = []
+    stats_by_item_id = _batched_item_occurrence_stats(
+        db,
+        item_ids=[item.id for item, _classification in rows],
+    )
     for item, classification in rows:
-        stats = get_item_statistics(db, item.id)
+        occurrence_count, distinct_project_count, last_seen_at = stats_by_item_id.get(item.id, (0, 0, None))
         payload.append(
             {
                 "item_id": item.id,
                 "display_name": item.display_name,
-                "occurrence_count": stats.occurrence_count,
-                "distinct_project_count": stats.distinct_project_count,
-                "last_seen_at": stats.last_seen_at,
+                "occurrence_count": occurrence_count,
+                "distinct_project_count": distinct_project_count,
+                "last_seen_at": last_seen_at,
                 "classification_source": classification.source,
                 "classification_confidence": classification.confidence,
                 "classification_maturity_tier": maturity_tier(classification),

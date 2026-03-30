@@ -18,6 +18,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.drop_constraint("uq_item_context_profiles_key", "item_context_profiles", type_="unique")
     op.add_column(
         "item_context_profiles",
         sa.Column("project_id", postgresql.UUID(as_uuid=True), nullable=True),
@@ -140,3 +141,15 @@ def downgrade() -> None:
     op.drop_index("ix_item_context_profiles_project_id", table_name="item_context_profiles")
     op.drop_constraint("fk_item_context_profiles_project_id", "item_context_profiles", type_="foreignkey")
     op.drop_column("item_context_profiles", "project_id")
+    op.create_unique_constraint(
+        "uq_item_context_profiles_key",
+        "item_context_profiles",
+        [
+            "item_id",
+            "asset_type",
+            "duration_days",
+            "context_version",
+            "inference_version",
+            "context_hash",
+        ],
+    )

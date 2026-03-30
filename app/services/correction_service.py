@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 import uuid
 from typing import Optional
 
@@ -278,7 +279,10 @@ def apply_mapping_correction(
             )
             profile_changed = (
                 corrected_asset_type != str(previous_context_profile.asset_type)
-                or existing_hours != prepared.total_hours
+                or (
+                    existing_hours is None
+                    or not math.isclose(existing_hours, prepared.total_hours, rel_tol=1e-9, abs_tol=1e-6)
+                )
                 or previous_distribution != prepared.normalized_distribution
             )
             if profile_changed:

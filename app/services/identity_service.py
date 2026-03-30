@@ -350,7 +350,17 @@ def merge_items(
     try:
         from ..models.work_profile import ItemKnowledgeBase
         from .work_profile_service import rebuild_global_knowledge_for_item
+    except Exception as exc:
+        logger.warning(
+            "Global-knowledge reconciliation import/setup failed for merge %s->%s: %s",
+            source_item_id,
+            target_item_id,
+            exc,
+        )
+        raise
 
+    sp = db.begin_nested()
+    try:
         rebuild_global_knowledge_for_item(db, target_item_id)
         (
             db.query(ItemKnowledgeBase)
@@ -358,7 +368,9 @@ def merge_items(
             .delete(synchronize_session=False)
         )
         db.flush()
+        sp.commit()
     except Exception as exc:
+        sp.rollback()
         logger.warning(
             "Global-knowledge reconciliation failed for merge %s->%s: %s",
             source_item_id,

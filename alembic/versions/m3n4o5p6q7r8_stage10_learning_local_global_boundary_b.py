@@ -29,7 +29,6 @@ def upgrade() -> None:
         """
     )
     op.drop_index("ux_item_context_profiles_project_local_key_tmp", table_name="item_context_profiles")
-    op.drop_constraint("uq_item_context_profiles_key", "item_context_profiles", type_="unique")
     op.alter_column("item_context_profiles", "project_id", nullable=False)
     op.create_unique_constraint(
         "uq_item_context_profiles_key",
@@ -49,18 +48,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_constraint("uq_item_context_profiles_key", "item_context_profiles", type_="unique")
     op.alter_column("item_context_profiles", "project_id", nullable=True)
-    op.create_unique_constraint(
-        "uq_item_context_profiles_key",
-        "item_context_profiles",
-        [
-            "item_id",
-            "asset_type",
-            "duration_days",
-            "context_version",
-            "inference_version",
-            "context_hash",
-        ],
-    )
     op.create_index(
         "ux_item_context_profiles_project_local_key_tmp",
         "item_context_profiles",

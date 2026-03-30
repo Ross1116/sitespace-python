@@ -3004,6 +3004,12 @@ def record_actual_hours(
         .one_or_none()
     )
     created_actual = actual is None
+    previous_actual_hours = (
+        float(actual.actual_hours_used)
+        if actual is not None and actual.actual_hours_used is not None
+        else None
+    )
+    previous_source = str(actual.source) if actual is not None and actual.source is not None else None
     if actual is None:
         actual = AssetUsageActual(
             activity_work_profile_id=activity_work_profile_id,
@@ -3030,7 +3036,8 @@ def record_actual_hours(
         )
 
     if context_profile is not None:
-        if created_actual:
+        is_new_or_changed = created_actual or previous_actual_hours != float(actual_hours_used) or previous_source != source
+        if is_new_or_changed:
             previous_actuals_count = int(context_profile.actuals_count or 0)
             context_profile.actuals_count = previous_actuals_count + 1
             context_profile.actuals_median = _median_with_new_value(
@@ -3139,6 +3146,8 @@ def backfill_project_local_context_profiles(
             int(activity_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
             int(activity_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
         )
+        if local_profile is not None and activity_profile.context_profile_id == local_profile.id:
+            continue
 
         if effective_source == "manual":
             local_profile = upsert_manual_context_profile(

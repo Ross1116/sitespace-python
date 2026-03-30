@@ -333,7 +333,7 @@ def test_record_actual_hours_preserves_manual_profile_authority():
     rebuild_mock.assert_not_called()
 
 
-def test_record_actual_hours_updating_existing_row_does_not_double_count():
+def test_record_actual_hours_updating_existing_row_triggers_learning_refresh():
     profile = SimpleNamespace(
         id=uuid4(),
         context_profile_id=uuid4(),
@@ -379,12 +379,10 @@ def test_record_actual_hours_updating_existing_row_does_not_double_count():
 
     assert actual is existing_actual
     assert float(existing_actual.actual_hours_used) == 14.0
-    assert context_profile.actuals_count == 3
-    assert float(context_profile.actuals_median) == 11.0
-    assert context_profile.sample_count == 6
-    assert float(context_profile.posterior_mean) == 12.0
-    assert float(context_profile.posterior_precision) == 7.0
-    rebuild_mock.assert_not_called()
+    assert context_profile.actuals_count == 4
+    assert context_profile.sample_count == 7
+    assert float(context_profile.evidence_weight) == 5.0
+    rebuild_mock.assert_called_once()
 
 
 def test_backfill_project_local_context_profiles_repoints_existing_profile(monkeypatch):
@@ -478,3 +476,64 @@ def test_backfill_project_local_context_profiles_fails_closed_on_missing_project
 
     with pytest.raises(RuntimeError, match="unresolved provenance"):
         backfill_project_local_context_profiles(db)
+
+
+def test_backfill_project_local_context_profiles_skips_when_already_repointed(monkeypatch):
+    project_id = uuid4()
+    item_id = uuid4()
+    local_profile = SimpleNamespace(
+        id=uuid4(),
+        source="learned",
+        observation_count=0,
+    )
+    activity_profile = SimpleNamespace(
+        id=uuid4(),
+        activity_id=uuid4(),
+        item_id=item_id,
+        asset_type="crane",
+        duration_days=5,
+        context_version=1,
+        inference_version=1,
+        total_hours=10.0,
+        distribution_json=[5.0, 5.0, 0.0, 0.0, 0.0],
+        normalized_distribution_json=[0.5, 0.5, 0.0, 0.0, 0.0],
+        confidence=0.8,
+        source="cache",
+        context_hash="exact-hash",
+        low_confidence_flag=False,
+        context_profile_id=local_profile.id,
+        created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    activity = SimpleNamespace(
+        id=activity_profile.activity_id,
+        programme_upload_id=uuid4(),
+        item_id=item_id,
+        name="Lift panels",
+        level_name="Level 1",
+        zone_name="Zone A",
+    )
+    upload = SimpleNamespace(id=activity.programme_upload_id, project_id=project_id)
+    db = MagicMock()
+    db.query.return_value.join.return_value.join.return_value.outerjoin.return_value.order_by.return_value.all.return_value = [
+        (activity_profile, activity, upload, None),
+    ]
+
+    monkeypatch.setattr(
+        "app.services.work_profile_service.lookup_cache",
+        lambda *args, **kwargs: local_profile,
+    )
+    monkeypatch.setattr(
+        "app.services.work_profile_service.rebuild_all_global_knowledge",
+        lambda _db: None,
+    )
+    monkeypatch.setattr(
+        "app.services.work_profile_service._update_cache_on_hit",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not update cache hit")),
+    )
+
+    result = backfill_project_local_context_profiles(db)
+
+    assert result["processed_activity_profiles"] == 1
+    assert result["repointed_activity_profiles"] == 0
+    assert result["reused_local_hits"] == 0
+    assert result["materialized_local_profiles"] == 0
