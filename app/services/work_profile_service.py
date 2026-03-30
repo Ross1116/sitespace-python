@@ -2064,7 +2064,9 @@ def prepare_manual_work_profile(
         raise ValueError("Manual work-profile preparation requires manual input or an existing profile")
 
     if (
-        manual_normalized_distribution is None
+        manual_total_hours is None
+        and existing_total_hours is None
+        and manual_normalized_distribution is None
         and existing_normalized_distribution is None
         and existing_distribution is None
     ):
@@ -2271,13 +2273,81 @@ _CONTEXT_PROFILE_SOURCE_PRIORITY: dict[str, int] = {
 }
 
 
-def _context_profile_merge_key(profile: ItemContextProfile) -> tuple[str, int, int, int, str]:
+def _normalise_compressed_context(compressed_context: dict | None) -> dict[str, str] | None:
+    if not isinstance(compressed_context, dict):
+        return None
+    return {
+        "phase": str(compressed_context.get("phase") or "unknown"),
+        "spatial_type": str(compressed_context.get("spatial_type") or "unknown"),
+        "area_type": str(compressed_context.get("area_type") or "unknown"),
+        "work_type": str(compressed_context.get("work_type") or "unknown"),
+    }
+
+
+def _resolve_context_profile_compressed_context(
+    db: Session,
+    profile: ItemContextProfile,
+) -> dict[str, str] | None:
+    explicit_context = _normalise_compressed_context(getattr(profile, "compressed_context", None))
+    if explicit_context is not None:
+        return explicit_context
+
+    activity_row = (
+        db.query(ProgrammeActivity)
+        .join(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
+        .filter(ActivityWorkProfile.context_profile_id == profile.id)
+        .order_by(ActivityWorkProfile.created_at.desc())
+        .first()
+    )
+    if activity_row is not None:
+        return build_compressed_context(
+            activity_row.name or "",
+            activity_row.level_name,
+            activity_row.zone_name,
+        )
+
+    ai_log = (
+        db.query(WorkProfileAILog)
+        .filter(
+            WorkProfileAILog.item_id == profile.item_id,
+            WorkProfileAILog.context_hash == profile.context_hash,
+            WorkProfileAILog.inference_version == profile.inference_version,
+        )
+        .order_by(WorkProfileAILog.created_at.desc())
+        .first()
+    )
+    if ai_log is not None:
+        request_json = ai_log.request_json if isinstance(ai_log.request_json, dict) else {}
+        return _normalise_compressed_context(request_json.get("compressed_context"))
+
+    return None
+
+
+def _context_profile_merge_key(
+    db: Session,
+    profile: ItemContextProfile,
+) -> tuple[str, int, int, int, str, str, str, str]:
+    compressed_context = _resolve_context_profile_compressed_context(db, profile)
+    if compressed_context is not None:
+        return (
+            str(profile.asset_type),
+            int(profile.duration_days or 0),
+            int(profile.context_version or 0),
+            int(profile.inference_version or 0),
+            compressed_context["phase"],
+            compressed_context["spatial_type"],
+            compressed_context["area_type"],
+            compressed_context["work_type"],
+        )
     return (
         str(profile.asset_type),
         int(profile.duration_days or 0),
         int(profile.context_version or 0),
         int(profile.inference_version or 0),
+        "__hash__",
         str(profile.context_hash or ""),
+        "",
+        "",
     )
 
 
@@ -2301,7 +2371,6 @@ def _copy_context_profile_payload(
     target.duration_days = source.duration_days
     target.context_version = source.context_version
     target.inference_version = source.inference_version
-    target.context_hash = source.context_hash
     target.total_hours = source.total_hours
     target.distribution_json = list(source.distribution_json or [])
     target.normalized_distribution_json = list(source.normalized_distribution_json or [])
@@ -2335,6 +2404,26 @@ def _merge_context_profile_counters(
     return winner
 
 
+def _rebuild_context_profile_hash(
+    db: Session,
+    profile: ItemContextProfile,
+    item_id: uuid.UUID,
+) -> str:
+    compressed_context = _resolve_context_profile_compressed_context(db, profile)
+    if compressed_context is None:
+        raise RuntimeError(
+            f"Unable to reconstruct compressed context for context profile {getattr(profile, 'id', 'unknown')}"
+        )
+    return build_context_key(
+        item_id,
+        str(profile.asset_type),
+        int(profile.duration_days or 0),
+        compressed_context,
+        context_version=int(profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
+        inference_version=int(profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+    )
+
+
 def reconcile_context_profiles_on_merge(
     db: Session,
     source_item_id: uuid.UUID,
@@ -2356,19 +2445,23 @@ def reconcile_context_profiles_on_merge(
         .all()
     )
     target_by_key = {
-        _context_profile_merge_key(profile): profile for profile in target_profiles
+        _context_profile_merge_key(db, profile): profile for profile in target_profiles
     }
 
     for source_profile in source_profiles:
-        key = _context_profile_merge_key(source_profile)
+        key = _context_profile_merge_key(db, source_profile)
         target_profile = target_by_key.get(key)
         if target_profile is None:
             source_profile.item_id = target_item_id
-            target_by_key[key] = source_profile
+            source_profile.context_hash = _rebuild_context_profile_hash(db, source_profile, target_item_id)
+            target_by_key[_context_profile_merge_key(db, source_profile)] = source_profile
             continue
 
         if _context_profile_rank(source_profile) > _context_profile_rank(target_profile):
             _copy_context_profile_payload(target_profile, source_profile)
+            target_profile.context_hash = _rebuild_context_profile_hash(db, source_profile, target_item_id)
+        else:
+            target_profile.context_hash = _rebuild_context_profile_hash(db, target_profile, target_item_id)
         _merge_context_profile_counters(target_profile, source_profile)
 
     db.flush()

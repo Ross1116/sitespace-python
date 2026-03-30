@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.services.work_profile_service import (
     _merge_context_profile_counters,
+    build_context_key,
     prepare_manual_work_profile,
     reconcile_context_profiles_on_merge,
     upsert_manual_context_profile,
@@ -18,13 +19,28 @@ def _make_context_profile(
     item_id,
     asset_type: str,
     source: str,
-    context_hash: str,
     total_hours: float,
+    compressed_context: dict | None = None,
+    context_hash: str | None = None,
     confidence: float = 0.6,
     observation_count: int = 1,
     evidence_weight: float = 1.0,
     sample_count: int = 1,
 ):
+    compressed_context = compressed_context or {
+        "phase": "structure",
+        "spatial_type": "level",
+        "area_type": "internal",
+        "work_type": "unknown",
+    }
+    context_hash = context_hash or build_context_key(
+        item_id,
+        asset_type,
+        2,
+        compressed_context,
+        context_version=1,
+        inference_version=2,
+    )
     return SimpleNamespace(
         id=uuid4(),
         item_id=item_id,
@@ -33,6 +49,7 @@ def _make_context_profile(
         context_version=1,
         inference_version=2,
         context_hash=context_hash,
+        compressed_context=compressed_context,
         total_hours=total_hours,
         distribution_json=[total_hours / 2.0, total_hours / 2.0],
         normalized_distribution_json=[0.5, 0.5],
@@ -100,13 +117,29 @@ def test_prepare_manual_work_profile_uses_manual_distribution_with_existing_tota
     assert prepared.distribution == [8.0, 4.0]
 
 
+def test_prepare_manual_work_profile_uses_uniform_distribution_for_manual_total_only():
+    prepared = prepare_manual_work_profile(
+        asset_type="crane",
+        duration_days=2,
+        max_hours_per_day=8.0,
+        manual_total_hours=12.0,
+        manual_normalized_distribution=None,
+        existing_total_hours=None,
+        existing_distribution=None,
+        existing_normalized_distribution=None,
+    )
+
+    assert prepared.total_hours == 12.0
+    assert prepared.normalized_distribution == [0.5, 0.5]
+    assert prepared.distribution == [6.0, 6.0]
+
+
 def test_upsert_manual_context_profile_overwrites_existing_non_manual(monkeypatch):
     item_id = uuid4()
     existing = _make_context_profile(
         item_id=item_id,
         asset_type="forklift",
         source="ai",
-        context_hash="hash-1",
         total_hours=10.0,
     )
     db = MagicMock()
@@ -122,7 +155,6 @@ def test_upsert_manual_context_profile_overwrites_existing_non_manual(monkeypatc
         asset_type="forklift",
         duration_days=2,
         compressed_context={"phase": "structure", "spatial_type": "level", "area_type": "internal", "work_type": "unknown"},
-        context_hash="hash-1",
         total_hours=14.0,
         distribution=[7.0, 7.0],
         normalized_distribution=[0.5, 0.5],
@@ -143,7 +175,6 @@ def test_reconcile_context_profiles_on_merge_moves_non_conflicting_rows():
         item_id=source_item_id,
         asset_type="crane",
         source="ai",
-        context_hash="source-only",
         total_hours=12.0,
     )
     db = MagicMock()
@@ -155,6 +186,14 @@ def test_reconcile_context_profiles_on_merge_moves_non_conflicting_rows():
     reconcile_context_profiles_on_merge(db, source_item_id, target_item_id)
 
     assert source_profile.item_id == target_item_id
+    assert source_profile.context_hash == build_context_key(
+        target_item_id,
+        "crane",
+        2,
+        source_profile.compressed_context,
+        context_version=1,
+        inference_version=2,
+    )
     db.flush.assert_called_once()
 
 
@@ -165,8 +204,13 @@ def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict
         item_id=source_item_id,
         asset_type="forklift",
         source="manual",
-        context_hash="shared",
         total_hours=18.0,
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "lift",
+        },
         confidence=1.0,
         observation_count=3,
         evidence_weight=3.0,
@@ -176,8 +220,13 @@ def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict
         item_id=target_item_id,
         asset_type="forklift",
         source="ai",
-        context_hash="shared",
         total_hours=10.0,
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "lift",
+        },
         confidence=0.6,
         observation_count=2,
         evidence_weight=1.5,
@@ -196,6 +245,14 @@ def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict
     assert target_profile.observation_count == 5
     assert target_profile.evidence_weight == 4.5
     assert target_profile.sample_count == 5
+    assert target_profile.context_hash == build_context_key(
+        target_item_id,
+        "forklift",
+        2,
+        target_profile.compressed_context,
+        context_version=1,
+        inference_version=2,
+    )
 
 
 def test_merge_context_profile_counters_invalidates_posterior_and_uses_original_actuals_count():
@@ -204,7 +261,6 @@ def test_merge_context_profile_counters_invalidates_posterior_and_uses_original_
         item_id=item_id,
         asset_type="forklift",
         source="manual",
-        context_hash="winner",
         total_hours=10.0,
         observation_count=2,
         evidence_weight=2.0,
@@ -219,7 +275,6 @@ def test_merge_context_profile_counters_invalidates_posterior_and_uses_original_
         item_id=item_id,
         asset_type="forklift",
         source="ai",
-        context_hash="loser",
         total_hours=14.0,
         observation_count=3,
         evidence_weight=1.5,
