@@ -421,6 +421,7 @@ def _compute_demand_by_week_asset(
                 ),
             ),
             ActivityAssetMapping.asset_type.isnot(None),
+            ActivityAssetMapping.asset_type != "none",
             or_(
                 ActivityAssetMapping.confidence.in_(["high", "medium"]),
                 ActivityAssetMapping.manually_corrected.is_(True),

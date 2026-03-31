@@ -1481,8 +1481,19 @@ async def _classify_assets_real(
             ai_type = ai_result.get("asset_type")
             ai_confidence = str(ai_result.get("confidence") or "medium").lower()
 
-            if not ai_type or ai_type == "none" or ai_type not in valid_types:
+            if not ai_type or ai_type not in valid_types:
                 skipped.append(act_id)
+            elif ai_type == "none":
+                if ai_confidence == "low":
+                    skipped.append(act_id)
+                else:
+                    classifications.append(ClassificationItem(
+                        activity_id=act_id,
+                        asset_type="none",
+                        confidence=ai_confidence,
+                        source=str(ai_result.get("source") or "ai"),
+                        reasoning=ai_result.get("reasoning"),
+                    ))
             elif ai_confidence == "low":
                 skipped.append(act_id)
             else:
@@ -1716,6 +1727,109 @@ def _normalize_for_keyword_match(name: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+_OBVIOUS_NO_ASSET_PHASE_HEADERS: set[str] = {
+    "superstructure",
+    "substructure",
+    "early works",
+    "external works",
+    "internal works",
+    "civil works",
+    "preliminaries",
+    "preliminary works",
+    "fitout",
+    "fit out",
+    "finishes",
+    "structure",
+}
+
+_OBVIOUS_NO_ASSET_ACTION_HINTS: tuple[str, ...] = (
+    "install",
+    "pour",
+    "lift",
+    "erect",
+    "excavate",
+    "excavation",
+    "dig",
+    "fix",
+    "fixing",
+    "formwork",
+    "setout",
+    "set out",
+    "setup",
+    "set up",
+    "deliver",
+    "delivery",
+    "remove",
+    "removal",
+    "pump",
+    "place",
+    "jump",
+    "recycle",
+    "inspect",
+    "inspection",
+    "test",
+    "testing",
+    "paint",
+    "erection",
+    "rough in",
+    "fit off",
+    "commission",
+)
+
+_OBVIOUS_ASSET_HINTS: tuple[str, ...] = (
+    "crane",
+    "hoist",
+    "loading bay",
+    "loading zone",
+    "ewp",
+    "scissor lift",
+    "boom lift",
+    "concrete pump",
+    "boom pump",
+    "line pump",
+    "excavator",
+    "forklift",
+    "telehandler",
+    "compactor",
+)
+
+
+def looks_like_non_demand_heading(activity_name: str) -> bool:
+    """
+    Return True for obvious phase/zone/level headings that should resolve to
+    asset_type='none' rather than entering review as unresolved demand rows.
+
+    This is intentionally conservative: explicit asset references or obvious
+    action verbs always win over the heading heuristic.
+    """
+    normalized_name = _normalize_for_keyword_match(activity_name)
+    if not normalized_name:
+        return False
+
+    padded_name = f" {normalized_name} "
+    if any(f" {hint} " in padded_name for hint in _OBVIOUS_ASSET_HINTS):
+        return False
+    if any(f" {hint} " in padded_name for hint in _OBVIOUS_NO_ASSET_ACTION_HINTS):
+        return False
+
+    if normalized_name in _OBVIOUS_NO_ASSET_PHASE_HEADERS:
+        return True
+
+    if re.fullmatch(r"zone [a-z0-9][a-z0-9 /-]*", normalized_name):
+        return True
+
+    if re.fullmatch(
+        r"(?:level|floor|basement|podium|roof) [a-z0-9][a-z0-9 m~.,()/+-]*",
+        normalized_name,
+    ):
+        return True
+
+    if normalized_name.startswith("construction ") and " works" in padded_name:
+        return True
+
+    return False
+
+
 def keyword_classify_activity_name(
     activity_name: str,
     *,
@@ -1737,6 +1851,9 @@ def keyword_classify_activity_name(
         if valid_types and asset_type not in valid_types:
             continue
         return asset_type
+
+    if (valid_types is None or "none" in valid_types) and looks_like_non_demand_heading(activity_name):
+        return "none"
     return None
 
 

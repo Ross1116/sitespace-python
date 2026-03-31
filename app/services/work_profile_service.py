@@ -3816,6 +3816,7 @@ async def materialize_work_profiles_for_upload(
         .filter(
             ProgrammeActivity.programme_upload_id == upload.id,
             ActivityAssetMapping.asset_type.isnot(None),
+            ActivityAssetMapping.asset_type != "none",
         )
         .all()
     )

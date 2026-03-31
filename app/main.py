@@ -1,6 +1,7 @@
 import os
 import logging
 import importlib
+from datetime import timedelta
 import sentry_sdk
 
 send_default_pii = os.getenv("SENTRY_SEND_PII", "false").strip().lower() in (
@@ -27,7 +28,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import text as sql_text
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -38,10 +38,11 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from .core.config import settings
-from .core.database import engine, Base
+from .core.database import SessionLocal, assert_database_connection, engine
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
 from .api.v1 import auth, assets, asset_types, items, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
 from .services.lookahead_engine import nightly_lookahead_job
+from .services.process_programme import recover_stale_processing_uploads
 
 # Import all models so SQLAlchemy knows about them
 from .models import user, asset, asset_type as asset_type_model, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models, item_identity
@@ -57,24 +58,6 @@ try:
 except Exception as exc:
     scheduler = None
     logger.warning("APScheduler unavailable; nightly lookahead job disabled. Error: %s", exc)
-
-# Create database tables (optional for testing) - Non-blocking
-def create_tables_if_possible():
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-        return True
-    except Exception as e:
-        logger.warning("Database connection failed: %s", e)
-        logger.info("Application will run without database for testing")
-        return False
-
-# Try to create tables but don't block startup
-try:
-    create_tables_if_possible()
-except Exception as e:
-    logger.warning("Table creation skipped: %s", e)
-
 
 def _is_duplicate_scheduler_job_error(exc: Exception) -> bool:
     message = str(exc).lower()
@@ -131,10 +114,35 @@ def _register_nightly_scheduler_job(scheduler_instance) -> None:
         settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
     )
 
+
+def _recover_stale_programme_uploads_on_startup() -> int:
+    """
+    Release uploads stranded in `processing` after a crash/redeploy.
+
+    The sweep is intentionally conservative: only uploads older than the
+    configured stale threshold are marked failed.
+    """
+    db = SessionLocal()
+    try:
+        stale_after = timedelta(minutes=settings.PROGRAMME_PROCESSING_STALE_MINUTES)
+        recovered = recover_stale_processing_uploads(db, stale_after=stale_after)
+        if recovered:
+            logger.warning(
+                "Recovered %d stale processing uploads at startup (threshold=%d minutes)",
+                recovered,
+                settings.PROGRAMME_PROCESSING_STALE_MINUTES,
+            )
+        else:
+            logger.info("No stale processing uploads found at startup")
+        return recovered
+    finally:
+        db.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Sitespace FastAPI application...")
+    _recover_stale_programme_uploads_on_startup()
     if scheduler is not None:
         scheduler.start()
         try:
@@ -239,25 +247,26 @@ async def root():
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    health_status = {
+    try:
+        assert_database_connection(engine)
+    except Exception as e:
+        logger.warning("Database check failed. Type: %s, Error: %s", type(e).__name__, e)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "unhealthy",
+                "message": "Sitespace API cannot reach the database",
+                "version": "1.0.0",
+                "database": "disconnected",
+            },
+        )
+
+    return {
         "status": "healthy",
         "message": "Sitespace API is healthy",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "database": "connected",
     }
-    
-    try:
-        from .core.database import engine
-        
-        with engine.connect() as conn:
-            conn.execute(sql_text("SELECT 1"))
-            
-        health_status["database"] = "connected"
-        
-    except Exception as e:
-        health_status["database"] = "disconnected"
-        logger.warning("Database check failed. Type: %s, Error: %s", type(e).__name__, e)
-
-    return health_status
 
 if __name__ == "__main__":
     uvicorn.run(

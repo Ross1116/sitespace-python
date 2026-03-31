@@ -7,12 +7,14 @@ import pytest
 
 from app.services.ai_service import (
     AIExecutionContext,
+    _classify_assets_real,
     _call_api,
     _detect_structure_real,
     build_ai_usage,
     classify_assets,
     detect_structure,
     keyword_classify_activity_name,
+    looks_like_non_demand_heading,
 )
 
 
@@ -250,6 +252,54 @@ class TestAISuppressionContext:
 class TestKeywordNormalization:
     def test_keyword_classification_normalizes_apostrophes_in_keywords(self):
         assert keyword_classify_activity_name("Builder's hoist landing at level 4") == "hoist"
+
+    def test_obvious_phase_header_maps_to_none(self):
+        assert keyword_classify_activity_name("SUPERSTRUCTURE") == "none"
+
+    def test_zone_heading_maps_to_none(self):
+        assert keyword_classify_activity_name("Zone A") == "none"
+
+    def test_level_heading_maps_to_none(self):
+        assert keyword_classify_activity_name("LEVEL 1 ~ 2,200m2 CARPARK") == "none"
+
+    def test_asset_named_heading_is_not_forced_to_none(self):
+        assert keyword_classify_activity_name("HOIST APARTMENTS (LEVEL 3 TO 11)") == "hoist"
+
+    def test_heading_helper_matches_obvious_non_demand_rows(self):
+        assert looks_like_non_demand_heading("Construction (Early Works)") is True
+
+
+class TestAiClassificationMerge:
+    async def test_real_classifier_preserves_none_as_successful_result(self):
+        activities = [{"id": "a1", "name": "SUPERSTRUCTURE"}]
+
+        with patch("app.services.ai_service._get_async_client", return_value=object()), \
+             patch(
+                 "app.services.ai_service._build_classification_prompt",
+                 return_value=("prompt", frozenset({"crane", "none", "other"})),
+             ), \
+             patch(
+                 "app.services.ai_service._classify_batch",
+                 new=AsyncMock(
+                     return_value={
+                         "classifications": [
+                             {
+                                 "activity_id": "a1",
+                                 "asset_type": "none",
+                                 "confidence": "medium",
+                                 "source": "ai",
+                             }
+                         ],
+                         "skipped": [],
+                         "tokens_used": 0,
+                         "cost_usd": None,
+                     }
+                 ),
+             ):
+            result = await _classify_assets_real(activities, project_assets=[])
+
+        assert [item.asset_type for item in result.classifications] == ["none"]
+        assert result.skipped == []
 
 
 class TestAiUsagePricing:

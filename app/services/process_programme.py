@@ -28,12 +28,12 @@ import io
 import logging
 import threading
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import sentry_sdk
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.config import settings
@@ -53,6 +53,7 @@ from .ai_service import (
     classify_assets,
     classify_row_kind,
     detect_structure,
+    looks_like_non_demand_heading,
     parse_pct_raw,
     score_row_confidence,
     suggest_subcontractor_asset_types,
@@ -387,6 +388,10 @@ async def _run(upload_id: str, db: Session) -> None:
         )
         if real_id is not None and item.activity_kind != "summary" and item.activity_kind != "milestone"
     ]
+    activity_name_by_id = {
+        str(activity["id"]): str(activity.get("name") or "")
+        for activity in activity_dicts
+    }
 
     # Fetch the project's registered assets so the AI classifies against what
     # is actually on site rather than a hardcoded generic list.
@@ -442,6 +447,11 @@ async def _run(upload_id: str, db: Session) -> None:
         return
 
     if classification is not None:
+        reviewable_unclassified_count = sum(
+            1
+            for skipped_id in classification.skipped
+            if not looks_like_non_demand_heading(activity_name_by_id.get(str(skipped_id), ""))
+        )
         if classification.batch_tokens_used is not None:
             upload.ai_tokens_used = int(upload.ai_tokens_used or 0) + int(classification.batch_tokens_used or 0)
         upload.ai_cost_usd = sum_ai_costs(upload.ai_cost_usd, classification.batch_cost_usd)
@@ -449,7 +459,7 @@ async def _run(upload_id: str, db: Session) -> None:
             upload,
             ai_quota_exhausted=ai_execution_context.quota_exhausted,
             classification_ai_suppressed=classification.fallback_used or ai_execution_context.suppress_ai,
-            unclassified_mapping_count=len(classification.skipped),
+            unclassified_mapping_count=reviewable_unclassified_count,
         )
         if classification.fallback_used and activity_dicts:
             # AI was unavailable — stamp a visible warning into completeness_notes
@@ -1070,9 +1080,9 @@ def _write_classifications(
 
     for item in classification.classifications:
         normalised_type = (item.asset_type or "").strip().lower()
-        if not normalised_type or normalised_type == "none":
+        if not normalised_type:
             logger.warning(
-                "Skipping none/empty asset_type for activity=%s",
+                "Skipping empty asset_type for activity=%s",
                 item.activity_id,
             )
             continue
@@ -1094,7 +1104,7 @@ def _write_classifications(
         # The AISuggestionLog always records the raw AI output for audit purposes.
         act_id_str = str(item.activity_id)
         resolved_type = (resolved_classifications or {}).get(act_id_str)
-        if resolved_type and auto_commit:
+        if resolved_type and auto_commit and normalised_type != "none":
             if resolved_type != normalised_type:
                 logger.debug(
                     "Classification override for activity=%s: AI=%s → resolved=%s",
@@ -1316,6 +1326,61 @@ def _commit_failed(
     upload.status = "failed"
     upload.processing_outcome = "failed"
     db.commit()
+
+
+def recover_stale_processing_uploads(
+    db: Session,
+    *,
+    stale_after: timedelta,
+    project_id: uuid.UUID | None = None,
+    now: datetime | None = None,
+) -> int:
+    """
+    Mark abandoned `processing` uploads as failed so projects cannot remain
+    blocked forever after a crash or redeploy.
+
+    The sweep is conservative: only uploads older than `stale_after` are
+    eligible, which reduces the chance of interfering with legitimately active
+    work on another replica.
+    """
+    cutoff = (now or datetime.now(timezone.utc)) - stale_after
+    query = db.query(ProgrammeUpload).filter(
+        ProgrammeUpload.status == "processing",
+        or_(
+            ProgrammeUpload.created_at.is_(None),
+            ProgrammeUpload.created_at <= cutoff,
+        ),
+    )
+    if project_id is not None:
+        query = query.filter(ProgrammeUpload.project_id == project_id)
+
+    uploads = query.all()
+    if not uploads:
+        return 0
+
+    reason = (
+        "Upload processing was interrupted before completion. "
+        "Please retry the upload."
+    )
+    for upload in uploads:
+        upload.completeness_score = 0.0
+        notes_dict = _normalize_completeness_notes(upload.completeness_notes)
+        notes_dict["missing_fields"] = list(
+            dict.fromkeys([*notes_dict["missing_fields"], "processing_interrupted"])
+        )
+        notes_dict["notes"] = reason
+        upload.completeness_notes = _normalize_completeness_notes(notes_dict)
+        upload.status = "failed"
+        upload.processing_outcome = "failed"
+
+    db.commit()
+    logger.warning(
+        "Recovered %d stale processing uploads%s older than %d seconds",
+        len(uploads),
+        f" for project {project_id}" if project_id is not None else "",
+        int(stale_after.total_seconds()),
+    )
+    return len(uploads)
 
 
 def _mark_failed_upload(upload_id: str, db: Session, reason: str) -> None:

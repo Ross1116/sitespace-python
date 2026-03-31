@@ -79,12 +79,14 @@ class TestFallbacks:
         with patch("app.crud.asset_type.get_active_codes", side_effect=Exception("no DB")):
             result = get_active_asset_types(db)
         assert result == ALLOWED_ASSET_TYPES
+        db.rollback.assert_not_called()
 
     def test_get_max_hours_fallback_on_error(self):
         db = MagicMock(spec=Session)
         with patch("app.crud.asset_type.get_max_hours", side_effect=Exception("no DB")):
             result = get_max_hours_for_type(db, "crane")
         assert result == 10.0
+        db.rollback.assert_not_called()
 
     def test_get_max_hours_fallback_unknown_code(self):
         db = MagicMock(spec=Session)

@@ -18,7 +18,10 @@ AISuggestionLog rows:
     are passed through from the keyword args
   → model_name forced to None when fallback_used=True
 
-Items with none/empty asset_type:
+Items with asset_type='none':
+  → Written as successful zero-demand mappings when confidence is high/medium
+
+Items with empty asset_type:
   → Skipped entirely — no mapping or suggestion row written
 
 _normalize_mapping_source():
@@ -131,17 +134,30 @@ class TestMappingAssetType:
 
 
 # ---------------------------------------------------------------------------
-# None / empty asset_type items are skipped entirely
+# asset_type='none' is a valid zero-demand mapping; empty asset_type is skipped
 # ---------------------------------------------------------------------------
 
-class TestNoneAssetTypeSkipped:
-    def test_none_asset_type_produces_no_rows(self):
-        mappings, suggestions = _run(_result(_item("", "high")))
-        assert mappings == []
-        assert suggestions == []
-
-    def test_none_string_asset_type_produces_no_rows(self):
+class TestNoneAssetTypeHandling:
+    def test_none_asset_type_is_written_as_zero_demand_mapping(self):
         mappings, suggestions = _run(_result(_item("none", "high")))
+        assert len(mappings) == 1
+        assert mappings[0].asset_type == "none"
+        assert mappings[0].auto_committed is True
+        assert len(suggestions) == 1
+        assert suggestions[0].suggested_asset_type == "none"
+        assert suggestions[0].accepted is True
+
+    def test_none_low_confidence_is_not_auto_committed(self):
+        mappings, suggestions = _run(_result(_item("none", "low")))
+        assert len(mappings) == 1
+        assert mappings[0].asset_type is None
+        assert mappings[0].auto_committed is False
+        assert len(suggestions) == 1
+        assert suggestions[0].suggested_asset_type == "none"
+        assert suggestions[0].accepted is False
+
+    def test_empty_asset_type_produces_no_rows(self):
+        mappings, suggestions = _run(_result(_item("", "high")))
         assert mappings == []
         assert suggestions == []
 
@@ -151,14 +167,14 @@ class TestNoneAssetTypeSkipped:
         assert mappings == []
         assert suggestions == []
 
-    def test_mixed_valid_and_none_only_valid_written(self):
+    def test_mixed_valid_and_none_all_written(self):
         mappings, suggestions = _run(_result(
             _item("crane", "high"),
             _item("none", "high"),
             _item("forklift", "medium"),
         ))
-        assert len(mappings) == 2
-        assert len(suggestions) == 2
+        assert len(mappings) == 3
+        assert len(suggestions) == 3
 
 
 # ---------------------------------------------------------------------------
