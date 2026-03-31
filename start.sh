@@ -79,7 +79,7 @@ fi
 
 # --- Start Uvicorn ---
 echo "Starting uvicorn server..."
-exec hypercorn app.main:app \
+exec python -m hypercorn app.main:app \
   --bind 0.0.0.0:$PORT \
   --bind [::]:$PORT \
   --access-logfile - \
