@@ -79,4 +79,8 @@ fi
 
 # --- Start Uvicorn ---
 echo "Starting uvicorn server..."
-exec uvicorn app.main:app --host 0.0.0.0 --port $PORT --log-level info --access-log
+exec hypercorn app.main:app \
+  --bind 0.0.0.0:$PORT \
+  --bind [::]:$PORT \
+  --access-logfile - \
+  --error-logfile -
