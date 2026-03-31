@@ -31,6 +31,7 @@ from .work_profile import (
     ItemKnowledgeBase,
     AssetUsageActual,
 )
+from .job_queue import ProgrammeUploadJob, ScheduledJobRun
 
 __all__ = [
     "User",
@@ -64,4 +65,6 @@ __all__ = [
     "WorkProfileAILog",
     "ItemKnowledgeBase",
     "AssetUsageActual",
+    "ProgrammeUploadJob",
+    "ScheduledJobRun",
 ]

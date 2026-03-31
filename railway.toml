@@ -1,14 +1,2 @@
 [build]
 builder = "dockerfile"
-
-[deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 300
-startCommand = "./start.sh"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 10
-
-[env]
-PORT = "8080"
-HOST = "0.0.0.0"
-DEBUG = "False"

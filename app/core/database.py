@@ -42,7 +42,21 @@ def create_database_engine():
     # preventing silent fallback to an un-migrated SQLite file.
     if settings.database_url.startswith("postgresql"):
         connect_timeout = _get_db_connect_timeout()
-        # PostgreSQL connection with connection pooling
+
+        # Pool sizing per service role.
+        # Railway hobby Postgres allows ~25 connections total across all services.
+        # Split budget: web=5+10, worker=3+5, nightly=2+3
+        role = settings.SERVICE_ROLE
+        if role == "worker":
+            pool_size, max_overflow = 3, 5
+            app_name = "sitespace-worker"
+        elif role == "nightly":
+            pool_size, max_overflow = 2, 3
+            app_name = "sitespace-nightly"
+        else:
+            pool_size, max_overflow = 5, 10
+            app_name = "sitespace-api"
+
         engine = create_engine(
             settings.database_url,
             pool_pre_ping=True,
@@ -51,18 +65,13 @@ def create_database_engine():
             # before we can detect the stale state via pool_pre_ping.
             pool_recycle=300,
             pool_timeout=30,
-            # Smaller pool: Railway hobby/starter plans cap at ~25 connections;
-            # 10 base + 20 overflow leaves headroom for the nightly job and
-            # concurrent uploads without exhausting the server limit.
-            pool_size=10,
-            max_overflow=20,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
             connect_args={
                 "connect_timeout": connect_timeout,
-                "application_name": "sitespace-api",
+                "application_name": app_name,
                 # TCP keepalives: OS will probe the connection after 60s idle,
                 # retry every 10s, and declare it dead after 5 failures (110s).
-                # This surfaces broken connections before pool_pre_ping ever
-                # gets a chance to recycle them.
                 "keepalives": 1,
                 "keepalives_idle": 60,
                 "keepalives_interval": 10,
@@ -70,7 +79,7 @@ def create_database_engine():
             },
             echo=False  # Set to True for SQL debugging
         )
-        logger.info("✅ PostgreSQL engine configured.")
+        logger.info("PostgreSQL engine configured (role=%s, pool=%d+%d).", role, pool_size, max_overflow)
     else:
         # If the URL is not for PostgreSQL, we still use create_engine on it.
         engine = create_engine(settings.database_url, echo=False)

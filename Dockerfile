@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create uploads directory and make start script executable
-RUN mkdir -p /app/uploads && chmod +x start.sh
+RUN mkdir -p /app/uploads && chmod +x start.sh start_worker.sh start_nightly.sh
 
 # Expose port
 EXPOSE 8080
