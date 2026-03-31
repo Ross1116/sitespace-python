@@ -1,11 +1,15 @@
 """Concrete local file storage used by upload endpoints."""
 
+import logging
 import os
 import uuid
 
 import aiofiles
+import httpx
 
 from ..core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LocalStorage:
@@ -24,8 +28,37 @@ class LocalStorage:
         return file_path
 
     def read(self, storage_path: str) -> bytes:
+        """Read file bytes — locally if on web, remotely if on worker/nightly."""
+        if settings.SERVICE_ROLE != "web" and settings.WEB_INTERNAL_URL:
+            return self._read_remote(storage_path)
         with open(storage_path, "rb") as f:
             return f.read()
+
+    def _read_remote(self, storage_path: str) -> bytes:
+        """Fetch file from web service over Railway private networking."""
+        url = f"{settings.WEB_INTERNAL_URL.rstrip('/')}/internal/files/fetch"
+        try:
+            resp = httpx.get(
+                url,
+                params={"path": storage_path},
+                headers={"X-Internal-Secret": settings.INTERNAL_API_SECRET},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Remote file fetch failed: status=%d path=%s",
+                exc.response.status_code, storage_path,
+            )
+            raise FileNotFoundError(
+                f"Remote file fetch returned {exc.response.status_code} for {storage_path}"
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.error("Remote file fetch connection error: %s path=%s", exc, storage_path)
+            raise FileNotFoundError(
+                f"Remote file fetch connection failed for {storage_path}"
+            ) from exc
 
     def delete(self, storage_path: str) -> bool:
         try:
