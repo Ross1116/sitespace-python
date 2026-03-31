@@ -30,7 +30,13 @@ def _verify_internal_secret(x_internal_secret: str = Header(...)) -> None:
 
 def _validate_storage_path(path: str) -> str:
     """Resolve and confine path to the upload root to prevent directory traversal."""
-    upload_root = os.path.realpath(settings.export_files_absolute_path)
+    raw_root = settings.export_files_absolute_path
+    if not raw_root or not os.path.isabs(raw_root):
+        raise HTTPException(
+            status_code=500,
+            detail="Server storage path is not configured correctly",
+        )
+    upload_root = os.path.realpath(raw_root)
     resolved = os.path.realpath(path)
     if not resolved.startswith(upload_root + os.sep) and resolved != upload_root:
         raise HTTPException(status_code=403, detail="Path is outside the upload root")
@@ -54,8 +60,8 @@ async def fetch_file(
 
     try:
         content = storage.read(safe_path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found at storage path")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found at storage path") from exc
     except Exception as exc:
         logger.exception("Internal file fetch failed for path=%s", safe_path)
         raise HTTPException(status_code=500, detail="Failed to read file") from exc
