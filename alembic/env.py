@@ -34,6 +34,7 @@ try:
     import app.models.booking_audit
     import app.models.asset_type
     import app.models.work_profile
+    import app.models.job_queue
 
     print("Alembic: Successfully imported all models.")
 except ImportError as e:

@@ -38,6 +38,11 @@ class ProgrammeUploadStatus(UploadLifecycleBase):
     ai_tokens_used: Optional[int] = None
     ai_cost_usd: Optional[float] = None
     created_at: Optional[str] = None
+    # Queue diagnostics (operational, not business lifecycle)
+    queue_state: Optional[str] = None
+    processing_attempts: Optional[int] = None
+    retry_after: Optional[str] = None
+    last_error_code: Optional[str] = None
 
 
 class ProgrammeVersionSummary(UploadLifecycleBase):

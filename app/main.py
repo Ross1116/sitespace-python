@@ -1,7 +1,5 @@
 import os
 import logging
-import importlib
-from datetime import timedelta
 import sentry_sdk
 
 send_default_pii = os.getenv("SENTRY_SEND_PII", "false").strip().lower() in (
@@ -38,122 +36,19 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from .core.config import settings
-from .core.database import SessionLocal, assert_database_connection, engine
+from .core.database import assert_database_connection, engine  # noqa: F401 — engine used at import for model registration
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
 from .api.v1 import auth, assets, asset_types, items, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
-from .services.lookahead_engine import nightly_lookahead_job
-from .services.process_programme import recover_stale_processing_uploads
 
 # Import all models so SQLAlchemy knows about them
 from .models import user, asset, asset_type as asset_type_model, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models, item_identity
-
-try:
-    _aps_scheduler_module = importlib.import_module("apscheduler.schedulers.asyncio")
-    _aps_jobstore_module = importlib.import_module("apscheduler.jobstores.sqlalchemy")
-    AsyncIOScheduler = _aps_scheduler_module.AsyncIOScheduler
-    SQLAlchemyJobStore = _aps_jobstore_module.SQLAlchemyJobStore
-    scheduler = AsyncIOScheduler(
-        jobstores={"default": SQLAlchemyJobStore(engine=engine)}
-    )
-except Exception as exc:
-    scheduler = None
-    logger.warning("APScheduler unavailable; nightly lookahead job disabled. Error: %s", exc)
-
-def _is_duplicate_scheduler_job_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return exc.__class__.__name__ == "ConflictingIdError" or (
-        "duplicate key value violates unique constraint" in message
-        and "apscheduler_jobs" in message
-    )
-
-
-def _register_nightly_scheduler_job(scheduler_instance) -> None:
-    job_id = "nightly_lookahead_job"
-    trigger_kwargs = {
-        "trigger": "cron",
-        "hour": settings.NIGHTLY_LOOKAHEAD_HOUR,
-        "minute": settings.NIGHTLY_LOOKAHEAD_MINUTE,
-        "timezone": settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-    }
-
-    existing_job = scheduler_instance.get_job(job_id)
-    if existing_job is not None:
-        scheduler_instance.reschedule_job(job_id, **trigger_kwargs)
-        logger.info(
-            "Updated scheduler job %s (%s) for %02d:%02d %s",
-            job_id,
-            nightly_lookahead_job.__name__,
-            settings.NIGHTLY_LOOKAHEAD_HOUR,
-            settings.NIGHTLY_LOOKAHEAD_MINUTE,
-            settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-        )
-        return
-
-    try:
-        scheduler_instance.add_job(
-            nightly_lookahead_job,
-            id=job_id,
-            replace_existing=False,
-            **trigger_kwargs,
-        )
-    except Exception as exc:
-        if _is_duplicate_scheduler_job_error(exc):
-            logger.info(
-                "Scheduler job %s already exists in the shared job store; keeping the existing registration",
-                job_id,
-            )
-            return
-        raise
-
-    logger.info(
-        "Registered scheduler job %s (%s) for %02d:%02d %s",
-        job_id,
-        nightly_lookahead_job.__name__,
-        settings.NIGHTLY_LOOKAHEAD_HOUR,
-        settings.NIGHTLY_LOOKAHEAD_MINUTE,
-        settings.NIGHTLY_LOOKAHEAD_TIMEZONE,
-    )
-
-
-def _recover_stale_programme_uploads_on_startup() -> int:
-    """
-    Release uploads stranded in `processing` after a crash/redeploy.
-
-    The sweep is intentionally conservative: only uploads older than the
-    configured stale threshold are marked failed.
-    """
-    db = SessionLocal()
-    try:
-        stale_after = timedelta(minutes=settings.PROGRAMME_PROCESSING_STALE_MINUTES)
-        recovered = recover_stale_processing_uploads(db, stale_after=stale_after)
-        if recovered:
-            logger.warning(
-                "Recovered %d stale processing uploads at startup (threshold=%d minutes)",
-                recovered,
-                settings.PROGRAMME_PROCESSING_STALE_MINUTES,
-            )
-        else:
-            logger.info("No stale processing uploads found at startup")
-        return recovered
-    finally:
-        db.close()
+from .models import job_queue as job_queue_model  # noqa: F401 — register tables
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting Sitespace FastAPI application...")
-    _recover_stale_programme_uploads_on_startup()
-    if scheduler is not None:
-        scheduler.start()
-        try:
-            _register_nightly_scheduler_job(scheduler)
-        except Exception as exc:
-            logger.warning("Nightly lookahead job registration/update failed; continuing without scheduler refresh: %s", exc)
-            sentry_sdk.capture_exception(exc)
+    # Startup — web service only needs to verify schema readiness
+    logger.info("Starting Sitespace FastAPI application (web)...")
     yield
-    # Shutdown
-    if scheduler is not None and scheduler.running:
-        scheduler.shutdown()
     logger.info("Shutting down Sitespace FastAPI application...")
 
 # Create FastAPI app

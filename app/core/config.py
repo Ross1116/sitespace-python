@@ -130,6 +130,15 @@ class Settings(BaseSettings):
         gt=0,
     )
 
+    # Upload worker settings
+    UPLOAD_WORKER_POLL_SECONDS: int = Field(2, validation_alias="UPLOAD_WORKER_POLL_SECONDS", gt=0)
+    UPLOAD_WORKER_HEARTBEAT_SECONDS: int = Field(15, validation_alias="UPLOAD_WORKER_HEARTBEAT_SECONDS", gt=0)
+    UPLOAD_WORKER_CLAIM_TTL_SECONDS: int = Field(90, validation_alias="UPLOAD_WORKER_CLAIM_TTL_SECONDS", gt=0)
+    UPLOAD_WORKER_MAX_ATTEMPTS: int = Field(3, validation_alias="UPLOAD_WORKER_MAX_ATTEMPTS", ge=1)
+
+    # Service role: "web" | "worker" | "nightly" (controls startup behavior)
+    SERVICE_ROLE: str = Field("web", validation_alias="SERVICE_ROLE")
+
 
 settings = Settings()
 

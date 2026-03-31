@@ -16,7 +16,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -62,11 +62,8 @@ from ...utils.programme_notes import normalize_programme_completeness_notes
 from ...services.metadata_confidence_service import asset_is_planning_ready
 from ...services.lookahead_engine import resolve_activity_distribution
 from ...services.ai_service import looks_like_non_demand_heading
-from ...services.process_programme import (
-    preflight_validate,
-    process_programme,
-    recover_stale_processing_uploads,
-)
+from ...models.job_queue import ProgrammeUploadJob
+from ...services.process_programme import preflight_validate
 from ...services.programme_upload_service import (
     get_active_programme_upload,
     get_previous_successful_programme_upload,
@@ -143,6 +140,7 @@ def _serialize_programme_upload(
     *,
     active_upload_id: UUID | None = None,
     include_notes: bool = False,
+    db: Session | None = None,
 ) -> dict[str, object]:
     normalized_status = get_normalized_upload_status(upload)
     payload: dict[str, object] = {
@@ -163,6 +161,22 @@ def _serialize_programme_upload(
     }
     if include_notes:
         payload["completeness_notes"] = _normalize_completeness_notes(upload.completeness_notes)
+        # Attach queue diagnostics when notes are included (status endpoint)
+        if db is not None:
+            job = (
+                db.query(ProgrammeUploadJob)
+                .filter(ProgrammeUploadJob.upload_id == upload.id)
+                .first()
+            )
+            if job:
+                payload["queue_state"] = job.status
+                payload["processing_attempts"] = job.attempt_count
+                payload["retry_after"] = (
+                    job.available_at.isoformat()
+                    if job.status == "retry_wait" and job.available_at
+                    else None
+                )
+                payload["last_error_code"] = job.last_error_code
     return payload
 
 
@@ -295,7 +309,6 @@ def _build_suggested_booking_dates(
 
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=ProgrammeUploadAccepted)
 async def upload_programme(
-    background_tasks: BackgroundTasks,
     project_id: UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -303,12 +316,10 @@ async def upload_programme(
 ) -> ProgrammeUploadAccepted:
     """
     Accept a CSV, XLSX, XLSM, or PDF programme file. Returns 202 immediately.
-    Processing (AI structure detection → activity import) runs in background.
+    A durable job row is written; the upload-worker service picks it up.
     Poll GET /api/programmes/{upload_id}/status for completion.
     """
     # Validate file extension and run preflight before acquiring a DB connection.
-    # This way a bad/unsupported file fails fast without holding a pool connection
-    # during the (potentially slow) parse step.
     filename = file.filename or ""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -328,20 +339,20 @@ async def upload_programme(
 
     # File is valid — now check project access (acquires DB connection).
     _check_project_access(project_id, current_user, db)
-    recover_stale_processing_uploads(
-        db,
-        project_id=project_id,
-        stale_after=timedelta(minutes=settings.PROGRAMME_PROCESSING_STALE_MINUTES),
-    )
-    active_processing_upload = (
+
+    # Queue-aware guard: reject if this project already has an upload whose
+    # lifecycle is still processing AND whose job is queued/running/retry_wait.
+    active_blocked = (
         db.query(ProgrammeUpload.id)
+        .join(ProgrammeUploadJob, ProgrammeUploadJob.upload_id == ProgrammeUpload.id)
         .filter(
             ProgrammeUpload.project_id == project_id,
             ProgrammeUpload.status == "processing",
+            ProgrammeUploadJob.status.in_(["queued", "running", "retry_wait"]),
         )
         .first()
     )
-    if active_processing_upload is not None:
+    if active_blocked is not None:
         raise HTTPException(
             status_code=409,
             detail="Another programme upload is already processing for this project. Please wait for it to finish.",
@@ -353,7 +364,7 @@ async def upload_programme(
         logger.exception("Failed to save programme file")
         raise HTTPException(status_code=500, detail="File storage failed.") from exc
 
-    # Create StoredFile record
+    # Create StoredFile, ProgrammeUpload, and ProgrammeUploadJob in one transaction.
     stored_file = StoredFile(
         id=uuid.uuid4(),
         original_filename=filename,
@@ -376,7 +387,6 @@ async def upload_programme(
         )
         version_number = int(latest_version or 0) + 1
 
-        # Create ProgrammeUpload record (status=processing)
         upload = ProgrammeUpload(
             id=uuid.uuid4(),
             project_id=project_id,
@@ -387,6 +397,15 @@ async def upload_programme(
             status="processing",
         )
         db.add(upload)
+        db.flush()
+
+        # Durable job row — the worker picks this up via FOR UPDATE SKIP LOCKED.
+        job = ProgrammeUploadJob(
+            upload_id=upload.id,
+            status="queued",
+            max_attempts=settings.UPLOAD_WORKER_MAX_ATTEMPTS,
+        )
+        db.add(job)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -408,8 +427,6 @@ async def upload_programme(
             detail="Concurrent upload detected. Please retry.",
         ) from exc
     except OperationalError as exc:
-        # Transient DB disconnect (e.g. stale connection after slow preflight).
-        # pool_pre_ping can't protect an already-checked-out connection.
         db.rollback()
         try:
             deleted = storage.delete(stored_file.storage_path)
@@ -446,14 +463,9 @@ async def upload_programme(
             )
         raise HTTPException(status_code=500, detail="Failed to persist upload metadata.") from exc
 
-    upload_id = str(upload.id)
-
-    # Enqueue background pipeline — returns immediately
-    background_tasks.add_task(process_programme, upload_id)
-
     logger.info(
         "Programme upload queued: upload_id=%s project=%s user=%s file=%s",
-        upload_id, project_id, current_user.id, filename,
+        str(upload.id), project_id, current_user.id, filename,
     )
 
     return ProgrammeUploadAccepted(
@@ -486,6 +498,7 @@ def get_upload_status(
             upload,
             active_upload_id=getattr(active_upload, "id", None),
             include_notes=True,
+            db=db,
         )
     )
 

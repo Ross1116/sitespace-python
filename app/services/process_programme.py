@@ -13,7 +13,7 @@ Flow:
      - all suggestions logged to ai_suggestion_logs
   6. Set programme_uploads.status = "committed" or "completed_with_warnings"
 
-Called from POST /api/programmes/upload via FastAPI BackgroundTasks.
+Called by the upload worker service via the durable job queue.
 Never raises to the caller — all exceptions are caught, logged, and result
 in a degraded commit rather than a silent failure.
 """
@@ -133,8 +133,8 @@ def _preflight_pdf(file_bytes: bytes) -> str | None:
 
 def process_programme(upload_id: str) -> None:
     """
-    Entry point called by BackgroundTasks.
-    Opens its own DB session — never shares with the request session.
+    Entry point called by the upload worker service.
+    Opens its own DB session — never shares with any caller session.
     """
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("task", "process_programme")
