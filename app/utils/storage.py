@@ -51,13 +51,17 @@ class LocalStorage:
                 "Remote file fetch failed: status=%d path=%s",
                 exc.response.status_code, storage_path,
             )
-            raise FileNotFoundError(
-                f"Remote file fetch returned {exc.response.status_code} for {storage_path}"
-            ) from exc
+            if exc.response.status_code == 404:
+                raise FileNotFoundError(
+                    f"File not found on web service: {storage_path}"
+                ) from exc
+            # Non-404 errors (500, 403, etc.) are transient or config issues —
+            # propagate as-is so the worker retry logic can distinguish them.
+            raise
         except httpx.RequestError as exc:
             logger.error("Remote file fetch connection error: %s path=%s", exc, storage_path)
-            raise FileNotFoundError(
-                f"Remote file fetch connection failed for {storage_path}"
+            raise ConnectionError(
+                f"Cannot reach web service to fetch {storage_path}"
             ) from exc
 
     def delete(self, storage_path: str) -> bool:

@@ -154,6 +154,21 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_worker_internal_networking(self) -> "Settings":
+        if self.SERVICE_ROLE == "worker":
+            if not self.WEB_INTERNAL_URL:
+                raise ValueError(
+                    "WEB_INTERNAL_URL must be set when SERVICE_ROLE='worker'. "
+                    "The worker needs the web service URL to fetch uploaded files."
+                )
+            if not self.INTERNAL_API_SECRET:
+                raise ValueError(
+                    "INTERNAL_API_SECRET must be set when SERVICE_ROLE='worker'. "
+                    "Required for authenticating internal service-to-service requests."
+                )
+        return self
+
 
 settings = Settings()
 

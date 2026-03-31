@@ -7,6 +7,7 @@ Protected by a shared INTERNAL_API_SECRET header.
 """
 
 import logging
+import os
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response
@@ -27,6 +28,15 @@ def _verify_internal_secret(x_internal_secret: str = Header(...)) -> None:
         raise HTTPException(status_code=403, detail="Invalid internal secret")
 
 
+def _validate_storage_path(path: str) -> str:
+    """Normalize and confine path to the upload root to prevent directory traversal."""
+    upload_root = os.path.normpath(settings.export_files_absolute_path)
+    resolved = os.path.normpath(path)
+    if not resolved.startswith(upload_root + os.sep) and resolved != upload_root:
+        raise HTTPException(status_code=403, detail="Path is outside the upload root")
+    return resolved
+
+
 @router.get("/files/fetch")
 async def fetch_file(
     path: str = Query(..., description="The storage_path of the file to retrieve"),
@@ -40,14 +50,16 @@ async def fetch_file(
     """
     _verify_internal_secret(x_internal_secret)
 
-    if not storage.exists(path):
+    safe_path = _validate_storage_path(path)
+
+    if not storage.exists(safe_path):
         raise HTTPException(status_code=404, detail="File not found at storage path")
 
     try:
-        content = storage.read(path)
-    except Exception:
-        logger.exception("Internal file fetch failed for path=%s", path)
-        raise HTTPException(status_code=500, detail="Failed to read file")
+        content = storage.read(safe_path)
+    except Exception as exc:
+        logger.exception("Internal file fetch failed for path=%s", safe_path)
+        raise HTTPException(status_code=500, detail="Failed to read file") from exc
 
     return Response(
         content=content,

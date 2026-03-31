@@ -130,7 +130,9 @@ app.include_router(site_plans.router, prefix="/api")
 app.include_router(programmes.router, prefix="/api")
 app.include_router(items.router, prefix="/api")
 app.include_router(lookahead.router, prefix="/api")
-app.include_router(internal_api.router)
+# Internal endpoints only needed on the web service (serves files to worker)
+if settings.INTERNAL_API_SECRET:
+    app.include_router(internal_api.router)
 
 # Root endpoint
 @app.get("/")
