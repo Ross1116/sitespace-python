@@ -29,9 +29,9 @@ def _verify_internal_secret(x_internal_secret: str = Header(...)) -> None:
 
 
 def _validate_storage_path(path: str) -> str:
-    """Normalize and confine path to the upload root to prevent directory traversal."""
-    upload_root = os.path.normpath(settings.export_files_absolute_path)
-    resolved = os.path.normpath(path)
+    """Resolve and confine path to the upload root to prevent directory traversal."""
+    upload_root = os.path.realpath(settings.export_files_absolute_path)
+    resolved = os.path.realpath(path)
     if not resolved.startswith(upload_root + os.sep) and resolved != upload_root:
         raise HTTPException(status_code=403, detail="Path is outside the upload root")
     return resolved
@@ -52,11 +52,10 @@ async def fetch_file(
 
     safe_path = _validate_storage_path(path)
 
-    if not storage.exists(safe_path):
-        raise HTTPException(status_code=404, detail="File not found at storage path")
-
     try:
         content = storage.read(safe_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found at storage path")
     except Exception as exc:
         logger.exception("Internal file fetch failed for path=%s", safe_path)
         raise HTTPException(status_code=500, detail="Failed to read file") from exc
