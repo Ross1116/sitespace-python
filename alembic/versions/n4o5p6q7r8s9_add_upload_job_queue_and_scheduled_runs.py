@@ -72,6 +72,11 @@ def upgrade() -> None:
         "programme_upload_jobs",
         ["status", "available_at"],
     )
+    op.create_index(
+        "ix_programme_upload_jobs_reclaimable",
+        "programme_upload_jobs",
+        ["status", "heartbeat_at"],
+    )
 
     # --- scheduled_job_runs ---
     op.create_table(
@@ -105,5 +110,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("scheduled_job_runs")
+    op.drop_index("ix_programme_upload_jobs_reclaimable", table_name="programme_upload_jobs")
     op.drop_index("ix_programme_upload_jobs_claimable", table_name="programme_upload_jobs")
     op.drop_table("programme_upload_jobs")

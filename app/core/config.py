@@ -139,6 +139,17 @@ class Settings(BaseSettings):
     # Service role: "web" | "worker" | "nightly" (controls startup behavior)
     SERVICE_ROLE: str = Field("web", validation_alias="SERVICE_ROLE")
 
+    @model_validator(mode="after")
+    def validate_worker_heartbeat_vs_claim_ttl(self) -> "Settings":
+        if self.UPLOAD_WORKER_HEARTBEAT_SECONDS >= self.UPLOAD_WORKER_CLAIM_TTL_SECONDS:
+            raise ValueError(
+                f"UPLOAD_WORKER_HEARTBEAT_SECONDS ({self.UPLOAD_WORKER_HEARTBEAT_SECONDS}) "
+                f"must be less than UPLOAD_WORKER_CLAIM_TTL_SECONDS ({self.UPLOAD_WORKER_CLAIM_TTL_SECONDS}). "
+                f"The heartbeat interval must be shorter than the claim TTL so workers "
+                f"can prove liveness before their claim expires."
+            )
+        return self
+
 
 settings = Settings()
 

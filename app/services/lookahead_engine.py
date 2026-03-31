@@ -1264,7 +1264,18 @@ def get_sub_asset_suggestions_for_project(
     return result
 
 
-def nightly_lookahead_job() -> None:
+def nightly_lookahead_job() -> dict:
+    """
+    Run lookahead for all projects with successful uploads.
+
+    Returns a summary dict:
+        total      — number of projects attempted
+        succeeded  — number that completed without error
+        failed     — number that raised an exception (logged + Sentry-captured)
+    """
+    total = 0
+    succeeded = 0
+    failed = 0
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("task", "nightly_lookahead_job")
         db = SessionLocal()
@@ -1278,11 +1289,14 @@ def nightly_lookahead_job() -> None:
                     .all()
                 )
             ]
+            total = len(project_ids)
 
             for project_id in project_ids:
                 try:
                     calculate_lookahead_for_project(project_id=project_id, db=db)
+                    succeeded += 1
                 except Exception as exc:
+                    failed += 1
                     with sentry_sdk.new_scope() as project_scope:
                         project_scope.set_tag("project_id", str(project_id))
                         sentry_sdk.capture_exception(exc)
@@ -1290,3 +1304,4 @@ def nightly_lookahead_job() -> None:
                     db.rollback()
         finally:
             db.close()
+    return {"total": total, "succeeded": succeeded, "failed": failed}

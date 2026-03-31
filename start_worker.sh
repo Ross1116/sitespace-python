@@ -4,6 +4,9 @@
 # Persistent service, no HTTP. Polls for upload jobs.
 echo "Starting Sitespace upload worker..."
 
+# Ensure the worker pool sizing is used (pool_size=3, max_overflow=5)
+export SERVICE_ROLE="${SERVICE_ROLE:-worker}"
+
 # --- Database Readiness Wait ---
 WAIT_ATTEMPTS=20
 WAIT_DELAY=3
@@ -51,14 +54,22 @@ SCHEMA_READY=0
 
 for i in $(seq 1 $SCHEMA_ATTEMPTS); do
     if python -c "
-import os
+import os, sys
 from sqlalchemy import create_engine, text
-engine = create_engine(os.environ['DATABASE_URL'], connect_args={'connect_timeout': 5})
-with engine.connect() as conn:
-    conn.execute(text('SELECT 1 FROM programme_upload_jobs LIMIT 0'))
-    conn.execute(text('SELECT 1 FROM alembic_version LIMIT 1'))
-print('Schema verified.')
-exit(0)
+from sqlalchemy.exc import OperationalError, ProgrammingError
+try:
+    engine = create_engine(os.environ['DATABASE_URL'], connect_args={'connect_timeout': 5})
+    with engine.connect() as conn:
+        conn.execute(text('SELECT 1 FROM programme_upload_jobs LIMIT 0'))
+        conn.execute(text('SELECT 1 FROM alembic_version LIMIT 1'))
+    print('Schema verified.')
+    sys.exit(0)
+except OperationalError as e:
+    print(f'Connection failed: {e}')
+    sys.exit(1)
+except ProgrammingError as e:
+    print(f'Missing table or schema issue: {e}')
+    sys.exit(1)
 " ; then
         SCHEMA_READY=1
         break

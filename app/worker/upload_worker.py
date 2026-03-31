@@ -35,6 +35,8 @@ class UploadWorker:
         self._poll_seconds = settings.UPLOAD_WORKER_POLL_SECONDS
         self._heartbeat_seconds = settings.UPLOAD_WORKER_HEARTBEAT_SECONDS
         self._claim_ttl_seconds = settings.UPLOAD_WORKER_CLAIM_TTL_SECONDS
+        self._requeue_interval_polls = max(1, self._claim_ttl_seconds // self._poll_seconds)
+        self._polls_since_requeue = 0
 
     def run(self) -> None:
         """Main loop — poll for jobs until shutdown signal."""
@@ -50,6 +52,12 @@ class UploadWorker:
 
         while not self._shutdown.is_set():
             try:
+                # Periodically requeue expired claims (not just at startup)
+                self._polls_since_requeue += 1
+                if self._polls_since_requeue >= self._requeue_interval_polls:
+                    self._requeue_expired_claims()
+                    self._polls_since_requeue = 0
+
                 claimed = self._poll_once()
                 if not claimed:
                     self._shutdown.wait(timeout=self._poll_seconds)
@@ -182,7 +190,18 @@ class UploadWorker:
                 self._reset_partial_state(upload_id)
 
             process_programme(upload_id)
-            self._mark_job_completed(job_id)
+
+            # process_programme swallows its own exceptions and sets upload
+            # status internally.  Check the persisted status to decide the
+            # queue transition rather than assuming success.
+            upload_status = self._get_upload_status(upload_id)
+            if upload_status == "failed":
+                self._handle_job_failure(
+                    job_id, upload_id, attempt, max_attempts,
+                    RuntimeError("process_programme marked upload as failed"),
+                )
+            else:
+                self._mark_job_completed(job_id)
         except Exception as exc:
             sentry_sdk.capture_exception(exc)
             logger.exception("Job %s failed (upload %s)", job_id, upload_id)
@@ -239,6 +258,15 @@ class UploadWorker:
         except Exception:
             db.rollback()
             logger.exception("Failed to reset partial state for upload %s", upload_id)
+        finally:
+            db.close()
+
+    def _get_upload_status(self, upload_id: str) -> str | None:
+        """Reload the upload row and return its status."""
+        db = SessionLocal()
+        try:
+            upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+            return upload.status if upload else None
         finally:
             db.close()
 

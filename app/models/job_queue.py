@@ -43,6 +43,7 @@ class ProgrammeUploadJob(Base):
             name="ck_programme_upload_jobs_max_attempts",
         ),
         Index("ix_programme_upload_jobs_claimable", "status", "available_at"),
+        Index("ix_programme_upload_jobs_reclaimable", "status", "heartbeat_at"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -102,9 +102,21 @@ def run_nightly_tick() -> None:
             db.commit()
             run_record = existing
         elif existing and existing.status == "running":
-            # Another instance is mid-run (shouldn't happen with advisory lock, but be safe)
-            logger.info("Nightly tick: already running for %s, skipping", today)
-            return
+            # We hold the advisory lock, so a "running" row means the previous
+            # instance crashed.  Mark it failed and proceed with a fresh run.
+            logger.warning(
+                "Nightly tick: found stale 'running' row for %s (started %s) — marking failed and retrying",
+                today, existing.started_at,
+            )
+            existing.status = "failed"
+            existing.finished_at = datetime.now(timezone.utc)
+            existing.last_error = "Stale running state recovered by advisory-lock holder"
+            existing.started_at = datetime.now(timezone.utc)
+            existing.status = "running"
+            existing.finished_at = None
+            existing.last_error = None
+            db.commit()
+            run_record = existing
         else:
             # Create new run record
             run_record = ScheduledJobRun(
@@ -124,11 +136,31 @@ def run_nightly_tick() -> None:
 
         # Run the actual nightly lookahead job
         try:
-            nightly_lookahead_job()
-            run_record.status = "succeeded"
-            run_record.finished_at = datetime.now(timezone.utc)
-            db.commit()
-            logger.info("Nightly tick: completed successfully for %s", today)
+            result = nightly_lookahead_job()
+            finished = datetime.now(timezone.utc)
+
+            if result.get("failed", 0) > 0:
+                run_record.status = "failed"
+                run_record.finished_at = finished
+                run_record.last_error = (
+                    f"{result['failed']}/{result['total']} projects failed "
+                    f"({result['succeeded']} succeeded)"
+                )
+                db.commit()
+                logger.warning(
+                    "Nightly tick: partial failure for %s — %d/%d projects failed",
+                    today, result["failed"], result["total"],
+                )
+                # Exit 1 so the same-day retry path can re-run
+                sys.exit(1)
+            else:
+                run_record.status = "succeeded"
+                run_record.finished_at = finished
+                db.commit()
+                logger.info(
+                    "Nightly tick: completed successfully for %s — %d projects",
+                    today, result.get("succeeded", 0),
+                )
         except Exception as exc:
             sentry_sdk.capture_exception(exc)
             logger.exception("Nightly tick: failed for %s", today)

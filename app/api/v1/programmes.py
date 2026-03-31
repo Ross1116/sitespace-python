@@ -340,8 +340,9 @@ async def upload_programme(
     # File is valid — now check project access (acquires DB connection).
     _check_project_access(project_id, current_user, db)
 
-    # Queue-aware guard: reject if this project already has an upload whose
-    # lifecycle is still processing AND whose job is queued/running/retry_wait.
+    # Early guard (non-serialized): fast-reject obvious duplicates before
+    # doing file I/O.  The authoritative check is repeated under the project
+    # row lock below.
     active_blocked = (
         db.query(ProgrammeUpload.id)
         .join(ProgrammeUploadJob, ProgrammeUploadJob.upload_id == ProgrammeUpload.id)
@@ -380,6 +381,30 @@ async def upload_programme(
 
         # Lock project row to serialize per-project version allocation.
         db.query(SiteProject).filter(SiteProject.id == project_id).with_for_update().first()
+
+        # Re-check under lock — prevents race where two requests both pass the
+        # pre-lock guard concurrently.
+        active_blocked_locked = (
+            db.query(ProgrammeUpload.id)
+            .join(ProgrammeUploadJob, ProgrammeUploadJob.upload_id == ProgrammeUpload.id)
+            .filter(
+                ProgrammeUpload.project_id == project_id,
+                ProgrammeUpload.status == "processing",
+                ProgrammeUploadJob.status.in_(["queued", "running", "retry_wait"]),
+            )
+            .first()
+        )
+        if active_blocked_locked is not None:
+            db.rollback()
+            try:
+                storage.delete(stored_file.storage_path)
+            except Exception:
+                logger.error("Failed to delete orphaned blob after lock-check rejection path=%s", stored_file.storage_path)
+            raise HTTPException(
+                status_code=409,
+                detail="Another programme upload is already processing for this project. Please wait for it to finish.",
+            )
+
         latest_version = (
             db.query(func.max(ProgrammeUpload.version_number))
             .filter(ProgrammeUpload.project_id == project_id)
