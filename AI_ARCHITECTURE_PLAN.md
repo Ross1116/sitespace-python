@@ -121,11 +121,11 @@ The architecture text that follows remains intentionally preserved as the March 
 
 ## Still planned, partial, or not yet fully realized
 
-- Bayesian posterior updating from fresh evidence and actuals still appears only partially realized. The schema support exists, but the full learning loop described below should still be treated as future work unless separately verified.
-- The global cross-project knowledge-base tier and promotion rules remain future-looking relative to the current codebase.
+- Bayesian-style posterior updating from fresh evidence and actuals is now implemented in the Stage 10 work-profile layer, but richer actuals capture beyond the current per-activity internal foundation remains future work.
+- The global cross-project knowledge-base tier and promotion rules are now implemented in Stage 10; future work is in hardening, observability, and tuning rather than introducing the tier itself.
 - Alert hardening still appears incomplete relative to the preserved target architecture, especially around rate limiting, project-wide caps, and refined stale-alert cancellation behavior.
 - Reporting and governance around excessive `other` usage still appears to remain future work.
-- System-health surfacing remains less complete than the preserved architecture intends.
+- System-health surfacing and upload-processing durability remain less complete than the preserved architecture intends, although startup stale-processing recovery now prevents indefinite project blockage after interrupted uploads.
 - The preserved document's exact-unit apportionment and second per-day demand-cap enforcement should still be treated as future hardening work unless a later implementation note explicitly supersedes that assessment.
 
 ## Historical sections that are now known to be stale but intentionally preserved

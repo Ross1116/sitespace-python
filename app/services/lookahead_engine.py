@@ -96,6 +96,7 @@ def build_eligible_activity_mapping_filters() -> tuple[object, ...]:
     """
     return (
         ActivityAssetMapping.asset_type.isnot(None),
+        ActivityAssetMapping.asset_type != "none",
         or_(
             ActivityAssetMapping.auto_committed.is_(True),
             and_(
@@ -412,24 +413,7 @@ def _compute_demand_by_week_asset(
         .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
-            or_(
-                ActivityAssetMapping.auto_committed.is_(True),
-                and_(
-                    ActivityAssetMapping.manually_corrected.is_(True),
-                    ActivityAssetMapping.source == "manual",
-                    ActivityAssetMapping.auto_committed.is_(False),
-                ),
-            ),
-            ActivityAssetMapping.asset_type.isnot(None),
-            or_(
-                ActivityAssetMapping.confidence.in_(["high", "medium"]),
-                ActivityAssetMapping.manually_corrected.is_(True),
-            ),
-            # Skip fully-complete activities — no remaining work to forecast.
-            or_(
-                ProgrammeActivity.pct_complete.is_(None),
-                ProgrammeActivity.pct_complete < 100,
-            ),
+            *build_eligible_activity_mapping_filters(),
         )
         .all()
     )

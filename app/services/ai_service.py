@@ -59,12 +59,26 @@ _AI_PROVIDER_NEXT_REQUEST_AT = 0.0
 # Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
 # Character class explicitly covers hyphen, en-dash (U+2013), and em-dash (U+2014).
 _DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORECASE)
+_VALID_CLASSIFICATION_CONFIDENCES = frozenset({"low", "medium", "high"})
 
 
 def _normalize_for_dedup(name: str) -> str:
     """Lowercase, strip P6 day-step prefix, collapse whitespace."""
     norm = _DEDUP_PREFIX_RE.sub("", name.strip().lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
+
+
+def _normalize_classification_confidence(confidence: Any) -> str:
+    """
+    Accept only explicit high/medium/low confidence tokens.
+
+    Unexpected or empty values degrade to low so downstream auto-commit logic
+    never treats malformed AI responses as planning-ready.
+    """
+    token = str(confidence or "").strip().lower()
+    if token in _VALID_CLASSIFICATION_CONFIDENCES:
+        return token
+    return "low"
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +625,7 @@ def classify_item_standalone(
                 for item in raw.get("classifications") or []:
                     if str(item.get("activity_id")) == fake_id:
                         asset_type = str(item.get("asset_type") or "").strip().lower()
-                        confidence = str(item.get("confidence") or "").strip().lower()
+                        confidence = _normalize_classification_confidence(item.get("confidence"))
                         if asset_type in valid_types and confidence in {"high", "medium"}:
                             return asset_type, confidence
                 return None
@@ -1430,7 +1444,7 @@ async def _classify_assets_real(
 
         if keyword_type and ai_result:
             ai_type = ai_result.get("asset_type")
-            ai_confidence = str(ai_result.get("confidence") or "medium").lower()
+            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
 
             if ai_type == keyword_type and ai_type in valid_types:
                 # Both agree — highest confidence
@@ -1479,10 +1493,21 @@ async def _classify_assets_real(
 
         elif ai_result:
             ai_type = ai_result.get("asset_type")
-            ai_confidence = str(ai_result.get("confidence") or "medium").lower()
+            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
 
-            if not ai_type or ai_type == "none" or ai_type not in valid_types:
+            if not ai_type or ai_type not in valid_types:
                 skipped.append(act_id)
+            elif ai_type == "none":
+                if ai_confidence not in {"medium", "high"}:
+                    skipped.append(act_id)
+                else:
+                    classifications.append(ClassificationItem(
+                        activity_id=act_id,
+                        asset_type="none",
+                        confidence=ai_confidence,
+                        source=str(ai_result.get("source") or "ai"),
+                        reasoning=ai_result.get("reasoning"),
+                    ))
             elif ai_confidence == "low":
                 skipped.append(act_id)
             else:
@@ -1716,6 +1741,109 @@ def _normalize_for_keyword_match(name: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+_OBVIOUS_NO_ASSET_PHASE_HEADERS: set[str] = {
+    "superstructure",
+    "substructure",
+    "early works",
+    "external works",
+    "internal works",
+    "civil works",
+    "preliminaries",
+    "preliminary works",
+    "fitout",
+    "fit out",
+    "finishes",
+    "structure",
+}
+
+_OBVIOUS_NO_ASSET_ACTION_HINTS: tuple[str, ...] = (
+    "install",
+    "pour",
+    "lift",
+    "erect",
+    "excavate",
+    "excavation",
+    "dig",
+    "fix",
+    "fixing",
+    "formwork",
+    "setout",
+    "set out",
+    "setup",
+    "set up",
+    "deliver",
+    "delivery",
+    "remove",
+    "removal",
+    "pump",
+    "place",
+    "jump",
+    "recycle",
+    "inspect",
+    "inspection",
+    "test",
+    "testing",
+    "paint",
+    "erection",
+    "rough in",
+    "fit off",
+    "commission",
+)
+
+_OBVIOUS_ASSET_HINTS: tuple[str, ...] = (
+    "crane",
+    "hoist",
+    "loading bay",
+    "loading zone",
+    "ewp",
+    "scissor lift",
+    "boom lift",
+    "concrete pump",
+    "boom pump",
+    "line pump",
+    "excavator",
+    "forklift",
+    "telehandler",
+    "compactor",
+)
+
+
+def looks_like_non_demand_heading(activity_name: str) -> bool:
+    """
+    Return True for obvious phase/zone/level headings that should resolve to
+    asset_type='none' rather than entering review as unresolved demand rows.
+
+    This is intentionally conservative: explicit asset references or obvious
+    action verbs always win over the heading heuristic.
+    """
+    normalized_name = _normalize_for_keyword_match(activity_name)
+    if not normalized_name:
+        return False
+
+    padded_name = f" {normalized_name} "
+    if any(f" {hint} " in padded_name for hint in _OBVIOUS_ASSET_HINTS):
+        return False
+    if any(f" {hint} " in padded_name for hint in _OBVIOUS_NO_ASSET_ACTION_HINTS):
+        return False
+
+    if normalized_name in _OBVIOUS_NO_ASSET_PHASE_HEADERS:
+        return True
+
+    if re.fullmatch(r"zone [a-z0-9][a-z0-9 /-]*", normalized_name):
+        return True
+
+    if re.fullmatch(
+        r"(?:level|floor|basement|podium|roof) [a-z0-9][a-z0-9 m~.,()/+-]*",
+        normalized_name,
+    ):
+        return True
+
+    if normalized_name.startswith("construction ") and " works" in padded_name:
+        return True
+
+    return False
+
+
 def keyword_classify_activity_name(
     activity_name: str,
     *,
@@ -1737,6 +1865,9 @@ def keyword_classify_activity_name(
         if valid_types and asset_type not in valid_types:
             continue
         return asset_type
+
+    if (valid_types is None or "none" in valid_types) and looks_like_non_demand_heading(activity_name):
+        return "none"
     return None
 
 

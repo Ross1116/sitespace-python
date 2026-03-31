@@ -78,13 +78,22 @@ def create_database_engine():
             
     # Test the connection. This must succeed for the application to start.
     try:
-        with engine.connect() as connection:
-            logger.info("✅ Database connection test successful.")
+        assert_database_connection(engine)
+        logger.info("✅ Database connection test successful.")
     except SQLAlchemyError:
-        logger.warning("❌ Database connectivity check failed at startup", exc_info=True)
-        logger.warning("Application startup will continue. DB-backed endpoints may return 503 until connectivity is restored.")
+        logger.exception("❌ Database connectivity check failed at startup")
+        raise
 
     return engine
+
+
+def assert_database_connection(target_engine=None) -> None:
+    """
+    Raise on connectivity failure so startup and health checks fail closed.
+    """
+    engine_to_check = target_engine or engine
+    with engine_to_check.connect() as connection:
+        connection.exec_driver_sql("SELECT 1")
 
 # Create the engine
 engine = create_database_engine()

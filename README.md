@@ -167,7 +167,7 @@ Notes:
 | GET    | `/{upload_id}/activities`                           | List imported activities |
 | GET    | `/{upload_id}/activities?subcontractor_id={subcontractor_id}` | Subcontractor-scoped activities for assigned subcontractor |
 | GET    | `/activities/{activity_id}/booking-context?selected_week_start=YYYY-MM-DD` | Activity-linked booking context for selected week |
-| GET    | `/{upload_id}/diff`                                 | Compare against latest earlier committed version |
+| GET    | `/{upload_id}/diff`                                 | Compare against latest earlier planning-successful version |
 | GET    | `/{upload_id}/mappings`                             | List activity asset mappings |
 | GET    | `/{upload_id}/mappings/unclassified`                | Low-confidence unresolved mappings |
 | PATCH  | `/mappings/{mapping_id}`                            | Apply upload-local correction to mapping |
@@ -176,6 +176,7 @@ Notes:
 Notes:
 
 - Upload processing can degrade safely when AI is unavailable; deterministic fallback continues processing rather than hard-failing the entire upload.
+- Stale `processing` uploads older than the configured recovery threshold are failed on startup and before new uploads are accepted, preventing projects from remaining blocked forever after a crash/redeploy.
 - `GET /{upload_id}/status` returns stable diagnostics in `completeness_notes`, including AI suppression, unclassified mapping count, excluded booking count, and non-planning-ready asset count.
 - Upload metadata write failures clean up orphaned stored blobs.
 - Activity parent/child links are preserved during import, including cached-header paths.
@@ -528,7 +529,20 @@ AI_OUTPUT_COST_PER_MILLION_USD=
 NIGHTLY_LOOKAHEAD_HOUR=18
 NIGHTLY_LOOKAHEAD_MINUTE=30
 NIGHTLY_LOOKAHEAD_TIMEZONE=Australia/Adelaide
+
+# Upload recovery
+# Positive integer minutes; uploads stuck in `processing` longer than this
+# threshold are marked failed on startup and before new uploads are accepted.
+# Default: 30
+PROGRAMME_PROCESSING_STALE_MINUTES=30
 ```
+
+`PROGRAMME_PROCESSING_STALE_MINUTES` is read from the environment and must be a
+positive integer representing minutes. It controls the stale-processing
+recovery threshold used by the upload safeguards described above: deterministic
+fallback still allows degraded completion when AI is unavailable, but uploads
+that remain in `processing` past this threshold are failed and annotated in
+`completeness_notes` so operators can retry cleanly.
 
 ---
 

@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     NIGHTLY_LOOKAHEAD_HOUR: int = Field(18, validation_alias="NIGHTLY_LOOKAHEAD_HOUR")
     NIGHTLY_LOOKAHEAD_MINUTE: int = Field(30, validation_alias="NIGHTLY_LOOKAHEAD_MINUTE")
     NIGHTLY_LOOKAHEAD_TIMEZONE: str = Field("Australia/Adelaide", validation_alias="NIGHTLY_LOOKAHEAD_TIMEZONE")
+    PROGRAMME_PROCESSING_STALE_MINUTES: int = Field(
+        30,
+        validation_alias="PROGRAMME_PROCESSING_STALE_MINUTES",
+        gt=0,
+    )
 
 
 settings = Settings()

@@ -21,6 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from ...core.config import settings
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
 from ...crud import asset as asset_crud
@@ -60,7 +61,12 @@ from ...utils.storage import storage
 from ...utils.programme_notes import normalize_programme_completeness_notes
 from ...services.metadata_confidence_service import asset_is_planning_ready
 from ...services.lookahead_engine import resolve_activity_distribution
-from ...services.process_programme import preflight_validate, process_programme
+from ...services.ai_service import looks_like_non_demand_heading
+from ...services.process_programme import (
+    preflight_validate,
+    process_programme,
+    recover_stale_processing_uploads,
+)
 from ...services.programme_upload_service import (
     get_active_programme_upload,
     get_previous_successful_programme_upload,
@@ -322,6 +328,24 @@ async def upload_programme(
 
     # File is valid — now check project access (acquires DB connection).
     _check_project_access(project_id, current_user, db)
+    recover_stale_processing_uploads(
+        db,
+        project_id=project_id,
+        stale_after=timedelta(minutes=settings.PROGRAMME_PROCESSING_STALE_MINUTES),
+    )
+    active_processing_upload = (
+        db.query(ProgrammeUpload.id)
+        .filter(
+            ProgrammeUpload.project_id == project_id,
+            ProgrammeUpload.status == "processing",
+        )
+        .first()
+    )
+    if active_processing_upload is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Another programme upload is already processing for this project. Please wait for it to finish.",
+        )
 
     try:
         storage_path = await storage.save(file_bytes, filename)
@@ -1014,12 +1038,17 @@ def get_unclassified_activity_mappings(
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             ActivityAssetMapping.confidence == "low",
+            ActivityAssetMapping.asset_type.is_(None),
             ActivityAssetMapping.manually_corrected.is_(False),
         )
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
         .all()
     )
-    return [_serialize_mapping(mapping, activity_name, item_id) for mapping, activity_name, item_id in rows]
+    return [
+        _serialize_mapping(mapping, activity_name, item_id)
+        for mapping, activity_name, item_id in rows
+        if not looks_like_non_demand_heading(activity_name or "")
+    ]
 
 
 # ---------------------------------------------------------------------------

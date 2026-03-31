@@ -257,10 +257,6 @@ def get_active_asset_types(db: object) -> frozenset[str]:
         from ..crud.asset_type import get_active_codes
         return get_active_codes(db)  # type: ignore[arg-type]
     except Exception as exc:
-        try:
-            db.rollback()  # type: ignore[union-attr]
-        except Exception:
-            pass
         _logger.warning("Falling back to bootstrap ALLOWED_ASSET_TYPES: %s", exc)
         return ALLOWED_ASSET_TYPES
 
@@ -276,10 +272,6 @@ def get_max_hours_for_type(db: object, code: str) -> float:
         if val is not None:
             return val
     except Exception as exc:
-        try:
-            db.rollback()  # type: ignore[union-attr]
-        except Exception:
-            pass
         _logger.warning(
             "Falling back to DEFAULT_MAX_HOURS_PER_DAY for '%s': %s", code, exc,
         )
