@@ -271,9 +271,10 @@ class TestKeywordNormalization:
 
 class TestAiClassificationMerge:
     async def test_real_classifier_preserves_none_as_successful_result(self):
-        activities = [{"id": "a1", "name": "SUPERSTRUCTURE"}]
+        activities = [{"id": "a1", "name": "Neutral coordination row"}]
 
         with patch("app.services.ai_service._get_async_client", return_value=object()), \
+             patch("app.services.ai_service.keyword_classify_activity_name", return_value=None), \
              patch(
                  "app.services.ai_service._build_classification_prompt",
                  return_value=("prompt", frozenset({"crane", "none", "other"})),

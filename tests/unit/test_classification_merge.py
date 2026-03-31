@@ -134,12 +134,30 @@ class TestKeywordFallbackClassification:
         assert result.classifications[0].confidence == "medium"
         assert result.skipped == []
 
+        scoped_result = await classify_assets(
+            activities,
+            project_assets=[{"name": "Crane", "type": "Crane", "code": "CR-01"}],
+        )
+        assert len(scoped_result.classifications) == 1
+        assert scoped_result.classifications[0].asset_type == "none"
+        assert scoped_result.classifications[0].confidence == "medium"
+        assert scoped_result.skipped == []
+
     async def test_zone_heading_maps_to_none_in_fallback(self):
         activities = [_activity("a1", "Zone A")]
         result = await classify_assets(activities)
         assert len(result.classifications) == 1
         assert result.classifications[0].asset_type == "none"
         assert result.skipped == []
+
+        scoped_result = await classify_assets(
+            activities,
+            project_assets=[{"name": "Crane", "type": "Crane", "code": "CR-01"}],
+        )
+        assert len(scoped_result.classifications) == 1
+        assert scoped_result.classifications[0].asset_type == "none"
+        assert scoped_result.classifications[0].confidence == "medium"
+        assert scoped_result.skipped == []
 
     async def test_install_bd_reo_not_classified_as_crane(self):
         """

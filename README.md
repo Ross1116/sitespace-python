@@ -529,7 +529,20 @@ AI_OUTPUT_COST_PER_MILLION_USD=
 NIGHTLY_LOOKAHEAD_HOUR=18
 NIGHTLY_LOOKAHEAD_MINUTE=30
 NIGHTLY_LOOKAHEAD_TIMEZONE=Australia/Adelaide
+
+# Upload recovery
+# Positive integer minutes; uploads stuck in `processing` longer than this
+# threshold are marked failed on startup and before new uploads are accepted.
+# Default: 30
+PROGRAMME_PROCESSING_STALE_MINUTES=30
 ```
+
+`PROGRAMME_PROCESSING_STALE_MINUTES` is read from the environment and must be a
+positive integer representing minutes. It controls the stale-processing
+recovery threshold used by the upload safeguards described above: deterministic
+fallback still allows degraded completion when AI is unavailable, but uploads
+that remain in `processing` past this threshold are failed and annotated in
+`completeness_notes` so operators can retry cleanly.
 
 ---
 

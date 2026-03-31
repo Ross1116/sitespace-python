@@ -21,6 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from ...core.config import settings
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
 from ...crud import asset as asset_crud

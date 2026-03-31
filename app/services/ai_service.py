@@ -59,12 +59,26 @@ _AI_PROVIDER_NEXT_REQUEST_AT = 0.0
 # Matches: "Day 7 - ", "Day 14 – ", "Day 7-" etc.
 # Character class explicitly covers hyphen, en-dash (U+2013), and em-dash (U+2014).
 _DEDUP_PREFIX_RE = re.compile(r"^(?:day\s+\d+\s*[-\u2013\u2014]\s*)+", re.IGNORECASE)
+_VALID_CLASSIFICATION_CONFIDENCES = frozenset({"low", "medium", "high"})
 
 
 def _normalize_for_dedup(name: str) -> str:
     """Lowercase, strip P6 day-step prefix, collapse whitespace."""
     norm = _DEDUP_PREFIX_RE.sub("", name.strip().lower()).strip()
     return re.sub(r"\s{2,}", " ", norm)
+
+
+def _normalize_classification_confidence(confidence: Any) -> str:
+    """
+    Accept only explicit high/medium/low confidence tokens.
+
+    Unexpected or empty values degrade to low so downstream auto-commit logic
+    never treats malformed AI responses as planning-ready.
+    """
+    token = str(confidence or "").strip().lower()
+    if token in _VALID_CLASSIFICATION_CONFIDENCES:
+        return token
+    return "low"
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +625,7 @@ def classify_item_standalone(
                 for item in raw.get("classifications") or []:
                     if str(item.get("activity_id")) == fake_id:
                         asset_type = str(item.get("asset_type") or "").strip().lower()
-                        confidence = str(item.get("confidence") or "").strip().lower()
+                        confidence = _normalize_classification_confidence(item.get("confidence"))
                         if asset_type in valid_types and confidence in {"high", "medium"}:
                             return asset_type, confidence
                 return None
@@ -1430,7 +1444,7 @@ async def _classify_assets_real(
 
         if keyword_type and ai_result:
             ai_type = ai_result.get("asset_type")
-            ai_confidence = str(ai_result.get("confidence") or "medium").lower()
+            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
 
             if ai_type == keyword_type and ai_type in valid_types:
                 # Both agree — highest confidence
@@ -1479,12 +1493,12 @@ async def _classify_assets_real(
 
         elif ai_result:
             ai_type = ai_result.get("asset_type")
-            ai_confidence = str(ai_result.get("confidence") or "medium").lower()
+            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
 
             if not ai_type or ai_type not in valid_types:
                 skipped.append(act_id)
             elif ai_type == "none":
-                if ai_confidence == "low":
+                if ai_confidence not in {"medium", "high"}:
                     skipped.append(act_id)
                 else:
                     classifications.append(ClassificationItem(
