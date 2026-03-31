@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # Service role: "web" | "worker" | "nightly" (controls startup behavior)
     SERVICE_ROLE: str = Field("web", validation_alias="SERVICE_ROLE")
 
+    # Internal networking — worker fetches files from web over Railway private network
+    WEB_INTERNAL_URL: str = Field("", validation_alias="WEB_INTERNAL_URL")
+    INTERNAL_API_SECRET: str = Field("", validation_alias="INTERNAL_API_SECRET")
+
     @model_validator(mode="after")
     def validate_worker_heartbeat_vs_claim_ttl(self) -> "Settings":
         if self.UPLOAD_WORKER_HEARTBEAT_SECONDS >= self.UPLOAD_WORKER_CLAIM_TTL_SECONDS:
@@ -148,6 +152,21 @@ class Settings(BaseSettings):
                 f"The heartbeat interval must be shorter than the claim TTL so workers "
                 f"can prove liveness before their claim expires."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_worker_internal_networking(self) -> "Settings":
+        if self.SERVICE_ROLE == "worker":
+            if not self.WEB_INTERNAL_URL:
+                raise ValueError(
+                    "WEB_INTERNAL_URL must be set when SERVICE_ROLE='worker'. "
+                    "The worker needs the web service URL to fetch uploaded files."
+                )
+            if not self.INTERNAL_API_SECRET:
+                raise ValueError(
+                    "INTERNAL_API_SECRET must be set when SERVICE_ROLE='worker'. "
+                    "Required for authenticating internal service-to-service requests."
+                )
         return self
 
 
