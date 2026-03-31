@@ -103,7 +103,8 @@ def run_nightly_tick() -> None:
             run_record = existing
         elif existing and existing.status == "running":
             # We hold the advisory lock, so a "running" row means the previous
-            # instance crashed.  Mark it failed and proceed with a fresh run.
+            # instance crashed.  Persist the failure audit first so it's
+            # visible in the DB, then reset for a fresh run.
             logger.warning(
                 "Nightly tick: found stale 'running' row for %s (started %s) — marking failed and retrying",
                 today, existing.started_at,
@@ -111,8 +112,12 @@ def run_nightly_tick() -> None:
             existing.status = "failed"
             existing.finished_at = datetime.now(timezone.utc)
             existing.last_error = "Stale running state recovered by advisory-lock holder"
-            existing.started_at = datetime.now(timezone.utc)
+            db.commit()
+
+            # Reset the same row for the retry (unique constraint prevents a
+            # second row for the same job_name + date).
             existing.status = "running"
+            existing.started_at = datetime.now(timezone.utc)
             existing.finished_at = None
             existing.last_error = None
             db.commit()

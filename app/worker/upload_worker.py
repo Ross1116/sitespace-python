@@ -104,6 +104,11 @@ class UploadWorker:
                     job.worker_id = None
                     job.claimed_at = None
                     job.heartbeat_at = None
+                    # Keep upload in "processing" so the guard blocks overlapping
+                    # uploads while this job is still retryable.
+                    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == job.upload_id).first()
+                    if upload and upload.status == "failed":
+                        upload.status = "processing"
                     logger.info(
                         "Requeued expired job %s (upload %s) — attempt %d/%d, available_at=%s",
                         job.id, job.upload_id, job.attempt_count, job.max_attempts, job.available_at,
@@ -177,9 +182,10 @@ class UploadWorker:
 
         # Start heartbeat thread
         heartbeat_stop = threading.Event()
+        heartbeat_failed = threading.Event()
         heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
-            args=(job_id, heartbeat_stop),
+            args=(job_id, heartbeat_stop, heartbeat_failed),
             daemon=True,
         )
         heartbeat_thread.start()
@@ -190,6 +196,12 @@ class UploadWorker:
                 self._reset_partial_state(upload_id)
 
             process_programme(upload_id)
+
+            # If heartbeat signaled claim loss, abandon — another worker may
+            # have reclaimed this job.
+            if heartbeat_failed.is_set():
+                logger.warning("Job %s: heartbeat lost during processing, abandoning", job_id)
+                return True
 
             # process_programme swallows its own exceptions and sets upload
             # status internally.  Check the persisted status to decide the
@@ -205,26 +217,45 @@ class UploadWorker:
         except Exception as exc:
             sentry_sdk.capture_exception(exc)
             logger.exception("Job %s failed (upload %s)", job_id, upload_id)
-            self._handle_job_failure(job_id, upload_id, attempt, max_attempts, exc)
+            if not heartbeat_failed.is_set():
+                self._handle_job_failure(job_id, upload_id, attempt, max_attempts, exc)
+            else:
+                logger.warning("Job %s: heartbeat lost, skipping failure handling", job_id)
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=5)
 
         return True
 
-    def _heartbeat_loop(self, job_id: uuid.UUID, stop: threading.Event) -> None:
-        """Periodically update heartbeat_at so the job isn't reclaimed."""
+    def _heartbeat_loop(
+        self,
+        job_id: uuid.UUID,
+        stop: threading.Event,
+        failed: threading.Event,
+    ) -> None:
+        """Periodically update heartbeat_at so the job isn't reclaimed.
+
+        Sets *failed* if the update query affects 0 rows (claim lost) or
+        raises, signaling _poll_once to treat the job as lost.
+        """
         while not stop.wait(timeout=self._heartbeat_seconds):
             db = SessionLocal()
             try:
-                db.query(ProgrammeUploadJob).filter(
+                rows = db.query(ProgrammeUploadJob).filter(
                     ProgrammeUploadJob.id == job_id,
                     ProgrammeUploadJob.status == "running",
+                    ProgrammeUploadJob.worker_id == WORKER_ID,
                 ).update({"heartbeat_at": datetime.now(timezone.utc)})
                 db.commit()
+                if rows == 0:
+                    logger.warning("Heartbeat: job %s no longer owned by this worker, signaling loss", job_id)
+                    failed.set()
+                    return
             except Exception:
                 db.rollback()
-                logger.warning("Heartbeat update failed for job %s", job_id)
+                logger.warning("Heartbeat update failed for job %s, signaling loss", job_id)
+                failed.set()
+                return
             finally:
                 db.close()
 
@@ -235,6 +266,8 @@ class UploadWorker:
         Deletes previously inserted programme_activities for this upload
         (cascade handles mappings, AI suggestions, work-profile rows).
         Clears upload-derived fields but keeps the upload row, file, version, and audit.
+
+        Raises on failure so process_programme() is never called on dirty state.
         """
         db = SessionLocal()
         try:
@@ -258,6 +291,7 @@ class UploadWorker:
         except Exception:
             db.rollback()
             logger.exception("Failed to reset partial state for upload %s", upload_id)
+            raise
         finally:
             db.close()
 
@@ -273,12 +307,23 @@ class UploadWorker:
     def _mark_job_completed(self, job_id: uuid.UUID) -> None:
         db = SessionLocal()
         try:
-            job = db.query(ProgrammeUploadJob).filter(ProgrammeUploadJob.id == job_id).first()
-            if job:
-                job.status = "completed"
-                job.last_error_code = None
-                job.last_error_message = None
-                db.commit()
+            rows = (
+                db.query(ProgrammeUploadJob)
+                .filter(
+                    ProgrammeUploadJob.id == job_id,
+                    ProgrammeUploadJob.status == "running",
+                    ProgrammeUploadJob.worker_id == WORKER_ID,
+                )
+                .update({
+                    "status": "completed",
+                    "last_error_code": None,
+                    "last_error_message": None,
+                })
+            )
+            db.commit()
+            if rows == 0:
+                logger.warning("Job %s: conditional completion update matched 0 rows (claim lost?)", job_id)
+            else:
                 logger.info("Job %s completed successfully", job_id)
         except Exception:
             db.rollback()
@@ -296,8 +341,17 @@ class UploadWorker:
     ) -> None:
         db = SessionLocal()
         try:
-            job = db.query(ProgrammeUploadJob).filter(ProgrammeUploadJob.id == job_id).first()
+            job = (
+                db.query(ProgrammeUploadJob)
+                .filter(
+                    ProgrammeUploadJob.id == job_id,
+                    ProgrammeUploadJob.status == "running",
+                    ProgrammeUploadJob.worker_id == WORKER_ID,
+                )
+                .first()
+            )
             if not job:
+                logger.warning("Job %s: not found with expected claim (lost?), skipping failure handling", job_id)
                 return
 
             error_code = type(exc).__name__[:60]
@@ -331,6 +385,11 @@ class UploadWorker:
                 job.worker_id = None
                 job.claimed_at = None
                 job.heartbeat_at = None
+                # Keep upload in "processing" so the guard doesn't allow
+                # overlapping uploads while this job is still retryable.
+                upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
+                if upload and upload.status == "failed":
+                    upload.status = "processing"
                 logger.info(
                     "Job %s scheduled for retry (upload %s) — attempt %d/%d, backoff=%ds",
                     job_id, upload_id, attempt, max_attempts, backoff,

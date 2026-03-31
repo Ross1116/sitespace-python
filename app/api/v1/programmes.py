@@ -396,10 +396,12 @@ async def upload_programme(
         )
         if active_blocked_locked is not None:
             db.rollback()
-            try:
-                storage.delete(stored_file.storage_path)
-            except Exception:
-                logger.error("Failed to delete orphaned blob after lock-check rejection path=%s", stored_file.storage_path)
+            deleted = storage.delete(stored_file.storage_path)
+            if deleted is False:
+                logger.error(
+                    "Blob deletion returned False (orphaned) after lock-check rejection path=%s",
+                    stored_file.storage_path,
+                )
             raise HTTPException(
                 status_code=409,
                 detail="Another programme upload is already processing for this project. Please wait for it to finish.",
