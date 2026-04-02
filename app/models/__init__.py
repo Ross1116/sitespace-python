@@ -31,6 +31,8 @@ from .work_profile import (
     ItemKnowledgeBase,
     AssetUsageActual,
     ContextFeatureObservation,
+    ContextFeatureEffect,
+    ContextExpansionSignal,
 )
 from .job_queue import ProgrammeUploadJob, ScheduledJobRun
 
@@ -67,6 +69,8 @@ __all__ = [
     "ItemKnowledgeBase",
     "AssetUsageActual",
     "ContextFeatureObservation",
+    "ContextFeatureEffect",
+    "ContextExpansionSignal",
     "ProgrammeUploadJob",
     "ScheduledJobRun",
 ]

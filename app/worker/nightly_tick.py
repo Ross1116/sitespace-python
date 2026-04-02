@@ -24,12 +24,15 @@ from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models.job_queue import ScheduledJobRun
 from ..services.lookahead_engine import nightly_lookahead_job
+from ..services.feature_learning_service import nightly_feature_learning_job
 
 logger = logging.getLogger(__name__)
 
 JOB_NAME = "nightly_lookahead"
 # Advisory lock key — deterministic from job name
 ADVISORY_LOCK_KEY = int.from_bytes(JOB_NAME.encode("utf-8")[:8].ljust(8, b"\x00"), byteorder="big", signed=True)
+
+FEATURE_LEARNING_JOB_NAME = "nightly_feature_learning"
 
 
 def _local_now() -> datetime:
@@ -51,6 +54,69 @@ def _is_due(local_now: datetime) -> bool:
             and local_now.minute >= settings.NIGHTLY_LOOKAHEAD_MINUTE
         )
     )
+
+
+def _run_feature_learning_tick(db: "Session", today: "date") -> None:  # type: ignore[name-defined]
+    """
+    Run the nightly feature-learning batch as an independent ScheduledJobRun entry.
+
+    Failures are logged but do NOT propagate — feature learning is supplementary
+    and must not block the main nightly tick from completing.
+    """
+    existing = (
+        db.query(ScheduledJobRun)
+        .filter(
+            ScheduledJobRun.job_name == FEATURE_LEARNING_JOB_NAME,
+            ScheduledJobRun.logical_local_date == today,
+        )
+        .first()
+    )
+    if existing and existing.status == "succeeded":
+        logger.info("Feature learning tick: already succeeded for %s, skipping", today)
+        return
+
+    if existing and existing.status in ("running", "failed"):
+        existing.status = "running"
+        existing.started_at = datetime.now(timezone.utc)
+        existing.finished_at = None
+        existing.last_error = None
+        db.commit()
+        run_record = existing
+    else:
+        run_record = ScheduledJobRun(
+            job_name=FEATURE_LEARNING_JOB_NAME,
+            logical_local_date=today,
+            status="running",
+        )
+        try:
+            db.add(run_record)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.info("Feature learning tick: concurrent insert for %s, skipping", today)
+            return
+
+    logger.info("Feature learning tick: running batch for %s", today)
+    try:
+        result = nightly_feature_learning_job()
+        run_record.status = "succeeded"
+        run_record.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.info(
+            "Feature learning tick: completed for %s — %s",
+            today, result,
+        )
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.exception("Feature learning tick: failed for %s", today)
+        try:
+            db.rollback()
+            run_record.status = "failed"
+            run_record.finished_at = datetime.now(timezone.utc)
+            run_record.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+            db.commit()
+        except Exception:
+            db.rollback()
 
 
 def run_nightly_tick() -> None:
@@ -166,6 +232,7 @@ def run_nightly_tick() -> None:
                     "Nightly tick: completed successfully for %s — %d projects",
                     today, result.get("succeeded", 0),
                 )
+                _run_feature_learning_tick(db, today)
         except Exception as exc:
             sentry_sdk.capture_exception(exc)
             logger.exception("Nightly tick: failed for %s", today)

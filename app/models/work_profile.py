@@ -552,3 +552,140 @@ class ContextFeatureObservation(Base):
             f"<ContextFeatureObservation(item={self.item_id}, asset='{self.asset_type}', "
             f"predicted={self.predicted_hours}, actual={self.actual_hours})>"
         )
+
+
+class ContextFeatureEffect(Base):
+    """
+    Materialized feature importance for one (item, asset_type, duration_bucket, feature_name, feature_value).
+
+    Recomputed nightly by batch_compute_all_feature_effects().  Each row captures
+    how much a specific context field value shifts predicted hours relative to the
+    global mean for that key tuple.
+
+    Phase B (Stage 11).
+    """
+
+    __tablename__ = "context_feature_effects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    duration_bucket = Column(SmallInteger, nullable=False)
+    feature_name = Column(String(30), nullable=False)
+    feature_value = Column(String(30), nullable=False)
+    context_version = Column(SmallInteger, nullable=False)
+    inference_version = Column(SmallInteger, nullable=False)
+
+    observation_count = Column(Integer, nullable=False)
+    mean_residual = Column(Numeric(10, 4), nullable=False)
+    variance_of_residual = Column(Numeric(14, 6), nullable=False)
+    effect_magnitude = Column(Numeric(8, 6), nullable=False)
+    learned_weight = Column(Numeric(8, 6), nullable=False)
+    confidence = Column(Numeric(6, 4), nullable=False)
+    effective_weight = Column(Numeric(8, 6), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "asset_type", "duration_bucket",
+            "feature_name", "feature_value",
+            "context_version", "inference_version",
+            name="uq_context_feature_effects_key",
+        ),
+        Index("ix_ctx_feature_effects_item_asset_bucket", "item_id", "asset_type", "duration_bucket"),
+        CheckConstraint("duration_bucket > 0", name="ck_ctx_feature_effects_duration_bucket"),
+        CheckConstraint("observation_count > 0", name="ck_ctx_feature_effects_obs_count"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_ctx_feature_effects_confidence"),
+        CheckConstraint(
+            "feature_name IN ('phase', 'spatial_type', 'area_type', 'work_type')",
+            name="ck_ctx_feature_effects_feature_name",
+        ),
+    )
+
+    item = relationship("Item", foreign_keys=[item_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContextFeatureEffect(item={self.item_id}, asset='{self.asset_type}', "
+            f"feature={self.feature_name}={self.feature_value}, w={self.effective_weight})>"
+        )
+
+
+class ContextExpansionSignal(Base):
+    """
+    Tracks when a base-context signature (phase+spatial_type+area_type) repeatedly
+    produces high-variance profiles, signalling that work_type should be promoted
+    into the compressed context for this (item, asset_type) pair.
+
+    promoted=False until a human approves the expansion.  Phase B (Stage 11).
+    """
+
+    __tablename__ = "context_expansion_signals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_signature = Column(String(120), nullable=False)
+    context_version = Column(SmallInteger, nullable=False)
+    inference_version = Column(SmallInteger, nullable=False)
+
+    observation_count = Column(Integer, nullable=False)
+    mean_cv = Column(Numeric(8, 6), nullable=False)
+    expansion_candidate_field = Column(String(30), nullable=False)
+    expansion_score = Column(Numeric(8, 6), nullable=False)
+
+    promoted = Column(Boolean, nullable=False, default=False, server_default="false")
+    promoted_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "asset_type", "context_signature",
+            "context_version", "inference_version",
+            name="uq_context_expansion_signals_key",
+        ),
+        Index("ix_ctx_expansion_signals_item_asset", "item_id", "asset_type"),
+        CheckConstraint("observation_count > 0", name="ck_ctx_expansion_signals_obs_count"),
+        CheckConstraint(
+            "expansion_score >= 0 AND expansion_score <= 1",
+            name="ck_ctx_expansion_signals_score",
+        ),
+    )
+
+    item = relationship("Item", foreign_keys=[item_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContextExpansionSignal(item={self.item_id}, asset='{self.asset_type}', "
+            f"sig='{self.context_signature}', score={self.expansion_score}, promoted={self.promoted})>"
+        )
