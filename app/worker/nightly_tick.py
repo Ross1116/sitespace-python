@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 import sentry_sdk
 from sqlalchemy import text
@@ -56,7 +60,7 @@ def _is_due(local_now: datetime) -> bool:
     )
 
 
-def _run_feature_learning_tick(db: "Session", today: "date") -> None:  # type: ignore[name-defined]
+def _run_feature_learning_tick(db: Session, today: date) -> None:
     """
     Run the nightly feature-learning batch as an independent ScheduledJobRun entry.
 
