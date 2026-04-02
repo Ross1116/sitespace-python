@@ -287,6 +287,25 @@ def apply_mapping_correction(
             )
             if profile_changed:
                 previous_context_profile.correction_count = int(previous_context_profile.correction_count or 0) + 1
+
+                # Stage 11 — record the correction as a feature observation
+                # (manual correction = ground truth; old predicted hours = prediction)
+                if context.activity_profile is not None:
+                    _fl_compressed = build_compressed_context(
+                        context.activity.name or "",
+                        level_name=context.activity.level_name,
+                        zone_name=context.activity.zone_name,
+                    )
+                    from app.services.feature_learning_service import record_feature_observation
+                    record_feature_observation(
+                        db,
+                        context_profile=previous_context_profile,
+                        activity_work_profile=context.activity_profile,
+                        actual_hours=prepared.total_hours,
+                        compressed_context=_fl_compressed,
+                        project_id=context.upload.project_id,
+                    )
+
                 old_global_key = (
                     previous_context_profile.item_id,
                     str(previous_context_profile.asset_type),

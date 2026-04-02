@@ -104,6 +104,7 @@ class ItemContextProfile(Base):
     correction_count = Column(Integer, nullable=False, default=0, server_default="0")
     actuals_count = Column(Integer, nullable=False, default=0, server_default="0")
     actuals_median = Column(Numeric(10, 4), nullable=True)
+    actuals_shape_json = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
@@ -340,6 +341,8 @@ class ItemKnowledgeBase(Base):
     sample_count = Column(Integer, nullable=False, default=0, server_default="0")
     correction_count = Column(Integer, nullable=False, default=0, server_default="0")
     normalized_shape_json = Column(JSONB, nullable=False)
+    actuals_shape_json = Column(JSONB, nullable=True)
+    actuals_shape_weight = Column(Numeric(10, 4), nullable=True, default=0, server_default="0")
     confidence_tier = Column(String(10), nullable=False)
     promoted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_updated_at = Column(
@@ -449,4 +452,103 @@ class AssetUsageActual(Base):
         return (
             f"<AssetUsageActual(activity_work_profile={self.activity_work_profile_id}, "
             f"hours={self.actual_hours_used}, source='{self.source}')>"
+        )
+
+
+class ContextFeatureObservation(Base):
+    """
+    One row per actual-vs-predicted comparison, recording the full compressed
+    context fingerprint alongside the prediction error.
+
+    Phase A (Stage 11): append-only data collection — no behavioural change.
+    Later, grouping by a single context field while marginalising over others
+    reveals that field's explanatory power.
+    """
+
+    __tablename__ = "context_feature_observations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    duration_bucket = Column(SmallInteger, nullable=False)
+
+    # Context field snapshot at time of observation
+    ctx_phase = Column(String(30), nullable=False)
+    ctx_spatial_type = Column(String(30), nullable=False)
+    ctx_area_type = Column(String(30), nullable=False)
+    ctx_work_type = Column(String(30), nullable=False)
+
+    # Prediction vs reality
+    predicted_hours = Column(Numeric(10, 4), nullable=False)
+    actual_hours = Column(Numeric(10, 4), nullable=False)
+    residual = Column(Numeric(10, 4), nullable=False)
+    relative_error = Column(Numeric(8, 6), nullable=True)
+
+    # Provenance
+    context_profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("item_context_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    activity_work_profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_work_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    context_version = Column(SmallInteger, nullable=False)
+    inference_version = Column(SmallInteger, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_ctx_feature_obs_item_asset_bucket",
+            "item_id",
+            "asset_type",
+            "duration_bucket",
+        ),
+        Index(
+            "ix_ctx_feature_obs_context_fields",
+            "ctx_phase",
+            "ctx_spatial_type",
+            "ctx_area_type",
+            "ctx_work_type",
+        ),
+        Index("ix_ctx_feature_obs_project_id", "project_id"),
+        CheckConstraint(
+            "duration_bucket > 0",
+            name="ck_ctx_feature_obs_duration_bucket",
+        ),
+        CheckConstraint(
+            "predicted_hours >= 0",
+            name="ck_ctx_feature_obs_predicted_hours",
+        ),
+        CheckConstraint(
+            "actual_hours >= 0",
+            name="ck_ctx_feature_obs_actual_hours",
+        ),
+    )
+
+    item = relationship("Item", foreign_keys=[item_id])
+    context_profile = relationship("ItemContextProfile", foreign_keys=[context_profile_id])
+    activity_work_profile = relationship("ActivityWorkProfile", foreign_keys=[activity_work_profile_id])
+    project = relationship("SiteProject", foreign_keys=[project_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContextFeatureObservation(item={self.item_id}, asset='{self.asset_type}', "
+            f"predicted={self.predicted_hours}, actual={self.actual_hours})>"
         )

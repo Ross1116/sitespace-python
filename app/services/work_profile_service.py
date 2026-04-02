@@ -3253,6 +3253,20 @@ def record_actual_hours(
                 inference_version=int(context_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
             )
 
+    # Stage 11 — record feature observation for learning (append-only, no behavioural change)
+    if context_profile is not None:
+        _compressed = _resolve_context_profile_compressed_context(db, context_profile)
+        if _compressed is not None:
+            from app.services.feature_learning_service import record_feature_observation
+            record_feature_observation(
+                db,
+                context_profile=context_profile,
+                activity_work_profile=profile,
+                actual_hours=float(actual_hours_used),
+                compressed_context=_compressed,
+                project_id=context_profile.project_id,
+            )
+
     db.flush()
     return actual
 
