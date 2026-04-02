@@ -2758,6 +2758,8 @@ def _apply_item_knowledge_payload(
     source_project_count: int,
     sample_count: int,
     correction_count: int,
+    actuals_shape_json: list[float] | None = None,
+    actuals_shape_weight: float = 0.0,
 ) -> ItemKnowledgeBase:
     knowledge.posterior_mean = posterior_mean
     knowledge.posterior_precision = posterior_precision
@@ -2766,6 +2768,8 @@ def _apply_item_knowledge_payload(
     knowledge.correction_count = correction_count
     knowledge.normalized_shape_json = normalized_shape
     knowledge.confidence_tier = confidence_tier
+    knowledge.actuals_shape_json = actuals_shape_json
+    knowledge.actuals_shape_weight = round(actuals_shape_weight, 4)
     return knowledge
 
 
@@ -2809,6 +2813,8 @@ def rebuild_global_knowledge_entry(
     representative_days = duration_bucket
     shape_accumulator = [0.0] * representative_days
     shape_weight_total = 0.0
+    actuals_shape_accumulator = [0.0] * representative_days
+    actuals_shape_weight_total = 0.0
 
     for row in rows:
         row_mean = float(row.posterior_mean)
@@ -2835,6 +2841,17 @@ def rebuild_global_knowledge_entry(
         for idx, value in enumerate(resampled_shape):
             shape_accumulator[idx] += value * weight
         shape_weight_total += weight
+
+        # Stage 11 — aggregate actuals shape
+        row_actuals_shape = getattr(row, "actuals_shape_json", None)
+        row_actuals_count = int(getattr(row, "actuals_count", 0) or 0)
+        if row_actuals_shape and row_actuals_count > 0:
+            resampled_actuals = _resample_normalized_distribution(
+                list(row_actuals_shape), representative_days
+            )
+            for idx, v in enumerate(resampled_actuals):
+                actuals_shape_accumulator[idx] += v * row_actuals_count
+            actuals_shape_weight_total += row_actuals_count
 
     if (
         combined_mean is None
@@ -2867,6 +2884,13 @@ def rebuild_global_knowledge_entry(
         ]
     )
 
+    # Stage 11 — actuals-informed shape
+    actuals_shape: list[float] | None = None
+    if actuals_shape_weight_total > 0:
+        actuals_shape = derive_normalized_distribution(
+            [v / actuals_shape_weight_total for v in actuals_shape_accumulator]
+        )
+
     knowledge = existing
     if knowledge is None:
         savepoint = db.begin_nested()
@@ -2884,6 +2908,8 @@ def rebuild_global_knowledge_entry(
                 source_project_count=len(contributing_projects),
                 sample_count=sample_count,
                 correction_count=correction_count,
+                actuals_shape_json=actuals_shape,
+                actuals_shape_weight=round(actuals_shape_weight_total, 4),
             )
             db.add(knowledge)
             db.flush()
@@ -2911,6 +2937,8 @@ def rebuild_global_knowledge_entry(
         source_project_count=len(contributing_projects),
         sample_count=sample_count,
         correction_count=correction_count,
+        actuals_shape_json=actuals_shape,
+        actuals_shape_weight=actuals_shape_weight_total,
     )
 
     db.flush()
@@ -3251,6 +3279,20 @@ def record_actual_hours(
                 duration_bucket=duration_bucket_for_days(int(context_profile.duration_days or 0)),
                 context_version=int(context_profile.context_version or WORK_PROFILE_CONTEXT_VERSION),
                 inference_version=int(context_profile.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+            )
+
+    # Stage 11 — record feature observation for learning (append-only, no behavioural change)
+    if context_profile is not None:
+        _compressed = _resolve_context_profile_compressed_context(db, context_profile)
+        if _compressed is not None:
+            from app.services.feature_learning_service import record_feature_observation
+            record_feature_observation(
+                db,
+                context_profile=context_profile,
+                activity_work_profile=profile,
+                actual_hours=float(actual_hours_used),
+                compressed_context=_compressed,
+                project_id=context_profile.project_id,
             )
 
     db.flush()
@@ -3762,6 +3804,41 @@ def resolve_work_profile(
                     "Item %s asset=%s dur=%d: default fallback %.2fh",
                     item_id, asset_type, duration_days, final_hours,
                 )
+
+    # ── Step 4b: Stage 11 feature adjustments + actuals shape blending ──────
+    from app.services.feature_learning_service import (
+        apply_feature_adjustments_to_hours,
+        get_feature_adjustments,
+    )
+    _adjustments = get_feature_adjustments(
+        db,
+        item_id=item_id,
+        asset_type=asset_type,
+        duration_bucket=duration_bucket_for_days(duration_days),
+        compressed_context=preflight.compressed_context,
+    )
+    if _adjustments:
+        final_hours = quantize_hours(
+            apply_feature_adjustments_to_hours(float(final_hours), _adjustments)
+        )
+        distribution = derive_distribution(
+            norm_dist, final_hours, max_hours_per_day=preflight.max_hours_per_day
+        )
+
+    # Shape blending: blend AI shape with actuals shape when sufficient data exists
+    if cached is not None:
+        _actuals_shape = getattr(cached, "actuals_shape_json", None)
+        _actuals_count = int(getattr(cached, "actuals_count", 0) or 0)
+        if _actuals_shape and _actuals_count >= 3 and len(_actuals_shape) == len(norm_dist):
+            alpha = min(_actuals_count / 10.0, 0.9)
+            blended = [
+                alpha * _actuals_shape[i] + (1.0 - alpha) * norm_dist[i]
+                for i in range(len(norm_dist))
+            ]
+            norm_dist = derive_normalized_distribution(blended)
+            distribution = derive_distribution(
+                norm_dist, final_hours, max_hours_per_day=preflight.max_hours_per_day
+            )
 
     # ── Step 5: Stage D validation ───────────────────────────────────────────
     result = validate_stage_d(

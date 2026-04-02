@@ -450,7 +450,8 @@ def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():
         _QueryStub([]),
     ]
 
-    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
+    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock, \
+         patch("app.services.work_profile_service._resolve_context_profile_compressed_context", return_value=None):
         actual = record_actual_hours(
             db,
             activity_work_profile_id=profile.id,
@@ -497,7 +498,8 @@ def test_record_actual_hours_preserves_manual_profile_authority():
         _QueryStub([(9.0,), (10.0,)]),
     ]
 
-    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
+    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock, \
+         patch("app.services.work_profile_service._resolve_context_profile_compressed_context", return_value=None):
         record_actual_hours(
             db,
             activity_work_profile_id=profile.id,
@@ -548,7 +550,8 @@ def test_record_actual_hours_updating_existing_row_triggers_learning_refresh():
         _QueryStub([(10.0,), (11.0,), (12.0,)]),
     ]
 
-    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock:
+    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock, \
+         patch("app.services.work_profile_service._resolve_context_profile_compressed_context", return_value=None):
         actual = record_actual_hours(
             db,
             activity_work_profile_id=profile.id,

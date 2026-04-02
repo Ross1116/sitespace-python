@@ -184,6 +184,26 @@ WORK_PROFILE_NORM_DIST_SUM_TOLERANCE: float = 1e-6
 
 
 # ---------------------------------------------------------------------------
+# Stage 11 — Feature Learning (Phase A: data collection)
+# ---------------------------------------------------------------------------
+
+# Minimum observations before a feature effect is computed (Phase B).
+FEATURE_LEARNING_MIN_OBSERVATIONS: int = 5
+
+# Minimum confidence before a learned weight is applied to predictions.
+FEATURE_LEARNING_CONFIDENCE_FLOOR: float = 0.3
+
+# Maximum total adjustment factor any combination of feature weights may apply.
+FEATURE_LEARNING_MAX_ADJUSTMENT: float = 0.30
+
+# CV threshold above which a base-context signature is flagged for expansion.
+FEATURE_LEARNING_EXPANSION_CV_THRESHOLD: float = 0.30
+
+# Minimum observations in a base-context group before expansion is evaluated.
+FEATURE_LEARNING_EXPANSION_MIN_OBS: int = 10
+
+
+# ---------------------------------------------------------------------------
 # Booking and calendar limits
 # ---------------------------------------------------------------------------
 
