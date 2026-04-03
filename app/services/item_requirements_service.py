@@ -134,8 +134,15 @@ def evaluate_assets_against_requirements(
 ) -> dict[str, Any]:
     requirement_set = get_active_item_requirement_set(db, item_id)
     rules = validate_requirement_rules(requirement_set.rules_json if requirement_set else {})
+    if asset_ids is not None:
+        if asset_ids == []:
+            return {
+                "item_id": item_id,
+                "requirements": rules,
+                "evaluations": [],
+            }
     query = db.query(Asset).options(joinedload(Asset.asset_type_rel))
-    if asset_ids:
+    if asset_ids is not None:
         query = query.filter(Asset.id.in_(asset_ids))
     elif project_id is not None:
         query = query.filter(Asset.project_id == project_id)

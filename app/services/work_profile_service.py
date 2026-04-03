@@ -790,6 +790,7 @@ def _lookup_cache_with_reduced_context(
     compressed_context: dict,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
+    skip_signal_query: bool = False,
 ) -> tuple[Optional[ItemContextProfile], str]:
     """
     Look up cache entries using the deterministic fallback order:
@@ -822,7 +823,7 @@ def _lookup_cache_with_reduced_context(
         return None, exact_hash
 
     promoted_signal = None
-    if not db.__class__.__module__.startswith("unittest.mock"):
+    if not skip_signal_query:
         promoted_signal = (
             db.query(ContextExpansionSignal.id)
             .filter(
@@ -3369,8 +3370,19 @@ def record_actual_hours(
                 .all()
             ]
 
+    db.flush()
+
     if context_profile is not None:
-        _assert_profile_mutable(context_profile)
+        try:
+            _assert_profile_mutable(context_profile)
+        except ValueError:
+            logger.info(
+                "Skipping context-profile learning updates for invalidated profile %s while preserving actual hours",
+                getattr(context_profile, "id", None),
+            )
+            context_profile = None
+
+    if context_profile is not None:
         if created_actual:
             next_context_actual_values = previous_context_actual_values + [float(actual_hours_used)]
         elif previous_actual_hours == float(actual_hours_used) and previous_source == source:
@@ -3436,8 +3448,6 @@ def record_actual_hours(
                 compressed_context=_compressed,
                 project_id=context_profile.project_id,
             )
-
-    db.flush()
     return actual
 
 

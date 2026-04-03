@@ -349,12 +349,42 @@ class TestReducedContextFallback:
                 "crane",
                 5,
                 compressed,
+                skip_signal_query=True,
             )
 
         expected_base_hash = build_context_key(item_id, "crane", 5, _base_context_only(compressed))
         assert cached is cached_profile
         assert matched_hash == expected_base_hash
         assert lookup.call_count == 2
+
+    def test_lookup_can_skip_signal_query_explicitly(self):
+        compressed = {
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        }
+        project_id = uuid.uuid4()
+        item_id = uuid.uuid4()
+        cached_profile = _make_profile(source="learned")
+        db = MagicMock()
+
+        with patch("app.services.work_profile_service.lookup_cache", side_effect=[None, cached_profile]) as lookup:
+            cached, matched_hash = _lookup_cache_with_reduced_context(
+                db,
+                project_id,
+                item_id,
+                "crane",
+                5,
+                compressed,
+                skip_signal_query=True,
+            )
+
+        expected_base_hash = build_context_key(item_id, "crane", 5, _base_context_only(compressed))
+        assert cached is cached_profile
+        assert matched_hash == expected_base_hash
+        assert lookup.call_count == 2
+        db.query.assert_not_called()
 
 
 class TestUpdateCacheOnHit:

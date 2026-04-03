@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.v1 import items as items_api
 from app.api.v1 import system as system_api
 from app.schemas.item_identity import ItemRequirementEvaluationRequest
+from app.services import item_requirements_service
 from app.services.item_requirements_service import _attribute_matches, validate_requirement_rules
 from app.services.work_profile_service import (
     _overwrite_cache_entry,
@@ -161,7 +162,7 @@ def test_system_health_short_circuits_when_payload_build_fails(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "build_system_health_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(SQLAlchemyError("payload failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("payload failed")),
     )
 
     response = system_api.get_system_health(
@@ -171,6 +172,23 @@ def test_system_health_short_circuits_when_payload_build_fails(monkeypatch):
 
     assert response.database_connected is False
     assert response.reason_codes == ["database_unavailable"]
+
+
+def test_ai_readiness_returns_fallback_when_payload_build_fails(monkeypatch):
+    monkeypatch.setattr(
+        system_api,
+        "build_ai_readiness_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("readiness failed")),
+    )
+
+    response = system_api.get_ai_readiness(
+        db=MagicMock(),
+        current_user=SimpleNamespace(id=uuid4(), role="manager"),
+    )
+
+    assert response.ready_for_future_ml is False
+    assert response.metrics == []
+    assert "unavailable" in response.summary.lower()
 
 
 def test_feature_effects_404_when_item_missing():
@@ -244,3 +262,19 @@ def test_evaluate_item_requirements_maps_value_error_to_400(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "bad scope"
+
+
+def test_evaluate_assets_against_requirements_short_circuits_on_explicit_empty_asset_ids():
+    db = MagicMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(item_requirements_service, "get_active_item_requirement_set", lambda *_args, **_kwargs: None)
+        payload = item_requirements_service.evaluate_assets_against_requirements(
+            db,
+            item_id=uuid4(),
+            project_id=uuid4(),
+            asset_ids=[],
+        )
+
+    assert payload["evaluations"] == []
+    db.query.assert_not_called()

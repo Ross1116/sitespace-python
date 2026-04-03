@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...core.database import engine, get_db, assert_database_connection
 from ...core.security import require_role
+from ...models.job_queue import ScheduledJobRun
 from ...models.user import User
 from ...schemas.enums import UserRole
 from ...schemas.system import AIReadinessResponse, QueueBacklogSummary, ScheduledRunSummary, SystemHealthResponse
@@ -13,9 +15,10 @@ from ...services.system_health_service import build_ai_readiness_payload, build_
 
 
 router = APIRouter(prefix="/system", tags=["System"])
+logger = logging.getLogger(__name__)
 
 
-def _scheduled_run_payload(run) -> ScheduledRunSummary | None:
+def _scheduled_run_payload(run: ScheduledJobRun | None) -> ScheduledRunSummary | None:
     if run is None:
         return None
     return ScheduledRunSummary(
@@ -51,7 +54,7 @@ def get_system_health(
         assert_database_connection(engine)
         database_connected = True
         payload = build_system_health_payload(db, database_connected=database_connected)
-    except SQLAlchemyError:
+    except Exception:
         return _fallback_system_health_response()
 
     backlog = QueueBacklogSummary(**payload["queue_backlog"])
@@ -73,5 +76,13 @@ def get_ai_readiness(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
-    payload = build_ai_readiness_payload(db)
-    return AIReadinessResponse(**payload)
+    try:
+        payload = build_ai_readiness_payload(db)
+        return AIReadinessResponse(**payload)
+    except Exception:
+        logger.exception("Failed to build AI readiness payload")
+        return AIReadinessResponse(
+            ready_for_future_ml=False,
+            summary="AI readiness unavailable because the backend could not query current readiness signals.",
+            metrics=[],
+        )
