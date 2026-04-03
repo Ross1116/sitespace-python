@@ -503,6 +503,11 @@ def active_context_profile_query(db: Session):
     return query.filter(ItemContextProfile.invalidated_at.is_(None))
 
 
+def _assert_profile_mutable(profile: ItemContextProfile) -> None:
+    if getattr(profile, "invalidated_at", None) is not None:
+        raise ValueError(f"Context profile {getattr(profile, 'id', 'unknown')} is invalidated and immutable")
+
+
 def invalidate_context_profile(
     profile: ItemContextProfile,
     *,
@@ -510,8 +515,9 @@ def invalidate_context_profile(
     superseded_by_profile_id: uuid.UUID | None = None,
 ) -> ItemContextProfile:
     """Soft-invalidate a reusable cache entry without deleting historical evidence."""
-    if getattr(profile, "invalidated_at", None) is None:
-        profile.invalidated_at = datetime.now(timezone.utc)
+    if getattr(profile, "invalidated_at", None) is not None:
+        return profile
+    profile.invalidated_at = datetime.now(timezone.utc)
     profile.invalidation_reason = reason
     profile.superseded_by_profile_id = superseded_by_profile_id
     return profile
@@ -1502,6 +1508,7 @@ def _overwrite_cache_entry(
     source: str,
     low_confidence_flag: bool,
 ) -> ItemContextProfile:
+    _assert_profile_mutable(profile)
     profile.total_hours = total_hours
     profile.distribution_json = distribution
     profile.normalized_distribution_json = normalized_distribution
@@ -2419,6 +2426,7 @@ def _apply_manual_cache_values(
     distribution: list[float],
     normalized_distribution: list[float],
 ) -> ItemContextProfile:
+    _assert_profile_mutable(profile)
     previous_observation_count = int(profile.observation_count or 0)
     previous_evidence_weight = float(profile.evidence_weight or 0)
     previous_sample_count = int(profile.sample_count or 0)
@@ -2674,6 +2682,7 @@ def _copy_context_profile_payload(
     target: ItemContextProfile,
     source: ItemContextProfile,
 ) -> ItemContextProfile:
+    _assert_profile_mutable(target)
     target.asset_type = source.asset_type
     target.duration_days = source.duration_days
     target.context_version = source.context_version
@@ -2695,6 +2704,7 @@ def _merge_context_profile_counters(
     winner: ItemContextProfile,
     loser: ItemContextProfile,
 ) -> ItemContextProfile:
+    _assert_profile_mutable(winner)
     original_winner_actuals_count = int(winner.actuals_count or 0)
     winner.observation_count = int(winner.observation_count or 0) + int(loser.observation_count or 0)
     winner.evidence_weight = float(winner.evidence_weight or 0) + float(loser.evidence_weight or 0)
@@ -2737,7 +2747,7 @@ def reconcile_context_profiles_on_merge(
     target_item_id: uuid.UUID,
 ) -> None:
     source_profiles = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(ItemContextProfile.item_id == source_item_id)
         .with_for_update()
         .all()
@@ -2746,7 +2756,7 @@ def reconcile_context_profiles_on_merge(
         return
 
     target_profiles = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(ItemContextProfile.item_id == target_item_id)
         .with_for_update()
         .all()
@@ -3360,6 +3370,7 @@ def record_actual_hours(
             ]
 
     if context_profile is not None:
+        _assert_profile_mutable(context_profile)
         if created_actual:
             next_context_actual_values = previous_context_actual_values + [float(actual_hours_used)]
         elif previous_actual_hours == float(actual_hours_used) and previous_source == source:

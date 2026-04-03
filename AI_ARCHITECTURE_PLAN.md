@@ -124,15 +124,17 @@ The architecture text that follows remains intentionally preserved as the March 
 - Bayesian-style posterior updating from fresh evidence and actuals is now implemented in the Stage 10 work-profile layer, but richer actuals capture beyond the current per-activity internal foundation remains future work.
 - The global cross-project knowledge-base tier and promotion rules are now implemented in Stage 10; future work is in hardening, observability, and tuning rather than introducing the tier itself.
 - Alert hardening still appears incomplete relative to the preserved target architecture, especially around rate limiting, project-wide caps, and refined stale-alert cancellation behavior.
-- Reporting and governance around excessive `other` usage still appears to remain future work.
-- System-health surfacing and upload-processing durability remain less complete than the preserved architecture intends, although startup stale-processing recovery now prevents indefinite project blockage after interrupted uploads.
-- The preserved document's exact-unit apportionment and second per-day demand-cap enforcement should still be treated as future hardening work unless a later implementation note explicitly supersedes that assessment.
+- Upload-processing durability still remains less complete than the preserved architecture intends; the current system is safer because startup stale-processing recovery exists, but it is still not the final durable-worker end state envisioned by the original document.
 
 ## Historical sections that are now known to be stale but intentionally preserved
 
 - Any section claiming there is no `assets.canonical_type` is now historical only.
 - Any section claiming there is no safe degraded mode is now historical only.
 - Any section claiming `lookahead_rows` is still pending is now historical only.
+- Any section claiming system health is not surfaced yet is now historical only; the current codebase persists shared health state in `system_health_states` and exposes `/api/system/health` plus `/api/system/ai-readiness`.
+- Any section claiming exact unit apportionment is still pending is now historical only; the current lookahead/work-profile path uses deterministic 0.5-hour apportionment.
+- Any section claiming `other` reporting is still missing is now historical only; the current codebase exposes both row-level and summary review endpoints.
+- Any section claiming item requirements or merge suggestions are missing is now historical only.
 - The delivery checklist in Section 45 is preserved for historical planning context and now mixes completed, partially completed, and still-planned work.
 
 ---
@@ -3551,7 +3553,7 @@ The runtime system should expose a unified operational health state:
 - `degraded` = safe reduced-function mode, external alerting suppressed
 - `recovery` = system stabilizing after degraded mode; internal processing restored, external alerts remain suppressed until health checks pass
 
-A dedicated DB table is not required yet. This can be surfaced via configuration, health endpoint, and observability.
+Historical note: this was the original target-state guidance. The current implementation now persists shared runtime health in `system_health_states` so `web`, `worker`, and `nightly` agree on the same `healthy` / `degraded` / `recovery` state across restarts and deploys.
 
 ## 30.5 Exit rules
 

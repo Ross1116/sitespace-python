@@ -10,6 +10,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -122,7 +123,8 @@ class ItemContextProfile(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "ux_item_context_profiles_active_key",
             "project_id",
             "item_id",
             "asset_type",
@@ -130,7 +132,8 @@ class ItemContextProfile(Base):
             "context_version",
             "inference_version",
             "context_hash",
-            name="uq_item_context_profiles_key",
+            unique=True,
+            postgresql_where=text("invalidated_at IS NULL"),
         ),
         CheckConstraint(
             "source IN ('manual', 'learned', 'ai', 'default')",

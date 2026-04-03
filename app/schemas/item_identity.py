@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from pydantic import Field, model_validator
+
 from .base import BaseSchema
 
 
@@ -190,7 +192,13 @@ class ItemRequirementSetUpsertRequest(BaseSchema):
 
 class ItemRequirementEvaluationRequest(BaseSchema):
     project_id: Optional[UUID] = None
-    asset_ids: list[UUID] = []
+    asset_ids: list[UUID] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.project_id is None and not self.asset_ids:
+            raise ValueError("project_id or asset_ids must be provided")
+        return self
 
 
 class ItemRequirementAssetEvaluation(BaseSchema):

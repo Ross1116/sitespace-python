@@ -6,11 +6,37 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload
 
 from ..models.asset import Asset
+from ..models.item_identity import Item
 from ..models.ops import ItemRequirementSet
 
 
 def validate_requirement_rules(rules: dict[str, Any]) -> dict[str, Any]:
-    rules = dict(rules or {})
+    if rules is None:
+        rules = {}
+    elif not isinstance(rules, dict):
+        raise ValueError("rules must be an object")
+    else:
+        rules = dict(rules)
+    for key in ("allowed_asset_types", "preferred_asset_types", "excluded_asset_types"):
+        value = rules.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) or not isinstance(value, (list, tuple, set)):
+            raise ValueError(f"{key} must be a list, tuple, or set")
+    for key in ("required_attributes", "preferred_attributes"):
+        value = rules.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a dict")
+    for key in ("min_parallel_units", "default_parallel_units", "max_parallel_units"):
+        value = rules.get(key)
+        if value is None:
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
     normalized = {
         "allowed_asset_types": sorted({str(value) for value in rules.get("allowed_asset_types") or []}),
         "preferred_asset_types": sorted({str(value) for value in rules.get("preferred_asset_types") or []}),
@@ -32,13 +58,20 @@ def validate_requirement_rules(rules: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def get_active_item_requirement_set(db: Session, item_id: uuid.UUID) -> ItemRequirementSet | None:
-    return (
+def get_active_item_requirement_set(
+    db: Session,
+    item_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> ItemRequirementSet | None:
+    query = (
         db.query(ItemRequirementSet)
         .filter(ItemRequirementSet.item_id == item_id, ItemRequirementSet.is_active.is_(True))
         .order_by(ItemRequirementSet.version.desc())
-        .first()
     )
+    if for_update:
+        query = query.with_for_update()
+    return query.first()
 
 
 def replace_item_requirement_set(
@@ -49,7 +82,10 @@ def replace_item_requirement_set(
     notes: str | None,
     created_by_user_id: uuid.UUID | None,
 ) -> ItemRequirementSet:
-    active = get_active_item_requirement_set(db, item_id)
+    item_row = db.query(Item.id).filter(Item.id == item_id).with_for_update().first()
+    if item_row is None:
+        raise LookupError(f"Item {item_id} not found")
+    active = get_active_item_requirement_set(db, item_id, for_update=True)
     next_version = (int(active.version) + 1) if active is not None else 1
     if active is not None:
         active.is_active = False
@@ -78,6 +114,8 @@ def _merged_planning_attributes(asset: Asset) -> dict[str, Any]:
 
 
 def _attribute_matches(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, list) and not isinstance(expected, list):
+        return expected in actual
     if isinstance(expected, list):
         if isinstance(actual, list):
             return any(value in actual for value in expected)

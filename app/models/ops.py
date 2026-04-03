@@ -1,4 +1,16 @@
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 import uuid
@@ -61,4 +73,10 @@ class ItemRequirementSet(Base):
 
     __table_args__ = (
         UniqueConstraint("item_id", "version", name="uq_item_requirement_sets_item_version"),
+        Index(
+            "uq_item_requirement_sets_item_active",
+            "item_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
     )

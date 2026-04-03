@@ -31,7 +31,52 @@ This guide reflects the current app wiring in `app/main.py` and the active API r
 1. Add a PostgreSQL service in Railway.
 2. Ensure `DATABASE_URL` is injected into the app service.
 
-### 3. Configure environment variables
+### 3. Provision Railway services
+
+Create three services from the same repository:
+
+1. `web`
+   - `SERVICE_ROLE=web`
+   - exposes HTTP
+   - configure Railway healthcheck to `GET /health`
+2. `worker`
+   - `SERVICE_ROLE=worker`
+   - processes upload jobs only
+   - no public HTTP exposure required
+3. `nightly`
+   - `SERVICE_ROLE=nightly`
+   - runs the one-shot nightly tick only
+   - configure Railway cron to invoke this service on the desired cadence
+
+Example per-service env blocks:
+
+```bash
+# web
+SERVICE_ROLE=web
+HOST=0.0.0.0
+PORT=8080
+```
+
+```bash
+# worker
+SERVICE_ROLE=worker
+UPLOAD_WORKER_POLL_SECONDS=2
+UPLOAD_WORKER_HEARTBEAT_SECONDS=15
+UPLOAD_WORKER_CLAIM_TTL_SECONDS=90
+UPLOAD_WORKER_MAX_ATTEMPTS=3
+```
+
+```bash
+# nightly
+SERVICE_ROLE=nightly
+NIGHTLY_LOOKAHEAD_TIMEZONE=America/Los_Angeles
+NIGHTLY_LOOKAHEAD_HOUR=17
+NIGHTLY_LOOKAHEAD_MINUTE=0
+```
+
+Railway cron should target the `nightly` service itself so uploads and nightly recalculation are not left running in `web`.
+
+### 4. Configure environment variables
 
 Minimum required:
 
@@ -65,6 +110,7 @@ AI_TIMEOUT_STRUCTURE=8
 AI_TIMEOUT_CLASSIFY=3
 NIGHTLY_LOOKAHEAD_HOUR=17
 NIGHTLY_LOOKAHEAD_MINUTE=0
+NIGHTLY_LOOKAHEAD_TIMEZONE=America/Los_Angeles
 ```
 
 Mailtrap settings (if notifications/email are enabled):
@@ -78,7 +124,7 @@ FROM_NAME=Sitespace Team
 FRONTEND_URL=https://<your-frontend-domain>
 ```
 
-### 4. Run migrations on deploy
+### 5. Run migrations on deploy
 
 The startup flow runs Alembic migrations via `start.sh`. Ensure the deployed command/path still executes:
 
@@ -86,7 +132,7 @@ The startup flow runs Alembic migrations via `start.sh`. Ensure the deployed com
 alembic upgrade head
 ```
 
-### 4.1 Optional Stage 10 backfill rollout hook
+### 5.1 Optional Stage 10 backfill rollout hook
 
 `start.sh` also supports a temporary, opt-in Stage 10 rollout hook. This does **not** run by default.
 
@@ -123,7 +169,7 @@ If the database is already at Stage 10 revision B (`m3n4o5p6q7r8`), startup skip
 
 After the Stage 10 rollout is complete, set both variables back to `false` (or remove them).
 
-### 5. Verify deployment
+### 6. Verify deployment
 
 Check these endpoints:
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from sqlalchemy import func
@@ -147,7 +147,6 @@ def build_ai_readiness_payload(db: Session) -> dict[str, object]:
         .scalar()
         or 0
     )
-    uploads = db.query(ProgrammeUpload).all()
     correction_rate = 0.0
     if total_active:
         correction_sum = (
@@ -157,8 +156,21 @@ def build_ai_readiness_payload(db: Session) -> dict[str, object]:
             or 0
         )
         correction_rate = float(correction_sum) / float(total_active)
-    degraded_uploads = sum(1 for upload in uploads if upload.status == "completed_with_warnings")
-    total_ai_cost = sum(float(upload.ai_cost_usd or 0) for upload in uploads)
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    degraded_uploads = (
+        db.query(func.coalesce(func.count(ProgrammeUpload.id), 0))
+        .filter(
+            ProgrammeUpload.status == "completed_with_warnings",
+            ProgrammeUpload.created_at >= recent_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+    total_ai_cost = (
+        db.query(func.coalesce(func.sum(ProgrammeUpload.ai_cost_usd), 0))
+        .scalar()
+        or 0
+    )
 
     metrics = [
         {"name": "stable_classifications", "value": float(active_classifications), "threshold": 200.0},

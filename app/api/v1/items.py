@@ -16,6 +16,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...core.constants import (
@@ -78,6 +79,13 @@ from ...services.item_requirements_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/items", tags=["Items"])
+
+
+def _get_item_or_404(db: Session, item_id: UUID) -> Item:
+    item = db.get(Item, item_id)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
+    return item
 
 
 @router.get("", response_model=list[ItemResponse])
@@ -464,6 +472,7 @@ def get_item_requirements(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
+    _get_item_or_404(db, item_id)
     row = get_active_item_requirement_set(db, item_id)
     if row is None:
         return None
@@ -486,14 +495,35 @@ def replace_requirements(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN])),
 ):
-    row = replace_item_requirement_set(
-        db,
-        item_id=item_id,
-        rules=body.rules_json,
-        notes=body.notes,
-        created_by_user_id=current_user.id,
-    )
-    db.commit()
+    _get_item_or_404(db, item_id)
+    try:
+        row = replace_item_requirement_set(
+            db,
+            item_id=item_id,
+            rules=body.rules_json,
+            notes=body.notes,
+            created_by_user_id=current_user.id,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Requirement version conflict. Please retry.",
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to replace requirement set for item %s", item_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Requirement update failed",
+        ) from exc
     return ItemRequirementSetResponse(
         id=row.id,
         item_id=row.item_id,
@@ -513,6 +543,7 @@ def evaluate_item_requirements(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
+    _get_item_or_404(db, item_id)
     payload = evaluate_assets_against_requirements(
         db,
         item_id=item_id,

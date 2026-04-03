@@ -260,6 +260,14 @@ def _resolve_activity_distribution(
             profile_norm = [float(value) for value in list(profile.normalized_distribution_json or [])]
             if len(profile_norm) != len(work_dates):
                 profile_norm = derive_normalized_distribution(profile_distribution)
+                if not any(profile_norm):
+                    profile_norm = list(fallback_norm)
+                low_confidence = True
+                repaired = True
+            elif not any(profile_norm):
+                profile_norm = list(fallback_norm)
+                low_confidence = True
+                repaired = True
             distribution = apportion_daily_hours(
                 profile_norm,
                 float(profile.total_hours),

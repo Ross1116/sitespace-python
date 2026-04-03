@@ -61,6 +61,22 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
+    op.drop_constraint("uq_item_context_profiles_key", "item_context_profiles", type_="unique")
+    op.create_index(
+        "ux_item_context_profiles_active_key",
+        "item_context_profiles",
+        [
+            "project_id",
+            "item_id",
+            "asset_type",
+            "duration_days",
+            "context_version",
+            "inference_version",
+            "context_hash",
+        ],
+        unique=True,
+        postgresql_where=sa.text("invalidated_at IS NULL"),
+    )
 
     op.create_table(
         "system_health_states",
@@ -94,12 +110,34 @@ def upgrade() -> None:
         sa.UniqueConstraint("item_id", "version", name="uq_item_requirement_sets_item_version"),
     )
     op.create_index("ix_item_requirement_sets_item_id", "item_requirement_sets", ["item_id"], unique=False)
+    op.create_index(
+        "uq_item_requirement_sets_item_active",
+        "item_requirement_sets",
+        ["item_id"],
+        unique=True,
+        postgresql_where=sa.text("is_active = true"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_item_requirement_sets_item_active", table_name="item_requirement_sets")
     op.drop_index("ix_item_requirement_sets_item_id", table_name="item_requirement_sets")
     op.drop_table("item_requirement_sets")
     op.drop_table("system_health_states")
+    op.drop_index("ux_item_context_profiles_active_key", table_name="item_context_profiles")
+    op.create_unique_constraint(
+        "uq_item_context_profiles_key",
+        "item_context_profiles",
+        [
+            "project_id",
+            "item_id",
+            "asset_type",
+            "duration_days",
+            "context_version",
+            "inference_version",
+            "context_hash",
+        ],
+    )
     op.drop_constraint(
         "fk_item_context_profiles_superseded_by_profile_id",
         "item_context_profiles",

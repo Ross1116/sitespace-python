@@ -27,6 +27,20 @@ def _scheduled_run_payload(run) -> ScheduledRunSummary | None:
     )
 
 
+def _fallback_system_health_response() -> SystemHealthResponse:
+    return SystemHealthResponse(
+        database_connected=False,
+        state="degraded",
+        reason_codes=["database_unavailable"],
+        clean_upload_streak=0,
+        last_transition_at=None,
+        last_trigger_upload_id=None,
+        queue_backlog=QueueBacklogSummary(),
+        last_nightly_run=None,
+        last_feature_learning_run=None,
+    )
+
+
 @router.get("/health", response_model=SystemHealthResponse)
 def get_system_health(
     db: Session = Depends(get_db),
@@ -37,6 +51,9 @@ def get_system_health(
         assert_database_connection(engine)
     except Exception:
         database_connected = False
+
+    if not database_connected:
+        return _fallback_system_health_response()
 
     payload = build_system_health_payload(db, database_connected=database_connected)
     backlog = QueueBacklogSummary(**payload["queue_backlog"])

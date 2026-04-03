@@ -1394,8 +1394,8 @@ def recover_stale_processing_uploads(
 
     from .system_health_service import record_upload_health_outcome
 
-    for upload in uploads:
-        record_upload_health_outcome(db, upload)
+    if uploads:
+        record_upload_health_outcome(db, uploads[-1])
     db.commit()
     logger.warning(
         "Recovered %d stale processing uploads%s older than %d seconds",

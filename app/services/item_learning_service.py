@@ -19,7 +19,7 @@ from ..models.work_profile import (
 )
 from .classification_service import get_active_classification, maturity_tier
 from .identity_service import follow_item_redirect
-from .work_profile_service import work_profile_maturity
+from .work_profile_service import active_context_profile_query, work_profile_maturity
 
 
 @dataclass
@@ -234,11 +234,10 @@ def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayloa
     occurrence_count, distinct_project_count, last_seen_at = _item_occurrence_stats(db, family_item_ids)
 
     local_profiles = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(
             ItemContextProfile.item_id.in_(family_item_ids),
             ItemContextProfile.project_id.isnot(None),
-            ItemContextProfile.invalidated_at.is_(None),
         )
         .all()
     )
@@ -355,16 +354,35 @@ def list_other_review_items(
 
 def summarize_other_review_items(db: Session) -> dict[str, object]:
     rows = list_other_review_items(db, limit=25, offset=0)
-    total_items = (
-        db.query(func.count(Item.id))
+    review_rows = (
+        db.query(Item.id)
         .join(ItemClassification, ItemClassification.item_id == Item.id)
         .filter(
             Item.identity_status == "active",
             ItemClassification.is_active.is_(True),
             ItemClassification.asset_type == "other",
         )
-        .scalar()
-        or 0
+        .all()
+    )
+    review_item_ids = [item_id for (item_id,) in review_rows]
+    if not review_item_ids:
+        return {
+            "total_items": 0,
+            "total_occurrences": 0,
+            "distinct_project_count": 0,
+            "recent_upload_occurrences": 0,
+            "top_items": rows,
+        }
+
+    canonical_by_item_id, family_by_canonical_id = _canonical_family_maps(db, item_ids=review_item_ids)
+    canonical_ids = sorted({canonical_by_item_id[item_id] for item_id in review_item_ids}, key=str)
+    relevant_family_ids = sorted(
+        {
+            family_item_id
+            for canonical_id in canonical_ids
+            for family_item_id in family_by_canonical_id.get(canonical_id, [canonical_id])
+        },
+        key=str,
     )
     total_occurrences, distinct_project_count = (
         db.query(
@@ -372,10 +390,8 @@ def summarize_other_review_items(db: Session) -> dict[str, object]:
             func.count(func.distinct(ProgrammeUpload.project_id)),
         )
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
-        .join(ItemClassification, ItemClassification.item_id == ProgrammeActivity.item_id)
         .filter(
-            ItemClassification.is_active.is_(True),
-            ItemClassification.asset_type == "other",
+            ProgrammeActivity.item_id.in_(relevant_family_ids),
         )
         .one()
     )
@@ -383,17 +399,15 @@ def summarize_other_review_items(db: Session) -> dict[str, object]:
     recent_upload_occurrences = (
         db.query(func.count(ProgrammeActivity.id))
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
-        .join(ItemClassification, ItemClassification.item_id == ProgrammeActivity.item_id)
         .filter(
-            ItemClassification.is_active.is_(True),
-            ItemClassification.asset_type == "other",
+            ProgrammeActivity.item_id.in_(relevant_family_ids),
             ProgrammeUpload.created_at >= recent_cutoff,
         )
         .scalar()
         or 0
     )
     return {
-        "total_items": int(total_items),
+        "total_items": len(canonical_ids),
         "total_occurrences": int(total_occurrences or 0),
         "distinct_project_count": int(distinct_project_count or 0),
         "recent_upload_occurrences": int(recent_upload_occurrences),
@@ -415,36 +429,72 @@ def suggest_merge_candidates(
     if item is None:
         raise LookupError(f"Item {item_id} not found")
     canonical_item = follow_item_redirect(db, item)
-    family_ids = set(_family_item_ids(db, canonical_item.id))
-
-    item_tokens = _normalized_tokens(canonical_item.display_name)
-    alias_tokens = {
-        token
-        for row in db.query(ItemAlias).filter(ItemAlias.item_id.in_(family_ids)).all()
-        for token in _normalized_tokens(row.alias_normalised_name)
-    }
-    source_tokens = item_tokens | alias_tokens
-    source_classification = get_active_classification(db, canonical_item.id)
 
     candidates = (
         db.query(Item)
-        .filter(Item.identity_status == "active", Item.id.notin_(sorted(family_ids, key=str)))
+        .filter(Item.identity_status == "active", Item.id != canonical_item.id)
         .all()
     )
+    if not candidates:
+        return []
+
+    seed_item_ids = [canonical_item.id, *[candidate.id for candidate in candidates]]
+    item_map = _load_related_item_map(db, seed_item_ids)
+    canonical_by_item_id, family_by_canonical_id = _canonical_family_maps(
+        db,
+        item_ids=seed_item_ids,
+        item_map=item_map,
+    )
+    source_canonical_id = canonical_by_item_id.get(canonical_item.id, canonical_item.id)
+    family_ids = set(family_by_canonical_id.get(source_canonical_id, [canonical_item.id]))
+    all_family_ids = sorted(
+        {
+            family_item_id
+            for candidate in candidates
+            for family_item_id in family_by_canonical_id.get(
+                canonical_by_item_id.get(candidate.id, candidate.id),
+                [candidate.id],
+            )
+        }
+        | family_ids,
+        key=str,
+    )
+    alias_rows = db.query(ItemAlias).filter(ItemAlias.item_id.in_(all_family_ids)).all()
+    alias_tokens_by_item_id: dict[uuid.UUID, set[str]] = {}
+    for row in alias_rows:
+        alias_tokens_by_item_id.setdefault(row.item_id, set()).update(
+            _normalized_tokens(row.alias_normalised_name)
+        )
+
+    classification_rows = (
+        db.query(ItemClassification)
+        .filter(
+            ItemClassification.item_id.in_(seed_item_ids),
+            ItemClassification.is_active.is_(True),
+        )
+        .order_by(ItemClassification.updated_at.desc(), ItemClassification.created_at.desc())
+        .all()
+    )
+    classification_by_item_id: dict[uuid.UUID, ItemClassification] = {}
+    for classification in classification_rows:
+        classification_by_item_id.setdefault(classification.item_id, classification)
+
     stats_by_item = _batched_item_occurrence_stats(db, item_ids=[candidate.id for candidate in candidates])
+    item_tokens = _normalized_tokens(canonical_item.display_name)
+    source_tokens = set(item_tokens)
+    for family_id in family_ids:
+        source_tokens.update(alias_tokens_by_item_id.get(family_id, set()))
+    source_classification = classification_by_item_id.get(canonical_item.id)
 
     ranked = []
     for candidate in candidates:
-        candidate_family = set(_family_item_ids(db, candidate.id))
+        candidate_canonical_id = canonical_by_item_id.get(candidate.id, candidate.id)
+        candidate_family = set(family_by_canonical_id.get(candidate_canonical_id, [candidate.id]))
         if family_ids & candidate_family:
             continue
-        candidate_alias_rows = db.query(ItemAlias).filter(ItemAlias.item_id.in_(candidate_family)).all()
-        candidate_tokens = _normalized_tokens(candidate.display_name)
-        candidate_tokens |= {
-            token
-            for row in candidate_alias_rows
-            for token in _normalized_tokens(row.alias_normalised_name)
-        }
+        candidate_tokens = set(_normalized_tokens(candidate.display_name))
+        for family_id in candidate_family:
+            candidate_tokens.update(alias_tokens_by_item_id.get(family_id, set()))
         overlap = sorted(source_tokens & candidate_tokens)
         name_similarity = SequenceMatcher(
             None,
@@ -455,7 +505,7 @@ def suggest_merge_candidates(
         union = source_tokens | candidate_tokens
         if union:
             token_similarity = len(source_tokens & candidate_tokens) / len(union)
-        classification = get_active_classification(db, candidate.id)
+        classification = classification_by_item_id.get(candidate.id)
         classification_boost = 0.0
         if (
             source_classification is not None
