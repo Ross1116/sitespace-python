@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, AliasChoices
-from typing import Optional, List
+from typing import Any, Optional, List
 from datetime import date, time
 from uuid import UUID
 from decimal import Decimal
@@ -22,6 +22,7 @@ class AssetBase(BaseSchema):
     purchase_value: Optional[Decimal] = Field(None, ge=0)
     current_value: Optional[Decimal] = Field(None, ge=0)
     pending_booking_capacity: int = Field(5, ge=1, le=20)
+    planning_attributes_json: Optional[dict[str, Any]] = None
 
     @field_validator('purchase_value', 'current_value', mode='before')
     def round_decimal(cls, v):
@@ -84,6 +85,7 @@ class AssetUpdate(BaseSchema):
     description: Optional[str] = None
     current_value: Optional[Decimal] = Field(None, ge=0)
     pending_booking_capacity: Optional[int] = Field(None, ge=1, le=20)
+    planning_attributes_json: Optional[dict[str, Any]] = None
     status: Optional[AssetStatus] = None
     canonical_type: Optional[str] = Field(None, max_length=50)
     project_id: Optional[UUID] = None
@@ -156,6 +158,7 @@ class AssetResponse(AssetBase, TimestampSchema):
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
     pending_booking_capacity: int = 5
+    planning_attributes_json: Optional[dict[str, Any]] = None
 
 
 class AssetBriefResponse(BaseSchema):
@@ -169,6 +172,7 @@ class AssetBriefResponse(BaseSchema):
     planning_ready: bool = False
     status: AssetStatus
     pending_booking_capacity: int = 5
+    planning_attributes_json: Optional[dict[str, Any]] = None
 
 
 class MaintenanceRecord(BaseSchema):

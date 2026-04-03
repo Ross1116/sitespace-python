@@ -567,6 +567,53 @@ def test_record_actual_hours_updating_existing_row_triggers_learning_refresh():
     rebuild_mock.assert_called_once()
 
 
+def test_record_actual_hours_persists_actual_when_context_profile_is_invalidated():
+    profile = SimpleNamespace(
+        id=uuid4(),
+        context_profile_id=uuid4(),
+    )
+    context_profile = SimpleNamespace(
+        id=profile.context_profile_id,
+        invalidated_at=datetime.now(timezone.utc),
+        project_id=uuid4(),
+        item_id=uuid4(),
+        asset_type="crane",
+        duration_days=5,
+        context_version=1,
+        inference_version=1,
+        source="ai",
+        actuals_count=0,
+        actuals_median=None,
+        sample_count=3,
+        posterior_mean=10.0,
+        posterior_precision=4.0,
+        evidence_weight=2.0,
+    )
+    db = MagicMock()
+    db.query.side_effect = [
+        _QueryStub(profile),
+        _QueryStub(None),
+        _QueryStub(context_profile),
+        _QueryStub([]),
+    ]
+
+    with patch("app.services.work_profile_service.rebuild_global_knowledge_entry") as rebuild_mock, \
+         patch("app.services.work_profile_service._resolve_context_profile_compressed_context", return_value=None):
+        actual = record_actual_hours(
+            db,
+            activity_work_profile_id=profile.id,
+            actual_hours_used=12.0,
+            source="manual",
+            recorded_by_user_id=uuid4(),
+        )
+
+    assert float(actual.actual_hours_used) == 12.0
+    db.add.assert_called_once()
+    db.flush.assert_called_once()
+    rebuild_mock.assert_not_called()
+    assert context_profile.actuals_count == 0
+
+
 def test_backfill_project_local_context_profiles_repoints_existing_profile(monkeypatch):
     project_id = uuid4()
     item_id = uuid4()

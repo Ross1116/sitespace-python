@@ -47,7 +47,13 @@ from .programme_upload_service import (
     get_active_programme_upload,
     upload_has_warnings,
 )
-from .work_profile_service import build_compressed_context, build_default_profile, derive_distribution
+from .work_profile_service import (
+    apportion_daily_hours,
+    build_compressed_context,
+    build_default_profile,
+    derive_distribution,
+    derive_normalized_distribution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +257,22 @@ def _resolve_activity_distribution(
             low_confidence = True
             repaired = True
         else:
-            distribution = profile_distribution
+            profile_norm = [float(value) for value in list(profile.normalized_distribution_json or [])]
+            if len(profile_norm) != len(work_dates):
+                profile_norm = derive_normalized_distribution(profile_distribution)
+                if not any(profile_norm):
+                    profile_norm = list(fallback_norm)
+                low_confidence = True
+                repaired = True
+            elif not any(profile_norm):
+                profile_norm = list(fallback_norm)
+                low_confidence = True
+                repaired = True
+            distribution = apportion_daily_hours(
+                profile_norm,
+                float(profile.total_hours),
+                max_hours_per_day=max_hours_per_day,
+            )
             low_confidence = low_confidence or bool(profile.low_confidence_flag)
 
     return {

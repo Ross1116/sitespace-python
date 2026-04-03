@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Boolean, Integer, DateTime, ForeignKey, NUMERIC
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -18,6 +19,7 @@ class AssetType(Base):
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     is_user_selectable = Column(Boolean, nullable=False, default=True, server_default="true")
     max_hours_per_day = Column(NUMERIC(4, 1), nullable=False)
+    planning_attributes_json = Column(JSONB, nullable=True)
     taxonomy_version = Column(Integer, nullable=False, default=1, server_default="1")
     introduced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     retired_at = Column(DateTime(timezone=True), nullable=True)

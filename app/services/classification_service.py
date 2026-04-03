@@ -401,6 +401,9 @@ def apply_manual_classification(
     if db_type is None or not db_type.is_active:
         raise ValueError(f"Asset type '{asset_type}' is not in the active taxonomy")
 
+    previous = get_active_classification(db, item_id)
+    previous_asset_type = previous.asset_type if previous is not None else None
+
     try:
         new_cls = _persist_classification(
             db,
@@ -441,6 +444,17 @@ def apply_manual_classification(
     if last_event:
         last_event.event_type = "manual_override"
         db.flush()
+
+    if previous_asset_type and previous_asset_type != asset_type:
+        from .work_profile_service import invalidate_profiles_for_item_asset_type
+
+        invalidate_profiles_for_item_asset_type(
+            db,
+            item_id=item_id,
+            old_asset_type=previous_asset_type,
+            new_asset_type=asset_type,
+            reason="manual_classification_change",
+        )
 
     return new_cls
 

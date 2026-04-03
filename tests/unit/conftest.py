@@ -41,4 +41,5 @@ import app.models.file_upload  # noqa: F401, E402
 import app.models.item_identity  # noqa: F401, E402
 import app.models.asset_type  # noqa: F401, E402
 import app.models.work_profile  # noqa: F401, E402
+import app.models.ops  # noqa: F401, E402
 # ItemClassification + ItemClassificationEvent live in item_identity — already imported above

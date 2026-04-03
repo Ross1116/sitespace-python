@@ -124,15 +124,17 @@ The architecture text that follows remains intentionally preserved as the March 
 - Bayesian-style posterior updating from fresh evidence and actuals is now implemented in the Stage 10 work-profile layer, but richer actuals capture beyond the current per-activity internal foundation remains future work.
 - The global cross-project knowledge-base tier and promotion rules are now implemented in Stage 10; future work is in hardening, observability, and tuning rather than introducing the tier itself.
 - Alert hardening still appears incomplete relative to the preserved target architecture, especially around rate limiting, project-wide caps, and refined stale-alert cancellation behavior.
-- Reporting and governance around excessive `other` usage still appears to remain future work.
-- System-health surfacing and upload-processing durability remain less complete than the preserved architecture intends, although startup stale-processing recovery now prevents indefinite project blockage after interrupted uploads.
-- The preserved document's exact-unit apportionment and second per-day demand-cap enforcement should still be treated as future hardening work unless a later implementation note explicitly supersedes that assessment.
+- Upload-processing durability still remains less complete than the preserved architecture intends; the current system is safer because startup stale-processing recovery exists, but it is still not the final durable-worker end state envisioned by the original document.
 
 ## Historical sections that are now known to be stale but intentionally preserved
 
 - Any section claiming there is no `assets.canonical_type` is now historical only.
 - Any section claiming there is no safe degraded mode is now historical only.
 - Any section claiming `lookahead_rows` is still pending is now historical only.
+- Any section claiming system health is not surfaced yet is now historical only; the current codebase persists shared health state in `system_health_states` and exposes `/api/system/health` plus `/api/system/ai-readiness`.
+- Any section claiming exact unit apportionment is still pending is now historical only; the current lookahead/work-profile path uses deterministic 0.5-hour apportionment.
+- Any section claiming `other` reporting is still missing is now historical only; the current codebase exposes both row-level and summary review endpoints.
+- Any section claiming item requirements or merge suggestions are missing is now historical only.
 - The delivery checklist in Section 45 is preserved for historical planning context and now mixes completed, partially completed, and still-planned work.
 
 ---
@@ -3551,7 +3553,7 @@ The runtime system should expose a unified operational health state:
 - `degraded` = safe reduced-function mode, external alerting suppressed
 - `recovery` = system stabilizing after degraded mode; internal processing restored, external alerts remain suppressed until health checks pass
 
-A dedicated DB table is not required yet. This can be surfaced via configuration, health endpoint, and observability.
+Historical note: this was the original target-state guidance. The current implementation now persists shared runtime health in `system_health_states` so `web`, `worker`, and `nightly` agree on the same `healthy` / `degraded` / `recovery` state across restarts and deploys.
 
 ## 30.5 Exit rules
 
@@ -4550,7 +4552,7 @@ Historical note: this checklist is preserved from the original architecture base
 ## Immediately
 
 - [x] Add parser, normalization, identity, classification, demand, and alert-policy tests
-- [ ] Add ARC Bowden PDF regression fixture
+- [x] Add ARC Bowden PDF regression fixture
 - [x] Enrich existing Sentry integration in FastAPI and background jobs
 - [x] Tag Sentry events with project/upload/stage context
 - [x] Expand `ai_suggestion_logs` for full AI auditability
@@ -4581,10 +4583,10 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement bounded extension fields in compressed context
 - [x] Implement deterministic context key including asset type
 - [x] Implement deterministic reduced-context fallback order
-- [ ] Implement cache override rules
-- [ ] Implement confidence-weighted cache evidence
-- [ ] Implement cache invalidation triggers
-- [ ] Implement work-profile AI generation with asset type provided
+- [x] Implement cache override rules
+- [x] Implement confidence-weighted cache evidence
+- [x] Implement cache invalidation triggers
+- [x] Implement work-profile AI generation with asset type provided
 - [x] Implement total-hours finalization policy
 - [x] Implement concrete hours-bounds clamping
 - [x] Implement operational total-hours unit normalization
@@ -4592,38 +4594,38 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement cache lookup/reuse pipeline
 - [x] Implement normalized distribution storage
 - [x] Implement low-confidence flagging
-- [ ] Implement confidence-aware alert suppression
+- [x] Implement confidence-aware alert suppression
 - [x] Implement fixed Monday-based workweek mapping
-- [ ] Implement exact unit apportionment for mapped daily demand
-- [ ] Implement distribution-based demand engine
+- [x] Implement exact unit apportionment for mapped daily demand
+- [x] Implement distribution-based demand engine
 - [x] Implement anomaly detection on weekly demand with explicit thresholds
-- [ ] Add `lookahead_rows`
-- [ ] Add `project_alert_policies`
-- [ ] Add `subcontractor_asset_type_assignments`
+- [x] Add `lookahead_rows`
+- [x] Add `project_alert_policies`
+- [x] Add `subcontractor_asset_type_assignments`
 - [x] Resolve `notifications.activity_id` nullability
-- [ ] Add `severity_score` to notifications
+- [x] Add `severity_score` to notifications
 - [ ] Add composite partial unique index for active lookahead notifications
-- [ ] Implement thresholded lookahead-driven notification write path
-- [ ] Implement alert severity scoring
-- [ ] Implement alert rate limiting per subcontractor/week
-- [ ] Implement project-wide alert cap
-- [ ] Implement stale-alert cancellation on new upload commit
-- [ ] Add project-scoped processing guard
+- [x] Implement thresholded lookahead-driven notification write path
+- [x] Implement alert severity scoring
+- [x] Implement alert rate limiting per subcontractor/week
+- [x] Implement project-wide alert cap
+- [x] Implement stale-alert cancellation on new upload commit
+- [x] Add project-scoped processing guard
 - [x] Add AI cost tracking per upload
-- [ ] Add reporting on `other` asset-type usage
+- [x] Add reporting on `other` asset-type usage
 - [ ] Add threshold alert when `other` exceeds 10%
 - [x] Implement safe degraded mode behavior
-- [ ] Surface system health state
-- [ ] Introduce explicit upload-status migration plan from current `degraded` semantics
+- [x] Surface system health state
+- [x] Introduce explicit upload-status migration plan from current `degraded` semantics
 - [x] Add `max_hours_per_day` to `asset_types` table with seed values
 - [x] Implement per-day distribution bucket cap in work-profile Stage B validation
-- [ ] Implement per-day demand cap check in demand engine (second enforcement point)
+- [x] Implement per-day demand cap check in demand engine (second enforcement point)
 - [x] Add `confirmation_count` and `correction_count` to `item_classifications`
 - [x] Implement classification maturity tier evaluation (TENTATIVE / CONFIRMED / STABLE / PERMANENT)
 - [x] Implement re-query logic for TENTATIVE classifications; flag disagreement for review, never auto-change
 - [x] Increment `confirmation_count` on every classification reuse
 - [x] Add Bayesian columns to `item_context_profiles` (`posterior_mean`, `posterior_precision`, `sample_count`, `correction_count`, `actuals_count`, `actuals_median`)
-- [ ] Implement Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
+- [x] Implement Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
 - [x] Implement work-profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)
 - [x] Implement correction rate trigger (correction_count / sample_count > 0.20 → re-evaluate work profile)
 
@@ -4638,15 +4640,15 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement project-local → global promotion rules
 - [x] Implement global cache lookup with asset-type presence guard
 - [x] Implement actuals Bayesian updates (`actuals_count`, `actuals_median`)
-- [ ] Add similarity-based merge suggestions
+- [x] Add similarity-based merge suggestions
 - [ ] Refine stale-alert cancellation by exact signal scope
 - [x] Add item stats / learning loop
 - [x] Add actual-hours capture foundation (`asset_usage_actuals`)
-- [ ] Add hierarchy feature learning
-- [ ] Add confidence weighting for learned features
-- [ ] Add actuals-informed shape learning
-- [ ] Add item requirements
-- [ ] Evaluate fine-tuning / RAG / ML only after baseline matures
+- [x] Add hierarchy feature learning
+- [x] Add confidence weighting for learned features
+- [x] Add actuals-informed shape learning
+- [x] Add item requirements
+- [x] Evaluate fine-tuning / RAG / ML only after baseline matures
 
 ---
 

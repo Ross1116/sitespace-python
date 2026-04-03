@@ -1,0 +1,6 @@
+{
+  "expected_ids": ["1001", "1002", "1003"],
+  "completed_activity_ids": ["1003"],
+  "noise_lines_present_in_pdf": ["Revision 3 Data Date: 01/01/25", "Page 1 of 1"],
+  "expected_activity_count": 3
+}

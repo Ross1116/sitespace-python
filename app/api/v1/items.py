@@ -16,6 +16,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...core.constants import (
@@ -30,6 +31,9 @@ from ...models.item_identity import Item, ItemClassificationEvent
 from ...models.user import User
 from ...schemas.enums import UserRole
 from ...schemas.item_identity import (
+    ContextExpansionPromoteRequest,
+    ContextExpansionSignalResponse,
+    ContextFeatureEffectResponse,
     ItemAliasCreateRequest,
     ItemAliasResponse,
     ItemClassificationEventResponse,
@@ -40,6 +44,12 @@ from ...schemas.item_identity import (
     ItemMergeRequest,
     ItemMergeResponse,
     ItemOtherReviewResponse,
+    ItemOtherReviewSummaryResponse,
+    ItemMergeSuggestionResponse,
+    ItemRequirementEvaluationRequest,
+    ItemRequirementEvaluationResponse,
+    ItemRequirementSetResponse,
+    ItemRequirementSetUpsertRequest,
     ItemResponse,
     ItemStatisticsResponse,
 )
@@ -49,11 +59,33 @@ from ...services.classification_service import (
     maturity_tier,
 )
 from ...services.identity_service import AliasConflictError, MergeError, add_manual_alias, merge_items
-from ...services.item_learning_service import get_item_statistics, list_other_review_items
+from ...services.item_learning_service import (
+    get_item_statistics,
+    list_other_review_items,
+    suggest_merge_candidates,
+    summarize_other_review_items,
+)
+from ...services.feature_learning_service import (
+    list_context_expansion_signals,
+    list_feature_effects,
+    set_context_expansion_signal_promoted,
+)
+from ...services.item_requirements_service import (
+    evaluate_assets_against_requirements,
+    get_active_item_requirement_set,
+    replace_item_requirement_set,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/items", tags=["Items"])
+
+
+def _get_item_or_404(db: Session, item_id: UUID) -> Item:
+    item = db.get(Item, item_id)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
+    return item
 
 
 @router.get("", response_model=list[ItemResponse])
@@ -88,6 +120,21 @@ def review_other_items(
 ):
     rows = list_other_review_items(db, limit=limit, offset=offset)
     return [ItemOtherReviewResponse(**row) for row in rows]
+
+
+@router.get("/review/other/summary", response_model=ItemOtherReviewSummaryResponse)
+def review_other_items_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    payload = summarize_other_review_items(db)
+    return ItemOtherReviewSummaryResponse(
+        total_items=payload["total_items"],
+        total_occurrences=payload["total_occurrences"],
+        distinct_project_count=payload["distinct_project_count"],
+        recent_upload_occurrences=payload["recent_upload_occurrences"],
+        top_items=[ItemOtherReviewResponse(**row) for row in payload["top_items"]],
+    )
 
 
 @router.get("/{item_id}/statistics", response_model=ItemStatisticsResponse)
@@ -174,6 +221,20 @@ def merge_items_endpoint(
         merged_item_id=body.source_item_id,
         message=f"Item {body.source_item_id} merged into {survivor.id}",
     )
+
+
+@router.get("/{item_id}/merge-suggestions", response_model=list[ItemMergeSuggestionResponse])
+def get_merge_suggestions(
+    item_id: UUID,
+    limit: int = Query(10, ge=1, le=25),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    try:
+        rows = suggest_merge_candidates(db, item_id, limit=limit)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return [ItemMergeSuggestionResponse(**row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -325,3 +386,180 @@ def get_classification_history(
         )
         for e in events
     ]
+
+
+@router.get("/{item_id}/feature-effects", response_model=list[ContextFeatureEffectResponse])
+def get_item_feature_effects(
+    item_id: UUID,
+    asset_type: str | None = Query(None),
+    duration_bucket: int | None = Query(None, ge=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    _get_item_or_404(db, item_id)
+    rows = list_feature_effects(db, item_id=item_id, asset_type=asset_type, duration_bucket=duration_bucket)
+    return [
+        ContextFeatureEffectResponse(
+            id=row.id,
+            asset_type=row.asset_type,
+            duration_bucket=row.duration_bucket,
+            feature_name=row.feature_name,
+            feature_value=row.feature_value,
+            observation_count=row.observation_count,
+            mean_residual=float(row.mean_residual),
+            confidence=float(row.confidence),
+            effective_weight=float(row.effective_weight),
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/{item_id}/expansion-signals", response_model=list[ContextExpansionSignalResponse])
+def get_item_expansion_signals(
+    item_id: UUID,
+    asset_type: str | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    _get_item_or_404(db, item_id)
+    rows = list_context_expansion_signals(db, item_id=item_id, asset_type=asset_type)
+    return [
+        ContextExpansionSignalResponse(
+            id=row.id,
+            asset_type=row.asset_type,
+            context_signature=row.context_signature,
+            observation_count=row.observation_count,
+            mean_cv=float(row.mean_cv),
+            expansion_candidate_field=row.expansion_candidate_field,
+            expansion_score=float(row.expansion_score),
+            promoted=bool(row.promoted),
+            promoted_at=row.promoted_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+@router.post("/expansion-signals/{signal_id}/promote", response_model=ContextExpansionSignalResponse)
+def promote_expansion_signal(
+    signal_id: UUID,
+    body: ContextExpansionPromoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN])),
+):
+    try:
+        row = set_context_expansion_signal_promoted(db, signal_id=signal_id, promoted=body.promoted)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to promote expansion signal %s", signal_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Expansion signal update failed",
+        ) from exc
+    return ContextExpansionSignalResponse(
+        id=row.id,
+        asset_type=row.asset_type,
+        context_signature=row.context_signature,
+        observation_count=row.observation_count,
+        mean_cv=float(row.mean_cv),
+        expansion_candidate_field=row.expansion_candidate_field,
+        expansion_score=float(row.expansion_score),
+        promoted=bool(row.promoted),
+        promoted_at=row.promoted_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get("/{item_id}/requirements", response_model=ItemRequirementSetResponse | None)
+def get_item_requirements(
+    item_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    _get_item_or_404(db, item_id)
+    row = get_active_item_requirement_set(db, item_id)
+    if row is None:
+        return None
+    return ItemRequirementSetResponse(
+        id=row.id,
+        item_id=row.item_id,
+        version=row.version,
+        is_active=row.is_active,
+        rules_json=row.rules_json,
+        notes=row.notes,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.put("/{item_id}/requirements", response_model=ItemRequirementSetResponse)
+def replace_requirements(
+    item_id: UUID,
+    body: ItemRequirementSetUpsertRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN])),
+):
+    _get_item_or_404(db, item_id)
+    try:
+        row = replace_item_requirement_set(
+            db,
+            item_id=item_id,
+            rules=body.rules_json,
+            notes=body.notes,
+            created_by_user_id=current_user.id,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Requirement version conflict. Please retry.",
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to replace requirement set for item %s", item_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Requirement update failed",
+        ) from exc
+    return ItemRequirementSetResponse(
+        id=row.id,
+        item_id=row.item_id,
+        version=row.version,
+        is_active=row.is_active,
+        rules_json=row.rules_json,
+        notes=row.notes,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.post("/{item_id}/requirements/evaluate", response_model=ItemRequirementEvaluationResponse)
+def evaluate_item_requirements(
+    item_id: UUID,
+    body: ItemRequirementEvaluationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
+):
+    _get_item_or_404(db, item_id)
+    try:
+        payload = evaluate_assets_against_requirements(
+            db,
+            item_id=item_id,
+            project_id=body.project_id,
+            asset_ids=body.asset_ids,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
+    return ItemRequirementEvaluationResponse(**payload)

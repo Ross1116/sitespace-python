@@ -24,6 +24,7 @@ from .work_profile_service import (
     build_compressed_context,
     build_context_key,
     duration_bucket_for_days,
+    invalidate_context_profile,
     prepare_manual_work_profile,
     rebuild_global_knowledge_entry,
     upsert_manual_context_profile,
@@ -327,6 +328,16 @@ def apply_mapping_correction(
                 distribution=prepared.distribution,
                 normalized_distribution=prepared.normalized_distribution,
             )
+            if (
+                previous_context_profile is not None
+                and previous_context_profile.source != "manual"
+                and previous_context_profile.id != context_profile.id
+            ):
+                invalidate_context_profile(
+                    previous_context_profile,
+                    reason="manual_correction",
+                    superseded_by_profile_id=context_profile.id,
+                )
 
         activity_profile = write_manual_activity_profile(
             db,

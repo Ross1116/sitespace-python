@@ -272,7 +272,8 @@ class TestFindTrustedBaseline:
         project_id = uuid.uuid4()
         row1 = _make_profile(source="learned", posterior_mean=10.0, sample_count=3)
         row2 = _make_profile(source="ai", posterior_mean=12.0, sample_count=4)
-        db.query.return_value.filter.return_value.all.side_effect = [
+        active_query = db.query.return_value.filter.return_value
+        active_query.filter.return_value.all.side_effect = [
             [],
             [row1, row2],
         ]
@@ -287,7 +288,8 @@ class TestFindTrustedBaseline:
         row1 = _make_profile(source="learned", posterior_mean=10.0, sample_count=3)
         row2 = _make_profile(source="ai", posterior_mean=12.0, sample_count=4)
         row3 = _make_profile(source="learned", posterior_mean=14.0, sample_count=5)
-        db.query.return_value.filter.return_value.all.side_effect = [
+        active_query = db.query.return_value.filter.return_value
+        active_query.filter.return_value.all.side_effect = [
             [],
             [row1, row2, row3],
         ]
@@ -301,7 +303,8 @@ class TestFindTrustedBaseline:
         project_id = uuid.uuid4()
         manual_row = _make_profile(source="manual", posterior_mean=None, total_hours=9.5, sample_count=0)
         learned_rows = [_make_profile(source="learned", posterior_mean=10.0, sample_count=3)]
-        db.query.return_value.filter.return_value.all.side_effect = [
+        active_query = db.query.return_value.filter.return_value
+        active_query.filter.return_value.all.side_effect = [
             [manual_row],
             learned_rows,
         ]
@@ -346,12 +349,42 @@ class TestReducedContextFallback:
                 "crane",
                 5,
                 compressed,
+                skip_signal_query=True,
             )
 
         expected_base_hash = build_context_key(item_id, "crane", 5, _base_context_only(compressed))
         assert cached is cached_profile
         assert matched_hash == expected_base_hash
         assert lookup.call_count == 2
+
+    def test_lookup_can_skip_signal_query_explicitly(self):
+        compressed = {
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        }
+        project_id = uuid.uuid4()
+        item_id = uuid.uuid4()
+        cached_profile = _make_profile(source="learned")
+        db = MagicMock()
+
+        with patch("app.services.work_profile_service.lookup_cache", side_effect=[None, cached_profile]) as lookup:
+            cached, matched_hash = _lookup_cache_with_reduced_context(
+                db,
+                project_id,
+                item_id,
+                "crane",
+                5,
+                compressed,
+                skip_signal_query=True,
+            )
+
+        expected_base_hash = build_context_key(item_id, "crane", 5, _base_context_only(compressed))
+        assert cached is cached_profile
+        assert matched_hash == expected_base_hash
+        assert lookup.call_count == 2
+        db.query.assert_not_called()
 
 
 class TestUpdateCacheOnHit:
@@ -395,7 +428,7 @@ class TestWriteCacheEntry:
         savepoint = MagicMock()
         db.begin_nested.return_value = savepoint
         db.flush.side_effect = IntegrityError("insert", {}, Exception("duplicate"))
-        db.query.return_value.filter.return_value.one_or_none.return_value = existing
+        db.query.return_value.filter.return_value.filter.return_value.one_or_none.return_value = existing
 
         result = _write_cache_entry(
             db,

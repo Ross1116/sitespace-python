@@ -2,7 +2,7 @@
 
 Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, subcontractor management, programme ingestion, deterministic/AI-assisted programme intelligence, planning-readiness review, lookahead forecasting, and activity-backed booking workflows.
 
-Last updated: 2026-03-27
+Last updated: 2026-04-03
 
 Architecture reference: [AI_ARCHITECTURE_PLAN.md](AI_ARCHITECTURE_PLAN.md) is the deep-dive architecture source. Section `1A. Historical Status Addendum` is the best current-state overlay for what is implemented today versus what remains planned.
 
@@ -36,7 +36,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 docker-compose up -d
 ```
 
-This starts the FastAPI app on port `8080` and PostgreSQL on port `5432`. The startup script (`start.sh`) waits for the database, runs migrations, then launches Uvicorn.
+This starts the FastAPI app on port `8080` and PostgreSQL on port `5432`. In Railway, the current steady-state deployment uses role-specific services:
+
+- `SERVICE_ROLE=web` runs the HTTP app and `/health`
+- `SERVICE_ROLE=worker` runs durable upload processing
+- `SERVICE_ROLE=nightly` runs the one-shot nightly tick via Railway cron
+
+The web startup script (`start.sh`) waits for the database, runs Alembic, and then launches the HTTP app. Worker and nightly services wait for schema readiness but do not expose public HTTP.
 
 ### API Docs
 
@@ -183,6 +189,39 @@ Notes:
 - Mapping responses include `item_id`, which is used by admin review flows to promote upload-local fixes into durable item memory.
 - Booking context returns booking-ready selected-week suggestions rather than requiring the frontend to reconstruct hour distribution on the client.
 
+### Items (`/api/items`)
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/review/other` | Active items currently classified as `other` |
+| GET | `/review/other/summary` | Aggregate `other` review/reporting summary |
+| GET | `/{item_id}/statistics` | Family-aware usage, actuals, local-profile, and global-knowledge stats |
+| GET | `/{item_id}/merge-suggestions` | Read-only similarity-based merge suggestions |
+| GET | `/{item_id}/feature-effects` | Learned feature effects for Stage 11 work-profile tuning |
+| GET | `/{item_id}/expansion-signals` | Context expansion signals for hierarchy/context learning |
+| POST | `/expansion-signals/{signal_id}/promote` | Promote/demote an expansion signal |
+| GET | `/{item_id}/requirements` | Active item requirement set |
+| PUT | `/{item_id}/requirements` | Replace the active requirement set (admin) |
+| POST | `/{item_id}/requirements/evaluate` | Evaluate assets/project scope against requirement rules |
+
+Notes:
+
+- Requirement sets are versioned and only one active set is allowed per item.
+- Requirement evaluation now requires explicit scope: either `project_id` or a non-empty `asset_ids` list.
+- Merge suggestions are family-aware and avoid self/same-family candidates.
+
+### System (`/api/system`)
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/health` | Admin operational health surface (`healthy` / `degraded` / `recovery`) |
+| GET | `/ai-readiness` | Advisory baseline-readiness report for future ML/RAG work |
+
+Notes:
+
+- Railway should continue using `GET /health` on the web service root path, not `/api/system/health`, for service readiness.
+- `/api/system/health` is richer and DB-backed; when DB connectivity is unavailable it now short-circuits to a minimal degraded payload instead of attempting ORM queries.
+
 ### Lookahead (`/api/lookahead`)
 
 | Method | Path                         | Description |
@@ -198,7 +237,7 @@ Notes:
 
 - Demand is split by week boundaries across activity spans.
 - Overnight bookings are split across day/week boundaries in project timezone.
-- Nightly recalculation uses APScheduler with SQLAlchemy jobstore and reuses the app DB engine.
+- Nightly recalculation runs via the Railway scheduled-job service (`SERVICE_ROLE=nightly`) and records execution in `scheduled_job_runs`.
 - Duplicate same-day snapshots are prevented by update-on-existing (`project_id` + `snapshot_date`).
 - Lookahead rows are persisted in `lookahead_rows` and are also embedded into snapshot JSON history.
 - Lookahead now tracks excluded bookings and non-planning-ready asset counts so forecast quality issues are visible.
@@ -530,6 +569,13 @@ NIGHTLY_LOOKAHEAD_HOUR=18
 NIGHTLY_LOOKAHEAD_MINUTE=30
 NIGHTLY_LOOKAHEAD_TIMEZONE=Australia/Adelaide
 
+# Service roles / worker tuning (Railway)
+SERVICE_ROLE=web
+UPLOAD_WORKER_POLL_SECONDS=2
+UPLOAD_WORKER_HEARTBEAT_SECONDS=15
+UPLOAD_WORKER_CLAIM_TTL_SECONDS=90
+UPLOAD_WORKER_MAX_ATTEMPTS=3
+
 # Upload recovery
 # Positive integer minutes; uploads stuck in `processing` longer than this
 # threshold are marked failed on startup and before new uploads are accepted.
@@ -543,6 +589,14 @@ recovery threshold used by the upload safeguards described above: deterministic
 fallback still allows degraded completion when AI is unavailable, but uploads
 that remain in `processing` past this threshold are failed and annotated in
 `completeness_notes` so operators can retry cleanly.
+
+`SERVICE_ROLE` selects the Railway runtime mode:
+
+- `web` serves the API and `/health`
+- `worker` runs upload queue processing
+- `nightly` runs the scheduled one-shot nightly tick
+
+The worker tuning values are optional and should remain small on Railway Hobby so the existing `web` / `worker` / `nightly` topology stays inside the current deployment footprint.
 
 ---
 
@@ -604,7 +658,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | ORM | SQLAlchemy 2.0.23 |
 | Database | PostgreSQL 15 |
 | Migrations | Alembic 1.12.1 |
-| Scheduling | APScheduler 3.11.x |
+| Scheduling | Railway scheduled jobs + DB-backed execution ledger |
 | Auth | JWT (python-jose, HS512) |
 | Password hashing | bcrypt + argon2 |
 | Validation | Pydantic 2.5.0 |

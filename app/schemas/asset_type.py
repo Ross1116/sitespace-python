@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import Field, field_validator
 
@@ -17,6 +17,7 @@ class AssetTypeResponse(BaseSchema):
     is_active: bool = True
     is_user_selectable: bool = True
     max_hours_per_day: Decimal
+    planning_attributes_json: Optional[dict[str, Any]] = None
     taxonomy_version: int = 1
     introduced_at: Optional[datetime] = None
     retired_at: Optional[datetime] = None
@@ -30,6 +31,7 @@ class AssetTypeCreate(BaseSchema):
     is_active: bool = True
     is_user_selectable: bool = True
     max_hours_per_day: Decimal = Field(..., ge=0, le=24)
+    planning_attributes_json: Optional[dict[str, Any]] = None
     taxonomy_version: int = Field(1, ge=1)
 
     @field_validator("max_hours_per_day", mode="before")
@@ -51,6 +53,7 @@ class AssetTypeUpdate(BaseSchema):
     is_active: Optional[bool] = None
     is_user_selectable: Optional[bool] = None
     max_hours_per_day: Optional[Decimal] = Field(None, ge=0, le=24)
+    planning_attributes_json: Optional[dict[str, Any]] = None
     taxonomy_version: Optional[int] = Field(None, ge=1)
 
     @field_validator("max_hours_per_day", mode="before")
