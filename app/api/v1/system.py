@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...core.database import engine, get_db, assert_database_connection
@@ -46,16 +47,13 @@ def get_system_health(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
-    database_connected = True
     try:
         assert_database_connection(engine)
-    except Exception:
-        database_connected = False
-
-    if not database_connected:
+        database_connected = True
+        payload = build_system_health_payload(db, database_connected=database_connected)
+    except SQLAlchemyError:
         return _fallback_system_health_response()
 
-    payload = build_system_health_payload(db, database_connected=database_connected)
     backlog = QueueBacklogSummary(**payload["queue_backlog"])
     return SystemHealthResponse(
         database_connected=database_connected,

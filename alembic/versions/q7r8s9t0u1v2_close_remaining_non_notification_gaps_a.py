@@ -8,6 +8,7 @@ Create Date: 2026-04-03
 from typing import Sequence, Union
 
 from alembic import op
+from alembic.util import CommandError
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -120,6 +121,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    raise CommandError(
+        "Revision q7r8s9t0u1v2 is irreversible because active-only item_context_profiles "
+        "uniqueness may permit historical duplicates that cannot be losslessly collapsed on downgrade."
+    )
     op.drop_index("uq_item_requirement_sets_item_active", table_name="item_requirement_sets")
     op.drop_index("ix_item_requirement_sets_item_id", table_name="item_requirement_sets")
     op.drop_table("item_requirement_sets")

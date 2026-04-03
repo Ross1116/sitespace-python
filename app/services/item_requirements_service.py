@@ -33,6 +33,8 @@ def validate_requirement_rules(rules: dict[str, Any]) -> dict[str, Any]:
         value = rules.get(key)
         if value is None:
             continue
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
         try:
             int(value)
         except (TypeError, ValueError) as exc:

@@ -185,7 +185,8 @@ def test_reconcile_context_profiles_on_merge_moves_non_conflicting_rows():
         total_hours=12.0,
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.with_for_update.return_value.all.side_effect = [
+    active_query = db.query.return_value.filter.return_value
+    active_query.filter.return_value.with_for_update.return_value.all.side_effect = [
         [source_profile],
         [],
     ]
@@ -243,7 +244,8 @@ def test_reconcile_context_profiles_on_merge_prefers_manual_profile_for_conflict
         sample_count=2,
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.with_for_update.return_value.all.side_effect = [
+    active_query = db.query.return_value.filter.return_value
+    active_query.filter.return_value.with_for_update.return_value.all.side_effect = [
         [source_profile],
         [target_profile],
     ]

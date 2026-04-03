@@ -396,6 +396,7 @@ def get_item_feature_effects(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
+    _get_item_or_404(db, item_id)
     rows = list_feature_effects(db, item_id=item_id, asset_type=asset_type, duration_bucket=duration_bucket)
     return [
         ContextFeatureEffectResponse(
@@ -421,6 +422,7 @@ def get_item_expansion_signals(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
+    _get_item_or_404(db, item_id)
     rows = list_context_expansion_signals(db, item_id=item_id, asset_type=asset_type)
     return [
         ContextExpansionSignalResponse(
@@ -452,6 +454,13 @@ def promote_expansion_signal(
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to promote expansion signal %s", signal_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Expansion signal update failed",
+        ) from exc
     return ContextExpansionSignalResponse(
         id=row.id,
         asset_type=row.asset_type,
@@ -544,10 +553,13 @@ def evaluate_item_requirements(
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
     _get_item_or_404(db, item_id)
-    payload = evaluate_assets_against_requirements(
-        db,
-        item_id=item_id,
-        project_id=body.project_id,
-        asset_ids=body.asset_ids,
-    )
+    try:
+        payload = evaluate_assets_against_requirements(
+            db,
+            item_id=item_id,
+            project_id=body.project_id,
+            asset_ids=body.asset_ids,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     return ItemRequirementEvaluationResponse(**payload)

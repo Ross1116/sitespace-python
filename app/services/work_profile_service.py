@@ -495,10 +495,10 @@ def quantize_hours(hours: float) -> float:
     return math.floor(hours / WORK_PROFILE_OPERATIONAL_UNIT + 0.5) * WORK_PROFILE_OPERATIONAL_UNIT
 
 
-def active_context_profile_query(db: Session):
+def active_context_profile_query(db: Session, *, include_invalidated: bool = False):
     """Return the shared query for reusable local profiles that are still active."""
     query = db.query(ItemContextProfile)
-    if query.__class__.__module__.startswith("unittest.mock"):
+    if include_invalidated:
         return query
     return query.filter(ItemContextProfile.invalidated_at.is_(None))
 

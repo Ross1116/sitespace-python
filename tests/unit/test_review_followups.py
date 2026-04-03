@@ -9,12 +9,17 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1 import items as items_api
 from app.api.v1 import system as system_api
 from app.schemas.item_identity import ItemRequirementEvaluationRequest
 from app.services.item_requirements_service import _attribute_matches, validate_requirement_rules
-from app.services.work_profile_service import _overwrite_cache_entry, invalidate_context_profile
+from app.services.work_profile_service import (
+    _overwrite_cache_entry,
+    active_context_profile_query,
+    invalidate_context_profile,
+)
 
 
 def test_item_requirement_evaluation_request_requires_explicit_scope():
@@ -37,6 +42,9 @@ def test_validate_requirement_rules_rejects_malformed_shapes():
 
     with pytest.raises(ValueError, match="default_parallel_units"):
         validate_requirement_rules({"default_parallel_units": "abc"})
+
+    with pytest.raises(ValueError, match="min_parallel_units"):
+        validate_requirement_rules({"min_parallel_units": True})
 
 
 def test_attribute_matches_supports_scalar_and_list_values_both_directions():
@@ -80,6 +88,15 @@ def test_overwrite_cache_entry_rejects_invalidated_profiles():
         )
 
 
+def test_active_context_profile_query_can_include_invalidated_rows():
+    query = MagicMock()
+    db = MagicMock()
+    db.query.return_value = query
+
+    assert active_context_profile_query(db, include_invalidated=True) is query
+    query.filter.assert_not_called()
+
+
 def test_get_item_requirements_404s_when_item_is_missing():
     db = MagicMock()
     db.get.return_value = None
@@ -119,7 +136,7 @@ def test_replace_requirements_rolls_back_on_version_conflict(monkeypatch):
 
 def test_system_health_short_circuits_when_database_is_unavailable(monkeypatch):
     def _raise_db_error(_engine):
-        raise RuntimeError("database down")
+        raise SQLAlchemyError("database down")
 
     monkeypatch.setattr(system_api, "assert_database_connection", _raise_db_error)
     monkeypatch.setattr(
@@ -137,3 +154,93 @@ def test_system_health_short_circuits_when_database_is_unavailable(monkeypatch):
     assert response.state == "degraded"
     assert response.reason_codes == ["database_unavailable"]
     assert response.queue_backlog.queued == 0
+
+
+def test_system_health_short_circuits_when_payload_build_fails(monkeypatch):
+    monkeypatch.setattr(system_api, "assert_database_connection", lambda _engine: None)
+    monkeypatch.setattr(
+        system_api,
+        "build_system_health_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SQLAlchemyError("payload failed")),
+    )
+
+    response = system_api.get_system_health(
+        db=MagicMock(),
+        current_user=SimpleNamespace(id=uuid4(), role="manager"),
+    )
+
+    assert response.database_connected is False
+    assert response.reason_codes == ["database_unavailable"]
+
+
+def test_feature_effects_404_when_item_missing():
+    db = MagicMock()
+    db.get.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        items_api.get_item_feature_effects(
+            item_id=uuid4(),
+            asset_type=None,
+            duration_bucket=None,
+            db=db,
+            current_user=SimpleNamespace(id=uuid4(), role="manager"),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_expansion_signals_404_when_item_missing():
+    db = MagicMock()
+    db.get.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        items_api.get_item_expansion_signals(
+            item_id=uuid4(),
+            asset_type=None,
+            db=db,
+            current_user=SimpleNamespace(id=uuid4(), role="manager"),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_promote_expansion_signal_rolls_back_on_unexpected_error(monkeypatch):
+    db = MagicMock()
+
+    def _raise_runtime(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(items_api, "set_context_expansion_signal_promoted", _raise_runtime)
+
+    with pytest.raises(HTTPException) as exc_info:
+        items_api.promote_expansion_signal(
+            signal_id=uuid4(),
+            body=SimpleNamespace(promoted=True),
+            db=db,
+            current_user=SimpleNamespace(id=uuid4(), role="admin"),
+        )
+
+    assert exc_info.value.status_code == 500
+    db.rollback.assert_called_once()
+
+
+def test_evaluate_item_requirements_maps_value_error_to_400(monkeypatch):
+    item_id = uuid4()
+    db = MagicMock()
+    db.get.return_value = SimpleNamespace(id=item_id)
+
+    def _raise_value_error(*_args, **_kwargs):
+        raise ValueError("bad scope")
+
+    monkeypatch.setattr(items_api, "evaluate_assets_against_requirements", _raise_value_error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        items_api.evaluate_item_requirements(
+            item_id=item_id,
+            body=SimpleNamespace(project_id=uuid4(), asset_ids=[]),
+            db=db,
+            current_user=SimpleNamespace(id=uuid4(), role="manager"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "bad scope"
