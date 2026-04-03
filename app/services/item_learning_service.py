@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 import uuid
 
 from sqlalchemy import and_, func, or_
@@ -237,6 +238,7 @@ def get_item_statistics(db: Session, item_id: uuid.UUID) -> ItemStatisticsPayloa
         .filter(
             ItemContextProfile.item_id.in_(family_item_ids),
             ItemContextProfile.project_id.isnot(None),
+            ItemContextProfile.invalidated_at.is_(None),
         )
         .all()
     )
@@ -349,3 +351,133 @@ def list_other_review_items(
             }
         )
     return payload
+
+
+def summarize_other_review_items(db: Session) -> dict[str, object]:
+    rows = list_other_review_items(db, limit=25, offset=0)
+    total_items = (
+        db.query(func.count(Item.id))
+        .join(ItemClassification, ItemClassification.item_id == Item.id)
+        .filter(
+            Item.identity_status == "active",
+            ItemClassification.is_active.is_(True),
+            ItemClassification.asset_type == "other",
+        )
+        .scalar()
+        or 0
+    )
+    total_occurrences, distinct_project_count = (
+        db.query(
+            func.count(ProgrammeActivity.id),
+            func.count(func.distinct(ProgrammeUpload.project_id)),
+        )
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .join(ItemClassification, ItemClassification.item_id == ProgrammeActivity.item_id)
+        .filter(
+            ItemClassification.is_active.is_(True),
+            ItemClassification.asset_type == "other",
+        )
+        .one()
+    )
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    recent_upload_occurrences = (
+        db.query(func.count(ProgrammeActivity.id))
+        .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+        .join(ItemClassification, ItemClassification.item_id == ProgrammeActivity.item_id)
+        .filter(
+            ItemClassification.is_active.is_(True),
+            ItemClassification.asset_type == "other",
+            ProgrammeUpload.created_at >= recent_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+    return {
+        "total_items": int(total_items),
+        "total_occurrences": int(total_occurrences or 0),
+        "distinct_project_count": int(distinct_project_count or 0),
+        "recent_upload_occurrences": int(recent_upload_occurrences),
+        "top_items": rows,
+    }
+
+
+def _normalized_tokens(value: str) -> set[str]:
+    return {token for token in (value or "").lower().replace("-", " ").replace("_", " ").split() if token}
+
+
+def suggest_merge_candidates(
+    db: Session,
+    item_id: uuid.UUID,
+    *,
+    limit: int = 10,
+) -> list[dict[str, object]]:
+    item = db.get(Item, item_id)
+    if item is None:
+        raise LookupError(f"Item {item_id} not found")
+    canonical_item = follow_item_redirect(db, item)
+    family_ids = set(_family_item_ids(db, canonical_item.id))
+
+    item_tokens = _normalized_tokens(canonical_item.display_name)
+    alias_tokens = {
+        token
+        for row in db.query(ItemAlias).filter(ItemAlias.item_id.in_(family_ids)).all()
+        for token in _normalized_tokens(row.alias_normalised_name)
+    }
+    source_tokens = item_tokens | alias_tokens
+    source_classification = get_active_classification(db, canonical_item.id)
+
+    candidates = (
+        db.query(Item)
+        .filter(Item.identity_status == "active", Item.id.notin_(sorted(family_ids, key=str)))
+        .all()
+    )
+    stats_by_item = _batched_item_occurrence_stats(db, item_ids=[candidate.id for candidate in candidates])
+
+    ranked = []
+    for candidate in candidates:
+        candidate_family = set(_family_item_ids(db, candidate.id))
+        if family_ids & candidate_family:
+            continue
+        candidate_alias_rows = db.query(ItemAlias).filter(ItemAlias.item_id.in_(candidate_family)).all()
+        candidate_tokens = _normalized_tokens(candidate.display_name)
+        candidate_tokens |= {
+            token
+            for row in candidate_alias_rows
+            for token in _normalized_tokens(row.alias_normalised_name)
+        }
+        overlap = sorted(source_tokens & candidate_tokens)
+        name_similarity = SequenceMatcher(
+            None,
+            canonical_item.display_name.lower(),
+            candidate.display_name.lower(),
+        ).ratio()
+        token_similarity = 0.0
+        union = source_tokens | candidate_tokens
+        if union:
+            token_similarity = len(source_tokens & candidate_tokens) / len(union)
+        classification = get_active_classification(db, candidate.id)
+        classification_boost = 0.0
+        if (
+            source_classification is not None
+            and classification is not None
+            and source_classification.asset_type == classification.asset_type
+        ):
+            classification_boost = 0.15
+        score = round((name_similarity * 0.55) + (token_similarity * 0.30) + classification_boost, 4)
+        if score < 0.25:
+            continue
+        occurrence_count, distinct_project_count, last_seen_at = stats_by_item.get(candidate.id, (0, 0, None))
+        ranked.append(
+            {
+                "item_id": candidate.id,
+                "display_name": candidate.display_name,
+                "score": score,
+                "overlapping_tokens": overlap,
+                "candidate_asset_type": classification.asset_type if classification is not None else None,
+                "occurrence_count": occurrence_count,
+                "distinct_project_count": distinct_project_count,
+                "last_seen_at": last_seen_at,
+            }
+        )
+    ranked.sort(key=lambda row: (-float(row["score"]), row["display_name"], str(row["item_id"])))
+    return ranked[:limit]

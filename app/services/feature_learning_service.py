@@ -12,6 +12,7 @@ import math
 import statistics
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -524,3 +525,60 @@ def nightly_feature_learning_job() -> dict[str, int]:
         raise
     finally:
         db.close()
+
+
+def list_feature_effects(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str | None = None,
+    duration_bucket: int | None = None,
+) -> list[ContextFeatureEffect]:
+    query = db.query(ContextFeatureEffect).filter(ContextFeatureEffect.item_id == item_id)
+    if asset_type:
+        query = query.filter(ContextFeatureEffect.asset_type == asset_type)
+    if duration_bucket is not None:
+        query = query.filter(ContextFeatureEffect.duration_bucket == duration_bucket)
+    return (
+        query.order_by(
+            ContextFeatureEffect.asset_type.asc(),
+            ContextFeatureEffect.duration_bucket.asc(),
+            ContextFeatureEffect.feature_name.asc(),
+            ContextFeatureEffect.feature_value.asc(),
+        )
+        .all()
+    )
+
+
+def list_context_expansion_signals(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    asset_type: str | None = None,
+) -> list[ContextExpansionSignal]:
+    query = db.query(ContextExpansionSignal).filter(ContextExpansionSignal.item_id == item_id)
+    if asset_type:
+        query = query.filter(ContextExpansionSignal.asset_type == asset_type)
+    return (
+        query.order_by(
+            ContextExpansionSignal.asset_type.asc(),
+            ContextExpansionSignal.expansion_score.desc(),
+            ContextExpansionSignal.context_signature.asc(),
+        )
+        .all()
+    )
+
+
+def set_context_expansion_signal_promoted(
+    db: Session,
+    *,
+    signal_id: uuid.UUID,
+    promoted: bool,
+) -> ContextExpansionSignal:
+    signal = db.query(ContextExpansionSignal).filter(ContextExpansionSignal.id == signal_id).one_or_none()
+    if signal is None:
+        raise LookupError(f"Context expansion signal {signal_id} not found")
+    signal.promoted = promoted
+    signal.promoted_at = datetime.now(timezone.utc) if promoted else None
+    db.flush()
+    return signal

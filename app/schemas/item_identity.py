@@ -121,3 +121,90 @@ class ItemOtherReviewResponse(BaseSchema):
     classification_source: str
     classification_confidence: str
     classification_maturity_tier: str
+
+
+class ItemOtherReviewSummaryResponse(BaseSchema):
+    total_items: int
+    total_occurrences: int
+    distinct_project_count: int
+    recent_upload_occurrences: int
+    top_items: list[ItemOtherReviewResponse]
+
+
+class ItemMergeSuggestionResponse(BaseSchema):
+    item_id: UUID
+    display_name: str
+    score: float
+    overlapping_tokens: list[str]
+    candidate_asset_type: Optional[str] = None
+    occurrence_count: int
+    distinct_project_count: int
+    last_seen_at: Optional[datetime] = None
+
+
+class ContextFeatureEffectResponse(BaseSchema):
+    id: UUID
+    asset_type: str
+    duration_bucket: int
+    feature_name: str
+    feature_value: str
+    observation_count: int
+    mean_residual: float
+    confidence: float
+    effective_weight: float
+    updated_at: datetime
+
+
+class ContextExpansionSignalResponse(BaseSchema):
+    id: UUID
+    asset_type: str
+    context_signature: str
+    observation_count: int
+    mean_cv: float
+    expansion_candidate_field: str
+    expansion_score: float
+    promoted: bool
+    promoted_at: Optional[datetime] = None
+    updated_at: datetime
+
+
+class ContextExpansionPromoteRequest(BaseSchema):
+    promoted: bool = True
+
+
+class ItemRequirementSetResponse(BaseSchema):
+    id: UUID
+    item_id: UUID
+    version: int
+    is_active: bool
+    rules_json: Dict[str, Any]
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ItemRequirementSetUpsertRequest(BaseSchema):
+    rules_json: Dict[str, Any]
+    notes: Optional[str] = None
+
+
+class ItemRequirementEvaluationRequest(BaseSchema):
+    project_id: Optional[UUID] = None
+    asset_ids: list[UUID] = []
+
+
+class ItemRequirementAssetEvaluation(BaseSchema):
+    asset_id: UUID
+    asset_code: str
+    asset_name: str
+    asset_type: str
+    matches: bool
+    failures: list[str]
+    preferences: list[str]
+    planning_attributes: Dict[str, Any]
+
+
+class ItemRequirementEvaluationResponse(BaseSchema):
+    item_id: UUID
+    requirements: Dict[str, Any]
+    evaluations: list[ItemRequirementAssetEvaluation]

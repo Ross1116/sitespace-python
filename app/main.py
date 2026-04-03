@@ -38,11 +38,11 @@ from slowapi.errors import RateLimitExceeded
 from .core.config import settings
 from .core.database import assert_database_connection, engine  # noqa: F401 — engine used at import for model registration
 from .core.middleware import RequestLoggingMiddleware, TvReadOnlyMiddleware
-from .api.v1 import auth, assets, asset_types, items, lookahead, slot_booking, site_project, subcontractor, users, booking_audit, files, site_plans, programmes
+from .api.v1 import auth, assets, asset_types, items, lookahead, slot_booking, site_project, subcontractor, system, users, booking_audit, files, site_plans, programmes
 from .api import internal as internal_api
 
 # Import all models so SQLAlchemy knows about them
-from .models import user, asset, asset_type as asset_type_model, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models, item_identity
+from .models import user, asset, asset_type as asset_type_model, slot_booking as slot_booking_model, site_project as site_project_model, subcontractor as subcontractor_model, stored_file as stored_file_model, site_plan as site_plan_model, programme, lookahead as lookahead_models, item_identity, ops as ops_models
 from .models import job_queue as job_queue_model  # noqa: F401 — register tables
 
 @asynccontextmanager
@@ -130,6 +130,7 @@ app.include_router(site_plans.router, prefix="/api")
 app.include_router(programmes.router, prefix="/api")
 app.include_router(items.router, prefix="/api")
 app.include_router(lookahead.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
 # Internal endpoints only on the web service (serves files to worker over private network)
 if settings.SERVICE_ROLE == "web" and settings.INTERNAL_API_SECRET:
     app.include_router(internal_api.router)

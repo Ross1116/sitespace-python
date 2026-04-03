@@ -105,6 +105,14 @@ class ItemContextProfile(Base):
     actuals_count = Column(Integer, nullable=False, default=0, server_default="0")
     actuals_median = Column(Numeric(10, 4), nullable=True)
     actuals_shape_json = Column(JSONB, nullable=True)
+    invalidated_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    invalidation_reason = Column(String(50), nullable=True)
+    superseded_by_profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("item_context_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
@@ -145,6 +153,11 @@ class ItemContextProfile(Base):
     project = relationship("SiteProject", foreign_keys=[project_id])
     item = relationship("Item", foreign_keys=[item_id])
     inference_policy = relationship("InferencePolicy", foreign_keys=[inference_version])
+    superseded_by_profile = relationship(
+        "ItemContextProfile",
+        remote_side=[id],
+        foreign_keys=[superseded_by_profile_id],
+    )
 
     def __repr__(self) -> str:
         return (

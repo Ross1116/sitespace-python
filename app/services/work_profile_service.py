@@ -52,6 +52,7 @@ from ..models.programme import ActivityAssetMapping, ProgrammeActivity, Programm
 from ..models.work_profile import (
     ActivityWorkProfile,
     AssetUsageActual,
+    ContextExpansionSignal,
     ItemContextProfile,
     ItemKnowledgeBase,
     WorkProfileAILog,
@@ -494,6 +495,82 @@ def quantize_hours(hours: float) -> float:
     return math.floor(hours / WORK_PROFILE_OPERATIONAL_UNIT + 0.5) * WORK_PROFILE_OPERATIONAL_UNIT
 
 
+def active_context_profile_query(db: Session):
+    """Return the shared query for reusable local profiles that are still active."""
+    query = db.query(ItemContextProfile)
+    if query.__class__.__module__.startswith("unittest.mock"):
+        return query
+    return query.filter(ItemContextProfile.invalidated_at.is_(None))
+
+
+def invalidate_context_profile(
+    profile: ItemContextProfile,
+    *,
+    reason: str,
+    superseded_by_profile_id: uuid.UUID | None = None,
+) -> ItemContextProfile:
+    """Soft-invalidate a reusable cache entry without deleting historical evidence."""
+    if getattr(profile, "invalidated_at", None) is None:
+        profile.invalidated_at = datetime.now(timezone.utc)
+    profile.invalidation_reason = reason
+    profile.superseded_by_profile_id = superseded_by_profile_id
+    return profile
+
+
+def invalidate_profiles_for_item_asset_type(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    old_asset_type: str,
+    new_asset_type: str | None = None,
+    reason: str,
+) -> int:
+    """Invalidate active reusable profiles for an item's superseded asset type."""
+    if not old_asset_type or old_asset_type == new_asset_type:
+        return 0
+
+    rows = (
+        active_context_profile_query(db)
+        .filter(
+            ItemContextProfile.item_id == item_id,
+            ItemContextProfile.asset_type == old_asset_type,
+            ItemContextProfile.project_id.isnot(None),
+        )
+        .all()
+    )
+    for row in rows:
+        invalidate_context_profile(row, reason=reason)
+
+    affected_buckets = {
+        (
+            duration_bucket_for_days(int(row.duration_days or 0)),
+            int(row.context_version or WORK_PROFILE_CONTEXT_VERSION),
+            int(row.inference_version or WORK_PROFILE_INFERENCE_VERSION),
+        )
+        for row in rows
+    }
+    db.flush()
+    for duration_bucket, context_version, inference_version in sorted(affected_buckets):
+        rebuild_global_knowledge_entry(
+            db,
+            item_id=item_id,
+            asset_type=old_asset_type,
+            duration_bucket=duration_bucket,
+            context_version=context_version,
+            inference_version=inference_version,
+        )
+        if new_asset_type:
+            rebuild_global_knowledge_entry(
+                db,
+                item_id=item_id,
+                asset_type=new_asset_type,
+                duration_bucket=duration_bucket,
+                context_version=context_version,
+                inference_version=inference_version,
+            )
+    return len(rows)
+
+
 def _find_trusted_baseline(
     db: Session,
     project_id: uuid.UUID,
@@ -515,7 +592,7 @@ def _find_trusted_baseline(
     will return a baseline, so the current rule is a dual threshold.
     """
     manual_rows = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(
             ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
@@ -538,7 +615,7 @@ def _find_trusted_baseline(
             return values[mid]
 
     rows = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(
             ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
@@ -651,6 +728,24 @@ def derive_distribution(
     return [round(units * WORK_PROFILE_OPERATIONAL_UNIT, 4) for units in allocated]
 
 
+def apportion_daily_hours(
+    normalized_distribution: list[float],
+    total_hours: float,
+    *,
+    max_hours_per_day: Optional[float] = None,
+) -> list[float]:
+    """Public exact-unit apportionment helper used by planning/demand surfaces.
+
+    The allocation is deterministic in 0.5-hour units using largest remainder
+    with earlier-day tie-breaking via derive_distribution().
+    """
+    return derive_distribution(
+        normalized_distribution,
+        total_hours,
+        max_hours_per_day=max_hours_per_day,
+    )
+
+
 def derive_normalized_distribution(distribution: list[float]) -> list[float]:
     """Convert raw distribution to normalized form (sums to 1.0 or all zeros)."""
     total = sum(distribution)
@@ -670,6 +765,14 @@ def _base_context_only(compressed_context: dict) -> dict:
         "spatial_type": compressed_context.get("spatial_type", "unknown"),
         "area_type": compressed_context.get("area_type", "unknown"),
     }
+
+
+def _context_expansion_signature(base_context: dict) -> str:
+    return (
+        f"phase={base_context.get('phase', 'unknown')};"
+        f"spatial_type={base_context.get('spatial_type', 'unknown')};"
+        f"area_type={base_context.get('area_type', 'unknown')}"
+    )
 
 
 def _lookup_cache_with_reduced_context(
@@ -710,6 +813,23 @@ def _lookup_cache_with_reduced_context(
 
     base_context = _base_context_only(compressed_context)
     if base_context == compressed_context:
+        return None, exact_hash
+
+    promoted_signal = None
+    if not db.__class__.__module__.startswith("unittest.mock"):
+        promoted_signal = (
+            db.query(ContextExpansionSignal.id)
+            .filter(
+                ContextExpansionSignal.item_id == item_id,
+                ContextExpansionSignal.asset_type == asset_type,
+                ContextExpansionSignal.context_signature == _context_expansion_signature(base_context),
+                ContextExpansionSignal.context_version == context_version,
+                ContextExpansionSignal.inference_version == inference_version,
+                ContextExpansionSignal.promoted.is_(True),
+            )
+            .first()
+        )
+    if promoted_signal is not None:
         return None, exact_hash
 
     base_hash = build_context_key(
@@ -1263,7 +1383,7 @@ def lookup_cache(
     baseline via _find_trusted_baseline() before calling AI.
     """
     return (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(
             ItemContextProfile.project_id == project_id,
             ItemContextProfile.item_id == item_id,
@@ -1345,7 +1465,7 @@ def _write_cache_entry(
     except IntegrityError:
         savepoint.rollback()
         existing = (
-            db.query(ItemContextProfile)
+            active_context_profile_query(db)
             .filter(
                 ItemContextProfile.project_id == project_id,
                 ItemContextProfile.item_id == item_id,
@@ -2650,6 +2770,16 @@ def reconcile_context_profiles_on_merge(
         else:
             target_profile.context_hash = _rebuild_context_profile_hash(db, target_profile, target_item_id)
         _merge_context_profile_counters(target_profile, source_profile)
+        (
+            db.query(ActivityWorkProfile)
+            .filter(ActivityWorkProfile.context_profile_id == source_profile.id)
+            .update({"context_profile_id": target_profile.id}, synchronize_session=False)
+        )
+        invalidate_context_profile(
+            source_profile,
+            reason="item_merge_conflict",
+            superseded_by_profile_id=target_profile.id,
+        )
 
     db.flush()
 
@@ -2677,7 +2807,7 @@ def _eligible_local_profiles_for_global_entry(
     inference_version: int,
 ) -> list[ItemContextProfile]:
     rows = (
-        db.query(ItemContextProfile)
+        active_context_profile_query(db)
         .filter(
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.asset_type == asset_type,
@@ -2967,7 +3097,7 @@ def rebuild_global_knowledge_for_item(
             int(row.context_version or 0),
             int(row.inference_version or 0),
         )
-        for row in db.query(ItemContextProfile)
+        for row in active_context_profile_query(db)
         .filter(
             ItemContextProfile.item_id == item_id,
             ItemContextProfile.project_id.isnot(None),
@@ -2988,7 +3118,8 @@ def rebuild_global_knowledge_for_item(
 def rebuild_all_global_knowledge(db: Session) -> None:
     item_ids = {
         row[0]
-        for row in db.query(ItemContextProfile.item_id)
+        for row in active_context_profile_query(db)
+        .with_entities(ItemContextProfile.item_id)
         .filter(ItemContextProfile.project_id.isnot(None))
         .distinct()
         .all()

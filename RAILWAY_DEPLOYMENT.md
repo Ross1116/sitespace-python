@@ -151,8 +151,10 @@ All API routers are mounted under `/api`:
 
 ## Operational Notes
 
-- APScheduler is initialized when available and uses `SQLAlchemyJobStore(engine=engine)`.
-- Nightly lookahead scheduling is controlled by `NIGHTLY_LOOKAHEAD_HOUR` and `NIGHTLY_LOOKAHEAD_MINUTE`.
+- The web service is `SERVICE_ROLE=web`.
+- The upload worker is `SERVICE_ROLE=worker`.
+- The nightly tick service is `SERVICE_ROLE=nightly` and should be invoked by Railway cron (for example every 5 minutes).
+- Nightly lookahead scheduling semantics are controlled by `NIGHTLY_LOOKAHEAD_HOUR`, `NIGHTLY_LOOKAHEAD_MINUTE`, and `NIGHTLY_LOOKAHEAD_TIMEZONE`.
 - CORS uses `settings.effective_cors_origins`; localhost origins are added only when `DEBUG=True`.
 - Production should keep `DEBUG=False` and set strong secrets.
 
@@ -160,7 +162,7 @@ All API routers are mounted under `/api`:
 
 1. App boots but requests fail: verify `DATABASE_URL` and migration state.
 2. 500 on startup: verify `JWT_SECRET` and `SECRET_KEY` are non-empty when `DEBUG=False`.
-3. Lookahead job missing: check APScheduler dependency installation and startup logs.
+3. Lookahead job missing: check the Railway scheduled job service logs and the `scheduled_job_runs` table.
 4. CORS failures: validate exact frontend origin values in `CORS_ORIGINS`.
 
 ## Production Checklist

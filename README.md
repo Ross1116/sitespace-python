@@ -198,7 +198,7 @@ Notes:
 
 - Demand is split by week boundaries across activity spans.
 - Overnight bookings are split across day/week boundaries in project timezone.
-- Nightly recalculation uses APScheduler with SQLAlchemy jobstore and reuses the app DB engine.
+- Nightly recalculation runs via the Railway scheduled-job service (`SERVICE_ROLE=nightly`) and records execution in `scheduled_job_runs`.
 - Duplicate same-day snapshots are prevented by update-on-existing (`project_id` + `snapshot_date`).
 - Lookahead rows are persisted in `lookahead_rows` and are also embedded into snapshot JSON history.
 - Lookahead now tracks excluded bookings and non-planning-ready asset counts so forecast quality issues are visible.
@@ -604,7 +604,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | ORM | SQLAlchemy 2.0.23 |
 | Database | PostgreSQL 15 |
 | Migrations | Alembic 1.12.1 |
-| Scheduling | APScheduler 3.11.x |
+| Scheduling | Railway scheduled jobs + DB-backed execution ledger |
 | Auth | JWT (python-jose, HS512) |
 | Password hashing | bcrypt + argon2 |
 | Validation | Pydantic 2.5.0 |

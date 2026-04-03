@@ -586,6 +586,19 @@ async def _run(upload_id: str, db: Session) -> None:
         upload.status = "committed"
         upload.processing_outcome = "committed"
 
+    other_asset_type_count = (
+        db.query(ActivityAssetMapping)
+        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+        .filter(
+            ProgrammeActivity.programme_upload_id == upload.id,
+            ActivityAssetMapping.asset_type == "other",
+        )
+        .count()
+    )
+    _update_completeness_notes(upload, other_asset_type_count=other_asset_type_count)
+    from .system_health_service import record_upload_health_outcome
+
+    record_upload_health_outcome(db, upload)
     db.commit()
 
     logger.info(
@@ -1307,6 +1320,9 @@ def _commit_with_warnings(
     upload.completeness_notes = _normalize_completeness_notes(notes_dict)
     upload.status = "completed_with_warnings"
     upload.processing_outcome = "completed_with_warnings"
+    from .system_health_service import record_upload_health_outcome
+
+    record_upload_health_outcome(db, upload)
     db.commit()
 
 
@@ -1325,6 +1341,9 @@ def _commit_failed(
     upload.completeness_notes = _normalize_completeness_notes(notes_dict)
     upload.status = "failed"
     upload.processing_outcome = "failed"
+    from .system_health_service import record_upload_health_outcome
+
+    record_upload_health_outcome(db, upload)
     db.commit()
 
 
@@ -1373,6 +1392,10 @@ def recover_stale_processing_uploads(
         upload.status = "failed"
         upload.processing_outcome = "failed"
 
+    from .system_health_service import record_upload_health_outcome
+
+    for upload in uploads:
+        record_upload_health_outcome(db, upload)
     db.commit()
     logger.warning(
         "Recovered %d stale processing uploads%s older than %d seconds",

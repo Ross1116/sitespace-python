@@ -4550,7 +4550,7 @@ Historical note: this checklist is preserved from the original architecture base
 ## Immediately
 
 - [x] Add parser, normalization, identity, classification, demand, and alert-policy tests
-- [ ] Add ARC Bowden PDF regression fixture
+- [x] Add ARC Bowden PDF regression fixture
 - [x] Enrich existing Sentry integration in FastAPI and background jobs
 - [x] Tag Sentry events with project/upload/stage context
 - [x] Expand `ai_suggestion_logs` for full AI auditability
@@ -4581,10 +4581,10 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement bounded extension fields in compressed context
 - [x] Implement deterministic context key including asset type
 - [x] Implement deterministic reduced-context fallback order
-- [ ] Implement cache override rules
-- [ ] Implement confidence-weighted cache evidence
-- [ ] Implement cache invalidation triggers
-- [ ] Implement work-profile AI generation with asset type provided
+- [x] Implement cache override rules
+- [x] Implement confidence-weighted cache evidence
+- [x] Implement cache invalidation triggers
+- [x] Implement work-profile AI generation with asset type provided
 - [x] Implement total-hours finalization policy
 - [x] Implement concrete hours-bounds clamping
 - [x] Implement operational total-hours unit normalization
@@ -4592,38 +4592,38 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement cache lookup/reuse pipeline
 - [x] Implement normalized distribution storage
 - [x] Implement low-confidence flagging
-- [ ] Implement confidence-aware alert suppression
+- [x] Implement confidence-aware alert suppression
 - [x] Implement fixed Monday-based workweek mapping
-- [ ] Implement exact unit apportionment for mapped daily demand
-- [ ] Implement distribution-based demand engine
+- [x] Implement exact unit apportionment for mapped daily demand
+- [x] Implement distribution-based demand engine
 - [x] Implement anomaly detection on weekly demand with explicit thresholds
-- [ ] Add `lookahead_rows`
-- [ ] Add `project_alert_policies`
-- [ ] Add `subcontractor_asset_type_assignments`
+- [x] Add `lookahead_rows`
+- [x] Add `project_alert_policies`
+- [x] Add `subcontractor_asset_type_assignments`
 - [x] Resolve `notifications.activity_id` nullability
-- [ ] Add `severity_score` to notifications
+- [x] Add `severity_score` to notifications
 - [ ] Add composite partial unique index for active lookahead notifications
-- [ ] Implement thresholded lookahead-driven notification write path
-- [ ] Implement alert severity scoring
-- [ ] Implement alert rate limiting per subcontractor/week
-- [ ] Implement project-wide alert cap
-- [ ] Implement stale-alert cancellation on new upload commit
-- [ ] Add project-scoped processing guard
+- [x] Implement thresholded lookahead-driven notification write path
+- [x] Implement alert severity scoring
+- [x] Implement alert rate limiting per subcontractor/week
+- [x] Implement project-wide alert cap
+- [x] Implement stale-alert cancellation on new upload commit
+- [x] Add project-scoped processing guard
 - [x] Add AI cost tracking per upload
-- [ ] Add reporting on `other` asset-type usage
+- [x] Add reporting on `other` asset-type usage
 - [ ] Add threshold alert when `other` exceeds 10%
 - [x] Implement safe degraded mode behavior
-- [ ] Surface system health state
-- [ ] Introduce explicit upload-status migration plan from current `degraded` semantics
+- [x] Surface system health state
+- [x] Introduce explicit upload-status migration plan from current `degraded` semantics
 - [x] Add `max_hours_per_day` to `asset_types` table with seed values
 - [x] Implement per-day distribution bucket cap in work-profile Stage B validation
-- [ ] Implement per-day demand cap check in demand engine (second enforcement point)
+- [x] Implement per-day demand cap check in demand engine (second enforcement point)
 - [x] Add `confirmation_count` and `correction_count` to `item_classifications`
 - [x] Implement classification maturity tier evaluation (TENTATIVE / CONFIRMED / STABLE / PERMANENT)
 - [x] Implement re-query logic for TENTATIVE classifications; flag disagreement for review, never auto-change
 - [x] Increment `confirmation_count` on every classification reuse
 - [x] Add Bayesian columns to `item_context_profiles` (`posterior_mean`, `posterior_precision`, `sample_count`, `correction_count`, `actuals_count`, `actuals_median`)
-- [ ] Implement Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
+- [x] Implement Bayesian posterior update on fresh external evidence (AI result, actuals, manual correction)
 - [x] Implement work-profile maturity tier evaluation (TENTATIVE / CONFIRMED / TRUSTED_BASELINE / MANUAL)
 - [x] Implement correction rate trigger (correction_count / sample_count > 0.20 → re-evaluate work profile)
 
@@ -4638,15 +4638,15 @@ Historical note: this checklist is preserved from the original architecture base
 - [x] Implement project-local → global promotion rules
 - [x] Implement global cache lookup with asset-type presence guard
 - [x] Implement actuals Bayesian updates (`actuals_count`, `actuals_median`)
-- [ ] Add similarity-based merge suggestions
+- [x] Add similarity-based merge suggestions
 - [ ] Refine stale-alert cancellation by exact signal scope
 - [x] Add item stats / learning loop
 - [x] Add actual-hours capture foundation (`asset_usage_actuals`)
-- [ ] Add hierarchy feature learning
-- [ ] Add confidence weighting for learned features
-- [ ] Add actuals-informed shape learning
-- [ ] Add item requirements
-- [ ] Evaluate fine-tuning / RAG / ML only after baseline matures
+- [x] Add hierarchy feature learning
+- [x] Add confidence weighting for learned features
+- [x] Add actuals-informed shape learning
+- [x] Add item requirements
+- [x] Evaluate fine-tuning / RAG / ML only after baseline matures
 
 ---
 

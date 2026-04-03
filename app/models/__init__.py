@@ -35,6 +35,7 @@ from .work_profile import (
     ContextExpansionSignal,
 )
 from .job_queue import ProgrammeUploadJob, ScheduledJobRun
+from .ops import SystemHealthState, ItemRequirementSet
 
 __all__ = [
     "User",
@@ -73,4 +74,6 @@ __all__ = [
     "ContextExpansionSignal",
     "ProgrammeUploadJob",
     "ScheduledJobRun",
+    "SystemHealthState",
+    "ItemRequirementSet",
 ]
