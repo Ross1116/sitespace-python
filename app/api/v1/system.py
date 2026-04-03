@@ -54,21 +54,21 @@ def get_system_health(
         assert_database_connection(engine)
         database_connected = True
         payload = build_system_health_payload(db, database_connected=database_connected)
+        backlog = QueueBacklogSummary(**payload["queue_backlog"])
+        return SystemHealthResponse(
+            database_connected=database_connected,
+            state=payload["state"],
+            reason_codes=payload["reason_codes"],
+            clean_upload_streak=payload["clean_upload_streak"],
+            last_transition_at=payload["last_transition_at"],
+            last_trigger_upload_id=payload["last_trigger_upload_id"],
+            queue_backlog=backlog,
+            last_nightly_run=_scheduled_run_payload(payload["last_nightly_run"]),
+            last_feature_learning_run=_scheduled_run_payload(payload["last_feature_learning_run"]),
+        )
     except Exception:
+        logger.exception("Failed to build system health payload")
         return _fallback_system_health_response()
-
-    backlog = QueueBacklogSummary(**payload["queue_backlog"])
-    return SystemHealthResponse(
-        database_connected=database_connected,
-        state=payload["state"],
-        reason_codes=payload["reason_codes"],
-        clean_upload_streak=payload["clean_upload_streak"],
-        last_transition_at=payload["last_transition_at"],
-        last_trigger_upload_id=payload["last_trigger_upload_id"],
-        queue_backlog=backlog,
-        last_nightly_run=_scheduled_run_payload(payload["last_nightly_run"]),
-        last_feature_learning_run=_scheduled_run_payload(payload["last_feature_learning_run"]),
-    )
 
 
 @router.get("/ai-readiness", response_model=AIReadinessResponse)

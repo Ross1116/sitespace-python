@@ -2696,8 +2696,6 @@ def _copy_context_profile_payload(
     target.low_confidence_flag = bool(source.low_confidence_flag)
     target.posterior_mean = source.posterior_mean
     target.posterior_precision = source.posterior_precision
-    if source.actuals_median is not None:
-        target.actuals_median = source.actuals_median
     return target
 
 

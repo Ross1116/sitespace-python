@@ -15,8 +15,13 @@ from app.api.v1 import items as items_api
 from app.api.v1 import system as system_api
 from app.schemas.item_identity import ItemRequirementEvaluationRequest
 from app.services import item_requirements_service
-from app.services.item_requirements_service import _attribute_matches, validate_requirement_rules
+from app.services.item_requirements_service import (
+    _attribute_matches,
+    replace_item_requirement_set,
+    validate_requirement_rules,
+)
 from app.services.work_profile_service import (
+    _copy_context_profile_payload,
     _overwrite_cache_entry,
     active_context_profile_query,
     invalidate_context_profile,
@@ -46,6 +51,12 @@ def test_validate_requirement_rules_rejects_malformed_shapes():
 
     with pytest.raises(ValueError, match="min_parallel_units"):
         validate_requirement_rules({"min_parallel_units": True})
+
+    with pytest.raises(ValueError, match="max_parallel_units"):
+        validate_requirement_rules({"max_parallel_units": 1.5})
+
+    with pytest.raises(ValueError, match="default_parallel_units"):
+        validate_requirement_rules({"default_parallel_units": "2.5"})
 
 
 def test_attribute_matches_supports_scalar_and_list_values_both_directions():
@@ -174,6 +185,32 @@ def test_system_health_short_circuits_when_payload_build_fails(monkeypatch):
     assert response.reason_codes == ["database_unavailable"]
 
 
+def test_system_health_short_circuits_when_response_mapping_fails(monkeypatch):
+    monkeypatch.setattr(system_api, "assert_database_connection", lambda _engine: None)
+    monkeypatch.setattr(
+        system_api,
+        "build_system_health_payload",
+        lambda *_args, **_kwargs: {
+            "state": "healthy",
+            "reason_codes": [],
+            "clean_upload_streak": 1,
+            "last_transition_at": None,
+            "last_trigger_upload_id": None,
+            "queue_backlog": object(),
+            "last_nightly_run": None,
+            "last_feature_learning_run": None,
+        },
+    )
+
+    response = system_api.get_system_health(
+        db=MagicMock(),
+        current_user=SimpleNamespace(id=uuid4(), role="manager"),
+    )
+
+    assert response.database_connected is False
+    assert response.reason_codes == ["database_unavailable"]
+
+
 def test_ai_readiness_returns_fallback_when_payload_build_fails(monkeypatch):
     monkeypatch.setattr(
         system_api,
@@ -278,3 +315,78 @@ def test_evaluate_assets_against_requirements_short_circuits_on_explicit_empty_a
 
     assert payload["evaluations"] == []
     db.query.assert_not_called()
+
+
+def test_evaluate_assets_against_requirements_requires_scope():
+    db = MagicMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(item_requirements_service, "get_active_item_requirement_set", lambda *_args, **_kwargs: None)
+        with pytest.raises(ValueError, match="either asset_ids or project_id must be provided"):
+            item_requirements_service.evaluate_assets_against_requirements(
+                db,
+                item_id=uuid4(),
+                project_id=None,
+                asset_ids=None,
+            )
+
+    db.query.assert_not_called()
+
+
+def test_replace_item_requirement_set_does_not_deactivate_active_row_when_rules_invalid(monkeypatch):
+    item_id = uuid4()
+    active = SimpleNamespace(version=2, is_active=True)
+    db = MagicMock()
+    db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (item_id,)
+    monkeypatch.setattr(item_requirements_service, "get_active_item_requirement_set", lambda *_args, **_kwargs: active)
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        replace_item_requirement_set(
+            db,
+            item_id=item_id,
+            rules={"default_parallel_units": "2.5"},
+            notes=None,
+            created_by_user_id=uuid4(),
+        )
+
+    assert active.is_active is True
+    db.add.assert_not_called()
+
+
+def test_copy_context_profile_payload_does_not_preemptively_overwrite_actuals_median():
+    target = SimpleNamespace(
+        invalidated_at=None,
+        asset_type="crane",
+        duration_days=5,
+        context_version=1,
+        inference_version=1,
+        total_hours=10.0,
+        distribution_json=[2.0] * 5,
+        normalized_distribution_json=[0.2] * 5,
+        confidence=0.8,
+        source="ai",
+        low_confidence_flag=False,
+        posterior_mean=10.0,
+        posterior_precision=5.0,
+        actuals_median=7.5,
+    )
+    source = SimpleNamespace(
+        asset_type="hoist",
+        duration_days=3,
+        context_version=2,
+        inference_version=3,
+        total_hours=6.0,
+        distribution_json=[2.0, 2.0, 2.0],
+        normalized_distribution_json=[1 / 3, 1 / 3, 1 / 3],
+        confidence=0.9,
+        source="manual",
+        low_confidence_flag=True,
+        posterior_mean=6.0,
+        posterior_precision=8.0,
+        actuals_median=12.0,
+    )
+
+    result = _copy_context_profile_payload(target, source)
+
+    assert result is target
+    assert target.actuals_median == 7.5

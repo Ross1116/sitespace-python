@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import uuid
+from numbers import Integral, Real
 from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
@@ -35,10 +37,22 @@ def validate_requirement_rules(rules: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(value, bool):
             raise ValueError(f"{key} must be an integer")
+        if isinstance(value, Integral):
+            continue
+        if isinstance(value, Real):
+            if not float(value).is_integer():
+                raise ValueError(f"{key} must be an integer")
+            continue
+        if isinstance(value, str):
+            if not re.fullmatch(r"[+-]?\d+", value.strip()):
+                raise ValueError(f"{key} must be an integer")
+            continue
         try:
-            int(value)
+            coerced = int(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{key} must be an integer") from exc
+        if coerced != value:
+            raise ValueError(f"{key} must be an integer")
     normalized = {
         "allowed_asset_types": sorted({str(value) for value in rules.get("allowed_asset_types") or []}),
         "preferred_asset_types": sorted({str(value) for value in rules.get("preferred_asset_types") or []}),
@@ -87,6 +101,7 @@ def replace_item_requirement_set(
     item_row = db.query(Item.id).filter(Item.id == item_id).with_for_update().first()
     if item_row is None:
         raise LookupError(f"Item {item_id} not found")
+    normalized_rules = validate_requirement_rules(rules)
     active = get_active_item_requirement_set(db, item_id, for_update=True)
     next_version = (int(active.version) + 1) if active is not None else 1
     if active is not None:
@@ -95,7 +110,7 @@ def replace_item_requirement_set(
         item_id=item_id,
         version=next_version,
         is_active=True,
-        rules_json=validate_requirement_rules(rules),
+        rules_json=normalized_rules,
         notes=notes,
         created_by_user_id=created_by_user_id,
     )
@@ -141,6 +156,8 @@ def evaluate_assets_against_requirements(
                 "requirements": rules,
                 "evaluations": [],
             }
+    elif project_id is None:
+        raise ValueError("either asset_ids or project_id must be provided")
     query = db.query(Asset).options(joinedload(Asset.asset_type_rel))
     if asset_ids is not None:
         query = query.filter(Asset.id.in_(asset_ids))
