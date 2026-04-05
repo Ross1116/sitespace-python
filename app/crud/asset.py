@@ -631,6 +631,7 @@ def get_asset_detail(
         type_inference_source=asset.type_inference_source,
         type_inference_confidence=asset.type_inference_confidence,
         planning_ready=asset.planning_ready,
+        capacity_ready=asset.capacity_ready,
         description=asset.description,
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,

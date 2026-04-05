@@ -171,6 +171,7 @@ class AssetResponse(AssetBase, TimestampSchema):
     type_inference_source: Optional[str] = None
     type_inference_confidence: Optional[Decimal] = Field(None, ge=0, le=1)
     planning_ready: bool = False
+    capacity_ready: bool = False
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
     pending_booking_capacity: int = 5
@@ -187,6 +188,7 @@ class AssetBriefResponse(BaseSchema):
     canonical_type: Optional[str] = None
     type_resolution_status: AssetTypeResolutionStatus = AssetTypeResolutionStatus.UNKNOWN
     planning_ready: bool = False
+    capacity_ready: bool = False
     status: AssetStatus
     pending_booking_capacity: int = 5
     planning_attributes_json: Optional[dict[str, Any]] = None

@@ -25,8 +25,10 @@ from app.core.constants import (
     effective_asset_max_hours_per_day,
 )
 from app.schemas.asset import AssetCreate
+from app.schemas.enums import AssetTypeResolutionStatus
 from app.services import lookahead_engine
 from app.services.lookahead_engine import _capacity_status, _compute_capacity_by_week_asset
+from app.services.metadata_confidence_service import asset_is_capacity_ready
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +150,7 @@ class TestComputeCapacityByWeekAsset:
         db = _db_returning(assets)
 
         with (
-            patch.object(lookahead_engine, "asset_is_planning_ready", side_effect=lambda a: a.planning_ready),
+            patch.object(lookahead_engine, "asset_is_capacity_ready", side_effect=lambda a: a.planning_ready),
             patch.object(lookahead_engine, "get_max_hours_for_type", return_value=10.0),
         ):
             return _compute_capacity_by_week_asset(db, uuid4(), week_starts, work_days)
@@ -372,6 +374,41 @@ class TestComputeCapacityDashboard:
         assert cell["capacity_hours"] == 50.0
         assert cell["status"] == "balanced"  # 40/50 = 80%, between 70% and 90%
         assert cell["is_anomalous"] is True
+        assert result["headline_summary"]["total_demand_hours"] == 40.0
+        assert result["headline_summary"]["total_capacity_hours"] == 50.0
+        assert result["headline_summary"]["avg_utilization_pct"] == 80.0
+        assert result["headline_summary"]["weeks_with_gaps"] == 0
+        assert result["headline_summary"]["demand_without_capacity_hours"] == 0.0
+
+    def test_rows_are_rectangular_for_requested_weeks(self, monkeypatch):
+        snapshot = self._make_snapshot()
+        upload = self._make_upload()
+        fake_row = SimpleNamespace(
+            week_start=MONDAY,
+            asset_type="crane",
+            demand_hours=10.0,
+            booked_hours=0.0,
+            is_anomalous=False,
+        )
+
+        monkeypatch.setattr(lookahead_engine, "get_fresh_snapshot", lambda pid, db: snapshot)
+        monkeypatch.setattr(lookahead_engine, "get_active_programme_upload", lambda pid, db: upload)
+        monkeypatch.setattr(
+            lookahead_engine,
+            "_compute_capacity_by_week_asset",
+            lambda db, pid, week_starts, wdpw: (
+                {(MONDAY, "crane"): {"capacity_hours": 50.0, "available_assets": 1}},
+                {"excluded_not_planning_ready": 0, "excluded_retired": 0, "total_assets_evaluated": 1, "unresolved_asset_count": 0, "excluded_asset_types": []},
+            ),
+        )
+
+        db = self._db_for_capacity(rows=[fake_row])
+        result = lookahead_engine.compute_capacity_dashboard(uuid4(), db, start_week=MONDAY, weeks=2)
+
+        assert result["weeks"] == [MONDAY.isoformat(), (MONDAY + timedelta(weeks=1)).isoformat()]
+        assert set(result["rows"]["crane"].keys()) == set(result["weeks"])
+        assert result["rows"]["crane"][(MONDAY + timedelta(weeks=1)).isoformat()]["capacity_hours"] == 0.0
+        assert result["rows"]["crane"][(MONDAY + timedelta(weeks=1)).isoformat()]["status"] == "idle"
 
     def test_diagnostics_present_in_result(self, monkeypatch):
         snapshot = self._make_snapshot()
@@ -414,6 +451,46 @@ class TestComputeCapacityDashboard:
         assert "capacity_computed_at" in diag
         assert len(diag["assumptions"]) >= 3
 
+    def test_headline_summary_excludes_zero_capacity_rows_from_avg_utilization(self, monkeypatch):
+        snapshot = self._make_snapshot()
+        upload = self._make_upload()
+        rows = [
+            SimpleNamespace(
+                week_start=MONDAY,
+                asset_type="crane",
+                demand_hours=20.0,
+                booked_hours=0.0,
+                is_anomalous=False,
+            ),
+            SimpleNamespace(
+                week_start=MONDAY,
+                asset_type="ewp",
+                demand_hours=120.0,
+                booked_hours=0.0,
+                is_anomalous=False,
+            ),
+        ]
+
+        monkeypatch.setattr(lookahead_engine, "get_fresh_snapshot", lambda pid, db: snapshot)
+        monkeypatch.setattr(lookahead_engine, "get_active_programme_upload", lambda pid, db: upload)
+        monkeypatch.setattr(
+            lookahead_engine,
+            "_compute_capacity_by_week_asset",
+            lambda db, pid, week_starts, wdpw: (
+                {(MONDAY, "crane"): {"capacity_hours": 100.0, "available_assets": 1}},
+                {"excluded_not_planning_ready": 0, "excluded_retired": 0, "total_assets_evaluated": 1, "unresolved_asset_count": 0, "excluded_asset_types": []},
+            ),
+        )
+
+        db = self._db_for_capacity(rows=rows)
+        result = lookahead_engine.compute_capacity_dashboard(uuid4(), db, start_week=MONDAY, weeks=1)
+
+        assert result["headline_summary"]["total_demand_hours"] == 140.0
+        assert result["headline_summary"]["total_capacity_hours"] == 100.0
+        assert result["headline_summary"]["avg_utilization_pct"] == 20.0
+        assert result["headline_summary"]["demand_without_capacity_hours"] == 120.0
+        assert result["headline_summary"]["weeks_with_gaps"] == 1
+
 
 class TestAssetCapacityFieldPersistence:
     def test_create_asset_persists_max_hours_per_day(self):
@@ -433,3 +510,13 @@ class TestAssetCapacityFieldPersistence:
 
         assert created.max_hours_per_day == 8.5
         assert db.add.call_args[0][0].max_hours_per_day == 8.5
+
+
+def test_asset_is_capacity_ready_rejects_retired_assets():
+    asset = SimpleNamespace(
+        canonical_type="crane",
+        type_resolution_status=AssetTypeResolutionStatus.CONFIRMED.value,
+        status=SimpleNamespace(value="retired"),
+    )
+
+    assert asset_is_capacity_ready(asset) is False

@@ -17,6 +17,7 @@ from ...schemas.capacity_dashboard import (
     CapacityAssetTypeSummary,
     CapacityCell,
     CapacityDashboardDiagnostics,
+    CapacityHeadlineSummary,
     CapacityDashboardResponse,
     CapacityWeekSummary,
 )
@@ -289,6 +290,7 @@ def get_capacity_dashboard(
             }
             for asset_type, week_cells in result.get("rows", {}).items()
         },
+        headline_summary=CapacityHeadlineSummary(**result.get("headline_summary", {})),
         summary_by_week={
             week_start: CapacityWeekSummary(**summary)
             for week_start, summary in result.get("summary_by_week", {}).items()

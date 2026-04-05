@@ -49,3 +49,12 @@ class Asset(Base):
     @property
     def planning_ready(self) -> bool:
         return bool(self.canonical_type) and (self.type_resolution_status or "unknown") in ASSET_TYPE_RESOLUTION_READY
+
+    @property
+    def capacity_ready(self) -> bool:
+        status_value = getattr(getattr(self, "status", None), "value", getattr(self, "status", None))
+        return (
+            self.planning_ready
+            and (self.canonical_type or "").strip().lower() not in {"", "none"}
+            and status_value not in {AssetStatus.RETIRED, AssetStatus.RETIRED.value}
+        )

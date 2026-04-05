@@ -63,6 +63,16 @@ class CapacityDashboardDiagnostics(BaseSchema):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class CapacityHeadlineSummary(BaseSchema):
+    """Authoritative top-level summary metrics for the dashboard cards."""
+
+    total_demand_hours: float = 0.0
+    total_capacity_hours: float = 0.0
+    avg_utilization_pct: float = 0.0
+    weeks_with_gaps: int = 0
+    demand_without_capacity_hours: float = 0.0
+
+
 class CapacityDashboardResponse(BaseSchema):
     """Full capacity dashboard response."""
 
@@ -73,6 +83,7 @@ class CapacityDashboardResponse(BaseSchema):
     work_days_per_week: int = 5
     asset_types: list[str] = Field(default_factory=list)
     rows: dict[str, dict[str, CapacityCell]] = Field(default_factory=dict)
+    headline_summary: CapacityHeadlineSummary = Field(default_factory=CapacityHeadlineSummary)
     summary_by_week: dict[str, CapacityWeekSummary] = Field(default_factory=dict)
     summary_by_asset_type: dict[str, CapacityAssetTypeSummary] = Field(default_factory=dict)
     diagnostics: Optional[CapacityDashboardDiagnostics] = None

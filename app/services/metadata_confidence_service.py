@@ -15,6 +15,7 @@ from ..models.slot_booking import SlotBooking
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import (
     ASSET_TYPE_RESOLUTION_READY,
+    AssetStatus,
     AssetTypeResolutionStatus,
     BookingStatus,
     TradeResolutionStatus,
@@ -194,6 +195,16 @@ def asset_is_planning_ready(asset: Asset) -> bool:
     return (
         (asset.type_resolution_status or AssetTypeResolutionStatus.UNKNOWN.value) in ASSET_TYPE_RESOLUTION_READY
         and bool(asset.canonical_type)
+    )
+
+
+def asset_is_capacity_ready(asset: Asset) -> bool:
+    status_value = getattr(getattr(asset, "status", None), "value", getattr(asset, "status", None))
+    canonical_type = str(getattr(asset, "canonical_type", None) or "").strip().lower()
+    return (
+        asset_is_planning_ready(asset)
+        and canonical_type not in {"", "none"}
+        and status_value not in {AssetStatus.RETIRED, AssetStatus.RETIRED.value}
     )
 
 

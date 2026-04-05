@@ -46,7 +46,7 @@ from ..core.constants import (
     get_max_hours_for_type,
 )
 from .ai_service import suggest_subcontractor_asset_types
-from .metadata_confidence_service import asset_is_planning_ready, subcontractor_is_planning_ready
+from .metadata_confidence_service import asset_is_capacity_ready, asset_is_planning_ready, subcontractor_is_planning_ready
 from .lookahead_policy_service import ensure_project_alert_policy
 from .programme_upload_service import (
     PLANNING_SUCCESSFUL_UPLOAD_STATUSES_WITH_LEGACY,
@@ -1382,7 +1382,7 @@ def _compute_capacity_by_week_asset(
             excluded_asset_types.add(type_label)
             continue
 
-        if asset_is_planning_ready(asset):
+        if asset_is_capacity_ready(asset):
             planning_ready_assets.append(asset)
         else:
             excluded_not_planning_ready += 1
@@ -1514,6 +1514,20 @@ def compute_capacity_dashboard(
     weeks = max(1, min(weeks, CAPACITY_DASHBOARD_MAX_WEEKS))
     now_utc = datetime.now(timezone.utc)
 
+    def _empty_cell(asset_type: str) -> dict[str, object]:
+        return {
+            "demand_hours": 0.0,
+            "booked_hours": 0.0,
+            "capacity_hours": 0.0,
+            "remaining_capacity_hours": 0.0,
+            "uncovered_demand_hours": 0.0,
+            "demand_utilization_pct": 0.0,
+            "booked_utilization_pct": 0.0,
+            "available_assets": 0,
+            "status": _capacity_status(0.0, 0.0, asset_type),
+            "is_anomalous": False,
+        }
+
     def _diagnostic_payload(
         snapshot_obj: LookaheadSnapshot | None,
         unresolved_count: int = 0,
@@ -1554,6 +1568,13 @@ def compute_capacity_dashboard(
             "work_days_per_week": work_days,
             "asset_types": [],
             "rows": {},
+            "headline_summary": {
+                "total_demand_hours": 0.0,
+                "total_capacity_hours": 0.0,
+                "avg_utilization_pct": 0.0,
+                "weeks_with_gaps": 0,
+                "demand_without_capacity_hours": 0.0,
+            },
             "summary_by_week": {},
             "summary_by_asset_type": {},
             "diagnostics": _diagnostic_payload(snapshot),
@@ -1614,11 +1635,22 @@ def compute_capacity_dashboard(
     all_keys: set[tuple[date, str]] = set(demand_map.keys()) | set(capacity_map.keys())
     # Exclude "none" type entirely.
     all_keys = {(w, t) for w, t in all_keys if t != "none"}
+    asset_types = sorted({asset_type for _week_start_key, asset_type in all_keys})
 
-    # Build row map.
-    rows_by_asset_type: dict[str, dict[str, dict[str, object]]] = {}
+    # Build a rectangular row map so frontend can render directly.
+    rows_by_asset_type: dict[str, dict[str, dict[str, object]]] = {
+        asset_type: {
+            week_start.isoformat(): _empty_cell(asset_type)
+            for week_start in week_starts
+        }
+        for asset_type in asset_types
+    }
     summary_by_week: dict[date, dict] = {ws: {"total_demand_hours": 0.0, "total_booked_hours": 0.0, "total_capacity_hours": 0.0, "statuses": []} for ws in week_starts}
     summary_by_type: dict[str, dict] = {}
+    demand_with_capacity_total = 0.0
+    demand_without_capacity_total = 0.0
+    total_demand_hours = 0.0
+    total_capacity_hours = 0.0
 
     for week_start_key, asset_type in sorted(all_keys):
         demand = demand_map.get((week_start_key, asset_type), 0.0)
@@ -1645,7 +1677,14 @@ def compute_capacity_dashboard(
             "status": status,
             "is_anomalous": anomaly_map.get((week_start_key, asset_type), False),
         }
-        rows_by_asset_type.setdefault(asset_type, {})[week_start_key.isoformat()] = cell
+        rows_by_asset_type[asset_type][week_start_key.isoformat()] = cell
+
+        total_demand_hours += demand
+        total_capacity_hours += capacity
+        if capacity > 0:
+            demand_with_capacity_total += demand
+        elif demand > 0:
+            demand_without_capacity_total += demand
 
         # Accumulate week summary.
         if week_start_key in summary_by_week:
@@ -1653,6 +1692,7 @@ def compute_capacity_dashboard(
             summary_by_week[week_start_key]["total_booked_hours"] += booked
             summary_by_week[week_start_key]["total_capacity_hours"] += capacity
             summary_by_week[week_start_key]["statuses"].append(status)
+            summary_by_week[week_start_key]["gap_hours"] = summary_by_week[week_start_key].get("gap_hours", 0.0) + uncovered
 
         # Accumulate asset type summary.
         if asset_type not in summary_by_type:
@@ -1678,6 +1718,7 @@ def compute_capacity_dashboard(
 
     # Finalise week summaries.
     finalised_week_summaries: dict[str, dict[str, object]] = {}
+    weeks_with_gaps = 0
     for ws in week_starts:
         s = summary_by_week[ws]
         total_cap = s["total_capacity_hours"]
@@ -1685,6 +1726,8 @@ def compute_capacity_dashboard(
         total_bkd = s["total_booked_hours"]
         overall_demand_util = round(total_dem / total_cap * 100, 2) if total_cap > 0 else 0.0
         overall_booked_util = round(total_bkd / total_cap * 100, 2) if total_cap > 0 else 0.0
+        if float(s.get("gap_hours", 0.0)) > 0:
+            weeks_with_gaps += 1
         finalised_week_summaries[ws.isoformat()] = {
             "total_demand_hours": round(total_dem, 2),
             "total_booked_hours": round(total_bkd, 2),
@@ -1707,14 +1750,27 @@ def compute_capacity_dashboard(
             "weeks_tight": s["weeks_tight"],
         }
 
+    headline_summary = {
+        "total_demand_hours": round(total_demand_hours, 2),
+        "total_capacity_hours": round(total_capacity_hours, 2),
+        "avg_utilization_pct": (
+            round(demand_with_capacity_total / total_capacity_hours * 100, 2)
+            if total_capacity_hours > 0
+            else 0.0
+        ),
+        "weeks_with_gaps": weeks_with_gaps,
+        "demand_without_capacity_hours": round(demand_without_capacity_total, 2),
+    }
+
     return {
         "project_id": project_id,
         "upload_id": upload.id if upload else None,
         "start_week": start_week.isoformat(),
         "weeks": [ws.isoformat() for ws in week_starts],
         "work_days_per_week": work_days_per_week,
-        "asset_types": sorted(rows_by_asset_type.keys()),
+        "asset_types": asset_types,
         "rows": rows_by_asset_type,
+        "headline_summary": headline_summary,
         "summary_by_week": finalised_week_summaries,
         "summary_by_asset_type": finalised_type_summaries,
         "diagnostics": _diagnostic_payload(
