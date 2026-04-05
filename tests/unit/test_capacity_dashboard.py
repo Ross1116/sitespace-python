@@ -255,6 +255,9 @@ class TestComputeCapacityDashboard:
     def _make_upload(self):
         return SimpleNamespace(id=uuid4(), work_days_per_week=5)
 
+    def _make_upload_with_work_days(self, work_days_per_week: int):
+        return SimpleNamespace(id=uuid4(), work_days_per_week=work_days_per_week)
+
     def _db_for_capacity(self, *, min_week=None, rows=None):
         db = MagicMock()
 
@@ -450,6 +453,38 @@ class TestComputeCapacityDashboard:
         assert diag["excluded_retired"] == 0
         assert "capacity_computed_at" in diag
         assert len(diag["assumptions"]) >= 3
+
+    def test_capacity_uses_upload_derived_work_days_per_week(self, monkeypatch):
+        snapshot = self._make_snapshot()
+        upload = self._make_upload_with_work_days(6)
+        fake_row = SimpleNamespace(
+            week_start=MONDAY,
+            asset_type="crane",
+            demand_hours=40.0,
+            booked_hours=0.0,
+            is_anomalous=False,
+        )
+
+        monkeypatch.setattr(lookahead_engine, "get_fresh_snapshot", lambda pid, db: snapshot)
+        monkeypatch.setattr(lookahead_engine, "get_active_programme_upload", lambda pid, db: upload)
+
+        captured: dict[str, object] = {}
+
+        def fake_capacity(db, pid, week_starts, work_days_per_week):
+            captured["work_days_per_week"] = work_days_per_week
+            return (
+                {(MONDAY, "crane"): {"capacity_hours": 60.0, "available_assets": 1}},
+                {"excluded_not_planning_ready": 0, "excluded_retired": 0, "total_assets_evaluated": 1, "unresolved_asset_count": 0, "excluded_asset_types": []},
+            )
+
+        monkeypatch.setattr(lookahead_engine, "_compute_capacity_by_week_asset", fake_capacity)
+
+        db = self._db_for_capacity(rows=[fake_row])
+        result = lookahead_engine.compute_capacity_dashboard(uuid4(), db, start_week=MONDAY, weeks=1)
+
+        assert captured["work_days_per_week"] == 6
+        assert result["work_days_per_week"] == 6
+        assert result["rows"]["crane"][MONDAY.isoformat()]["capacity_hours"] == 60.0
 
     def test_headline_summary_excludes_zero_capacity_rows_from_avg_utilization(self, monkeypatch):
         snapshot = self._make_snapshot()

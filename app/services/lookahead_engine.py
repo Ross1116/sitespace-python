@@ -36,6 +36,7 @@ from ..core.constants import (
     CAPACITY_UTIL_BALANCED_MIN,
     CAPACITY_UTIL_OVER_CAPACITY_MIN,
     CAPACITY_UTIL_TIGHT_MIN,
+    DEFAULT_FALLBACK_MAX_HOURS,
     DEFAULT_MAX_HOURS_PER_DAY,
     DEMAND_HOURS_PER_DAY,
     DEMAND_LEVEL_HIGH_MAX,
@@ -336,7 +337,7 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
             exc,
         )
         return {
-            code: DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0)
+            code: DEFAULT_MAX_HOURS_PER_DAY.get(code, DEFAULT_FALLBACK_MAX_HOURS)
             for code in sorted(asset_types)
         }
 
@@ -346,7 +347,9 @@ def _load_max_hours_by_type(db: Session, asset_types: set[str]) -> dict[str, flo
         if max_hours_per_day is not None
     }
     for code in asset_types:
-        max_hours_by_type.setdefault(code, DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0))
+        max_hours_by_type.setdefault(
+            code, DEFAULT_MAX_HOURS_PER_DAY.get(code, DEFAULT_FALLBACK_MAX_HOURS)
+        )
     return max_hours_by_type
 
 
