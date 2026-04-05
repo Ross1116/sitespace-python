@@ -56,6 +56,40 @@ DEMAND_LEVEL_HIGH_MAX: int = 64
 
 
 # ---------------------------------------------------------------------------
+# Capacity dashboard thresholds and window defaults
+# ---------------------------------------------------------------------------
+
+# Utilisation ratio thresholds for capacity status derivation.
+CAPACITY_UTIL_BALANCED_MIN: float = 0.70
+CAPACITY_UTIL_TIGHT_MIN: float = 0.90
+CAPACITY_UTIL_OVER_CAPACITY_MIN: float = 1.00
+
+# Default and maximum number of weeks to show in the capacity dashboard.
+CAPACITY_DASHBOARD_DEFAULT_WEEKS: int = 8
+CAPACITY_DASHBOARD_MAX_WEEKS: int = 16
+
+# Fallback when neither the asset nor its asset_type provides max_hours_per_day.
+DEFAULT_FALLBACK_MAX_HOURS: float = 16.0
+
+
+def effective_asset_max_hours_per_day(
+    asset: object,
+    max_hours_by_type: dict[str, float],
+) -> float:
+    """Return the effective max_hours_per_day for a single asset.
+
+    Resolution priority:
+      1. asset.max_hours_per_day  (per-asset override)
+      2. max_hours_by_type[asset.canonical_type]  (AssetType table value)
+      3. DEFAULT_FALLBACK_MAX_HOURS
+    """
+    if getattr(asset, "max_hours_per_day", None) is not None:
+        return float(asset.max_hours_per_day)
+    code = getattr(asset, "canonical_type", None) or ""
+    return max_hours_by_type.get(code, DEFAULT_FALLBACK_MAX_HOURS)
+
+
+# ---------------------------------------------------------------------------
 # Lookahead anomaly thresholds
 # ---------------------------------------------------------------------------
 

@@ -420,7 +420,8 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
         current_value=asset.current_value or asset.purchase_value,
         status=asset.status or AssetStatus.AVAILABLE,
         maintenance_start_date=asset.maintenance_start_date,
-        maintenance_end_date=asset.maintenance_end_date
+        maintenance_end_date=asset.maintenance_end_date,
+        max_hours_per_day=asset.max_hours_per_day,
     )
 
     db.add(db_asset)
@@ -634,6 +635,7 @@ def get_asset_detail(
         purchase_date=asset.purchase_date,
         purchase_value=asset.purchase_value,
         current_value=asset.current_value,
+        max_hours_per_day=asset.max_hours_per_day,
         status=asset.status,
         created_at=asset.created_at,
         updated_at=asset.updated_at,

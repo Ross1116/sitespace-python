@@ -26,16 +26,22 @@ from ..models.programme import ActivityAssetMapping, ActivityBookingGroup, Progr
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..models.work_profile import ActivityWorkProfile
-from ..schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetTypeResolutionStatus, BookingStatus
+from ..schemas.enums import ASSET_TYPE_RESOLUTION_READY, AssetStatus, AssetTypeResolutionStatus, BookingStatus
 from ..core.constants import (
     ANOMALY_ACTIVITY_DELTA_THRESHOLD,
     ANOMALY_DEMAND_SPIKE_THRESHOLD,
     ANOMALY_MAPPING_CHANGE_THRESHOLD,
+    CAPACITY_DASHBOARD_DEFAULT_WEEKS,
+    CAPACITY_DASHBOARD_MAX_WEEKS,
+    CAPACITY_UTIL_BALANCED_MIN,
+    CAPACITY_UTIL_OVER_CAPACITY_MIN,
+    CAPACITY_UTIL_TIGHT_MIN,
     DEFAULT_MAX_HOURS_PER_DAY,
     DEMAND_HOURS_PER_DAY,
     DEMAND_LEVEL_HIGH_MAX,
     DEMAND_LEVEL_LOW_MAX,
     DEMAND_LEVEL_MEDIUM_MAX,
+    effective_asset_max_hours_per_day,
     get_active_asset_types,
     get_max_hours_for_type,
 )
@@ -1182,6 +1188,52 @@ def get_latest_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot
     )
 
 
+def _normalize_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _snapshot_refreshed_at(snapshot: LookaheadSnapshot | None) -> datetime | None:
+    if snapshot is None:
+        return None
+
+    generated_at = None
+    if getattr(snapshot, "data", None):
+        generated_at = snapshot.data.get("generated_at")
+    if isinstance(generated_at, str):
+        try:
+            parsed = datetime.fromisoformat(generated_at)
+        except ValueError:
+            parsed = None
+        else:
+            parsed = _normalize_timestamp(parsed)
+        if parsed is not None:
+            return parsed
+
+    return _normalize_timestamp(getattr(snapshot, "created_at", None))
+
+
+def get_fresh_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
+    latest_upload = get_active_programme_upload(project_id, db)
+    if latest_upload is None:
+        return None
+
+    snapshot = get_latest_snapshot(project_id, db)
+    latest_booking_update = _normalize_timestamp(get_latest_booking_update_for_project(project_id, db))
+    snapshot_refreshed = _snapshot_refreshed_at(snapshot)
+    booking_is_newer = bool(
+        snapshot_refreshed
+        and latest_booking_update
+        and latest_booking_update > snapshot_refreshed
+    )
+    if not snapshot or snapshot.programme_upload_id != latest_upload.id or booking_is_newer:
+        snapshot = calculate_lookahead_for_project(project_id, db)
+    return snapshot
+
+
 def get_snapshot_history(project_id: uuid.UUID, db: Session) -> list[LookaheadSnapshot]:
     return (
         db.query(LookaheadSnapshot)
@@ -1251,7 +1303,7 @@ def get_sub_asset_suggestions_for_project(
     if not project or not project.subcontractors:
         return []
 
-    snapshot = get_latest_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     demand_rows: list[dict] = (snapshot.data or {}).get("rows", []) if snapshot else []
 
     eligible_subs = [sub for sub in project.subcontractors if subcontractor_is_planning_ready(sub)]
@@ -1283,6 +1335,399 @@ def get_sub_asset_suggestions_for_project(
         })
 
     return result
+
+
+def _compute_capacity_by_week_asset(
+    db: Session,
+    project_id: uuid.UUID,
+    week_starts: list[date],
+    work_days_per_week: int,
+) -> tuple[dict[tuple[date, str], dict[str, float | int]], dict[str, int | list[str]]]:
+    """Compute live asset-pool capacity per (week_start, asset_type), day-aware.
+
+    For each requested week, enumerate working dates and for each planning-ready
+    asset sum its effective daily capacity on dates that do NOT fall inside a
+    maintenance window.  Retired assets and assets without a canonical type are
+    excluded entirely.
+
+    Returns
+    -------
+    capacity_map : dict[(week_start, asset_type), {"capacity_hours": float, "available_assets": int}]
+    diagnostics  : dict with keys "excluded_not_planning_ready", "excluded_retired",
+                   "total_assets_evaluated"
+    """
+    assets = db.query(Asset).filter(Asset.project_id == project_id).all()
+
+    total_assets_evaluated = len(assets)
+    excluded_not_planning_ready = 0
+    excluded_retired = 0
+    unresolved_asset_count = 0
+    excluded_asset_types: set[str] = set()
+
+    # Filter to planning-ready assets.
+    planning_ready_assets = []
+    for asset in assets:
+        status_value = getattr(getattr(asset, "status", None), "value", getattr(asset, "status", None))
+        type_label = str(getattr(asset, "canonical_type", None) or getattr(asset, "type", None) or "unresolved").strip().lower()
+        canonical_type = str(getattr(asset, "canonical_type", None) or "").strip().lower()
+
+        if status_value in (AssetStatus.RETIRED, AssetStatus.RETIRED.value):
+            excluded_retired += 1
+            excluded_asset_types.add(type_label)
+            continue
+
+        if canonical_type in ("", "none"):
+            unresolved_asset_count += 1
+            excluded_not_planning_ready += 1
+            excluded_asset_types.add(type_label)
+            continue
+
+        if asset_is_planning_ready(asset):
+            planning_ready_assets.append(asset)
+        else:
+            excluded_not_planning_ready += 1
+            excluded_asset_types.add(type_label)
+
+    # Build type-level max hours lookup from DB with dict-based fallback.
+    canonical_types = {a.canonical_type for a in planning_ready_assets if a.canonical_type}
+    max_hours_by_type: dict[str, float] = {}
+    for code in canonical_types:
+        max_hours_by_type[code] = get_max_hours_for_type(db, code)
+
+    capacity_map: dict[tuple[date, str], dict[str, float | int]] = {}
+
+    for week_start in week_starts:
+        week_end = week_start + timedelta(days=6)
+        working_dates = _iter_working_dates(week_start, week_end, work_days_per_week)
+
+        for asset in planning_ready_assets:
+            asset_type = asset.canonical_type  # already confirmed not None/none
+
+            # "other" type: contributes to available_assets count but not capacity hours.
+            is_other = asset_type == "other"
+            effective_hours = 0.0 if is_other else effective_asset_max_hours_per_day(asset, max_hours_by_type)
+
+            maint_start = asset.maintenance_start_date
+            maint_end = asset.maintenance_end_date
+
+            for work_date in working_dates:
+                # Skip day if it falls within a scheduled maintenance window.
+                if (
+                    maint_start is not None
+                    and maint_end is not None
+                    and maint_start <= work_date <= maint_end
+                ):
+                    continue
+
+                key = (week_start, asset_type)
+                if key not in capacity_map:
+                    capacity_map[key] = {"capacity_hours": 0.0, "available_assets": 0}
+
+                capacity_map[key]["capacity_hours"] = round(
+                    capacity_map[key]["capacity_hours"] + effective_hours, 2
+                )
+
+            # Count the asset once per week in available_assets if it has at least
+            # one eligible working day (i.e., not fully in maintenance for the whole week).
+            eligible_days = sum(
+                1
+                for work_date in working_dates
+                if not (
+                    maint_start is not None
+                    and maint_end is not None
+                    and maint_start <= work_date <= maint_end
+                )
+            )
+            if eligible_days > 0:
+                key = (week_start, asset_type)
+                if key not in capacity_map:
+                    capacity_map[key] = {"capacity_hours": 0.0, "available_assets": 0}
+                capacity_map[key]["available_assets"] += 1
+
+    diagnostics = {
+        "excluded_not_planning_ready": excluded_not_planning_ready,
+        "excluded_retired": excluded_retired,
+        "total_assets_evaluated": total_assets_evaluated,
+        "unresolved_asset_count": unresolved_asset_count,
+        "excluded_asset_types": sorted(excluded_asset_types),
+    }
+    return capacity_map, diagnostics
+
+
+def _capacity_status(demand_hours: float, capacity_hours: float, asset_type: str) -> str:
+    """Derive a capacity status string from demand/capacity hours."""
+    if asset_type == "other":
+        return "review_needed"
+    if capacity_hours <= 0:
+        return "no_capacity" if demand_hours > 0 else "idle"
+    util = demand_hours / capacity_hours
+    if util >= CAPACITY_UTIL_OVER_CAPACITY_MIN:
+        return "over_capacity"
+    if util >= CAPACITY_UTIL_TIGHT_MIN:
+        return "tight"
+    if util >= CAPACITY_UTIL_BALANCED_MIN:
+        return "balanced"
+    if demand_hours > 0:
+        return "under_utilised"
+    return "idle"
+
+
+# Status severity order used to find the "worst" status in week/type summaries.
+_STATUS_SEVERITY: dict[str, int] = {
+    "idle": 0,
+    "under_utilised": 1,
+    "balanced": 2,
+    "tight": 3,
+    "over_capacity": 4,
+    "no_capacity": 5,
+    "review_needed": 6,
+}
+
+
+def _worst_status(statuses: list[str]) -> str:
+    if not statuses:
+        return "idle"
+    return max(statuses, key=lambda s: _STATUS_SEVERITY.get(s, 0))
+
+
+def compute_capacity_dashboard(
+    project_id: uuid.UUID,
+    db: Session,
+    *,
+    start_week: date | None = None,
+    weeks: int = CAPACITY_DASHBOARD_DEFAULT_WEEKS,
+) -> dict:
+    """Compute a live capacity dashboard for a project.
+
+    Merges demand/booked hours from the latest lookahead snapshot with live
+    asset-pool capacity computed at read time.  Does NOT trigger snapshot
+    recalculation — capacity is a read-time overlay.
+
+    Returns a dict suitable for constructing a CapacityDashboardResponse.
+    """
+    project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
+    if not project:
+        return {"project_id": project_id, "message": "Project not found."}
+
+    snapshot = get_fresh_snapshot(project_id, db)
+    upload = get_active_programme_upload(project_id, db)
+    weeks = max(1, min(weeks, CAPACITY_DASHBOARD_MAX_WEEKS))
+    now_utc = datetime.now(timezone.utc)
+
+    def _diagnostic_payload(
+        snapshot_obj: LookaheadSnapshot | None,
+        unresolved_count: int = 0,
+        other_total: float = 0.0,
+        excluded_types: list[str] | None = None,
+        total_assets_evaluated: int = 0,
+        excluded_not_planning_ready: int = 0,
+        excluded_retired: int = 0,
+    ) -> dict[str, object]:
+        return {
+            "unresolved_asset_count": unresolved_count,
+            "other_demand_hours_total": round(other_total, 2),
+            "excluded_asset_types": excluded_types or [],
+            "snapshot_id": snapshot_obj.id if snapshot_obj else None,
+            "snapshot_date": snapshot_obj.snapshot_date.isoformat() if snapshot_obj else None,
+            "snapshot_refreshed_at": _snapshot_refreshed_at(snapshot_obj).isoformat() if _snapshot_refreshed_at(snapshot_obj) else None,
+            "total_assets_evaluated": total_assets_evaluated,
+            "excluded_not_planning_ready": excluded_not_planning_ready,
+            "excluded_retired": excluded_retired,
+            "capacity_computed_at": now_utc.isoformat(),
+            "assumptions": [
+                "Demand and booked hours come from the latest fresh lookahead snapshot.",
+                "Capacity is computed live from the current planning-ready project asset pool.",
+                "Maintenance removes capacity only on overlapping working days.",
+                "Unresolved assets do not contribute to capacity.",
+                "'other' demand is shown as review_needed with zero capacity.",
+            ],
+        }
+
+    def _empty_response(message: str, *, work_days: int = 5) -> dict[str, object]:
+        normalized_start = _week_start(start_week or date.today())
+        week_values = [normalized_start + timedelta(weeks=i) for i in range(weeks)]
+        return {
+            "project_id": project_id,
+            "upload_id": upload.id if upload else None,
+            "start_week": normalized_start.isoformat(),
+            "weeks": [ws.isoformat() for ws in week_values],
+            "work_days_per_week": work_days,
+            "asset_types": [],
+            "rows": {},
+            "summary_by_week": {},
+            "summary_by_asset_type": {},
+            "diagnostics": _diagnostic_payload(snapshot),
+            "message": message,
+        }
+
+    if not upload:
+        return _empty_response("No processed programme available yet.")
+
+    work_days_per_week = _resolve_upload_work_days_per_week(upload)
+
+    # Determine the week window.
+    if start_week is None:
+        earliest_visible_week = None
+        if snapshot is not None:
+            earliest_visible_week = (
+                db.query(func.min(LookaheadRowModel.week_start))
+                .filter(LookaheadRowModel.snapshot_id == snapshot.id)
+                .scalar()
+            )
+            if not isinstance(earliest_visible_week, date):
+                earliest_visible_week = None
+        start_week = _week_start(earliest_visible_week or date.today())
+    else:
+        start_week = _week_start(start_week)  # normalise to Monday
+
+    week_starts = [start_week + timedelta(weeks=i) for i in range(weeks)]
+
+    # Load demand/booked from the latest snapshot rows for the week range.
+    demand_map: dict[tuple[date, str], float] = {}
+    booked_map: dict[tuple[date, str], float] = {}
+    anomaly_map: dict[tuple[date, str], bool] = {}
+    other_demand_hours_total = 0.0
+
+    if snapshot:
+        rows = (
+            db.query(LookaheadRowModel)
+            .filter(
+                LookaheadRowModel.snapshot_id == snapshot.id,
+                LookaheadRowModel.week_start.in_(week_starts),
+            )
+            .all()
+        )
+        for row in rows:
+            key = (row.week_start, row.asset_type)
+            demand_map[key] = float(row.demand_hours or 0.0)
+            booked_map[key] = float(row.booked_hours or 0.0)
+            anomaly_map[key] = bool(row.is_anomalous)
+            if row.asset_type == "other":
+                other_demand_hours_total += float(row.demand_hours or 0.0)
+
+    # Compute live capacity from the current asset pool.
+    capacity_map, cap_diagnostics = _compute_capacity_by_week_asset(
+        db, project_id, week_starts, work_days_per_week
+    )
+
+    # Collect all (week, asset_type) keys across demand and capacity.
+    all_keys: set[tuple[date, str]] = set(demand_map.keys()) | set(capacity_map.keys())
+    # Exclude "none" type entirely.
+    all_keys = {(w, t) for w, t in all_keys if t != "none"}
+
+    # Build row map.
+    rows_by_asset_type: dict[str, dict[str, dict[str, object]]] = {}
+    summary_by_week: dict[date, dict] = {ws: {"total_demand_hours": 0.0, "total_booked_hours": 0.0, "total_capacity_hours": 0.0, "statuses": []} for ws in week_starts}
+    summary_by_type: dict[str, dict] = {}
+
+    for week_start_key, asset_type in sorted(all_keys):
+        demand = demand_map.get((week_start_key, asset_type), 0.0)
+        booked = booked_map.get((week_start_key, asset_type), 0.0)
+        cap_entry = capacity_map.get((week_start_key, asset_type), {"capacity_hours": 0.0, "available_assets": 0})
+        capacity = cap_entry["capacity_hours"]
+        available_assets = cap_entry["available_assets"]
+
+        remaining = max(capacity - booked, 0.0)
+        uncovered = max(demand - capacity, 0.0)
+        demand_util = round(demand / capacity * 100, 2) if capacity > 0 else 0.0
+        booked_util = round(booked / capacity * 100, 2) if capacity > 0 else 0.0
+        status = _capacity_status(demand, capacity, asset_type)
+
+        cell = {
+            "demand_hours": round(demand, 2),
+            "booked_hours": round(booked, 2),
+            "capacity_hours": round(capacity, 2),
+            "remaining_capacity_hours": round(remaining, 2),
+            "uncovered_demand_hours": round(uncovered, 2),
+            "demand_utilization_pct": demand_util,
+            "booked_utilization_pct": booked_util,
+            "available_assets": available_assets,
+            "status": status,
+            "is_anomalous": anomaly_map.get((week_start_key, asset_type), False),
+        }
+        rows_by_asset_type.setdefault(asset_type, {})[week_start_key.isoformat()] = cell
+
+        # Accumulate week summary.
+        if week_start_key in summary_by_week:
+            summary_by_week[week_start_key]["total_demand_hours"] += demand
+            summary_by_week[week_start_key]["total_booked_hours"] += booked
+            summary_by_week[week_start_key]["total_capacity_hours"] += capacity
+            summary_by_week[week_start_key]["statuses"].append(status)
+
+        # Accumulate asset type summary.
+        if asset_type not in summary_by_type:
+            summary_by_type[asset_type] = {
+                "total_demand_hours": 0.0,
+                "total_booked_hours": 0.0,
+                "total_capacity_hours": 0.0,
+                "peak_week": None,
+                "peak_demand_utilization_pct": 0.0,
+                "weeks_over_capacity": 0,
+                "weeks_tight": 0,
+            }
+        summary_by_type[asset_type]["total_demand_hours"] += demand
+        summary_by_type[asset_type]["total_booked_hours"] += booked
+        summary_by_type[asset_type]["total_capacity_hours"] += capacity
+        if demand_util >= summary_by_type[asset_type]["peak_demand_utilization_pct"]:
+            summary_by_type[asset_type]["peak_demand_utilization_pct"] = demand_util
+            summary_by_type[asset_type]["peak_week"] = week_start_key.isoformat()
+        if status == "over_capacity":
+            summary_by_type[asset_type]["weeks_over_capacity"] += 1
+        if status == "tight":
+            summary_by_type[asset_type]["weeks_tight"] += 1
+
+    # Finalise week summaries.
+    finalised_week_summaries: dict[str, dict[str, object]] = {}
+    for ws in week_starts:
+        s = summary_by_week[ws]
+        total_cap = s["total_capacity_hours"]
+        total_dem = s["total_demand_hours"]
+        total_bkd = s["total_booked_hours"]
+        overall_demand_util = round(total_dem / total_cap * 100, 2) if total_cap > 0 else 0.0
+        overall_booked_util = round(total_bkd / total_cap * 100, 2) if total_cap > 0 else 0.0
+        finalised_week_summaries[ws.isoformat()] = {
+            "total_demand_hours": round(total_dem, 2),
+            "total_booked_hours": round(total_bkd, 2),
+            "total_capacity_hours": round(total_cap, 2),
+            "overall_demand_utilization_pct": overall_demand_util,
+            "overall_booked_utilization_pct": overall_booked_util,
+            "worst_status": _worst_status(s["statuses"]),
+        }
+
+    # Finalise asset type summaries.
+    finalised_type_summaries: dict[str, dict[str, object]] = {}
+    for asset_type, s in sorted(summary_by_type.items()):
+        finalised_type_summaries[asset_type] = {
+            "total_demand_hours": round(s["total_demand_hours"], 2),
+            "total_booked_hours": round(s["total_booked_hours"], 2),
+            "total_capacity_hours": round(s["total_capacity_hours"], 2),
+            "peak_week": s["peak_week"],
+            "peak_demand_utilization_pct": round(s["peak_demand_utilization_pct"], 2),
+            "weeks_over_capacity": s["weeks_over_capacity"],
+            "weeks_tight": s["weeks_tight"],
+        }
+
+    return {
+        "project_id": project_id,
+        "upload_id": upload.id if upload else None,
+        "start_week": start_week.isoformat(),
+        "weeks": [ws.isoformat() for ws in week_starts],
+        "work_days_per_week": work_days_per_week,
+        "asset_types": sorted(rows_by_asset_type.keys()),
+        "rows": rows_by_asset_type,
+        "summary_by_week": finalised_week_summaries,
+        "summary_by_asset_type": finalised_type_summaries,
+        "diagnostics": _diagnostic_payload(
+            snapshot,
+            unresolved_count=int(cap_diagnostics["unresolved_asset_count"]),
+            other_total=other_demand_hours_total,
+            excluded_types=list(cap_diagnostics["excluded_asset_types"]),
+            total_assets_evaluated=int(cap_diagnostics["total_assets_evaluated"]),
+            excluded_not_planning_ready=int(cap_diagnostics["excluded_not_planning_ready"]),
+            excluded_retired=int(cap_diagnostics["excluded_retired"]),
+        ),
+        "message": None if snapshot else "No snapshot available; capacity is live but demand/booked hours are unavailable.",
+    }
 
 
 def nightly_lookahead_job() -> dict:

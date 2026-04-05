@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +13,13 @@ from ...models.site_project import SiteProject
 from ...models.subcontractor import Subcontractor
 from ...models.user import User
 from ...schemas.enums import UserRole
+from ...schemas.capacity_dashboard import (
+    CapacityAssetTypeSummary,
+    CapacityCell,
+    CapacityDashboardDiagnostics,
+    CapacityDashboardResponse,
+    CapacityWeekSummary,
+)
 from ...schemas.lookahead import (
     LookaheadAlertsResponse,
     LookaheadActivitiesResponse,
@@ -25,25 +32,16 @@ from ...schemas.lookahead import (
     SubcontractorLookaheadResponse,
 )
 from ...services.lookahead_engine import (
-    calculate_lookahead_for_project,
-    get_latest_booking_update_for_project,
-    get_latest_snapshot,
+    compute_capacity_dashboard,
+    get_fresh_snapshot,
     get_weekly_activity_candidates,
     get_snapshot_history,
     get_sub_notifications,
     get_sub_asset_suggestions_for_project,
 )
-from ...services.programme_upload_service import get_active_programme_upload
+from ...core.constants import CAPACITY_DASHBOARD_DEFAULT_WEEKS, CAPACITY_DASHBOARD_MAX_WEEKS
 
 router = APIRouter(prefix="/lookahead", tags=["Lookahead"])
-
-
-def _normalize_timestamp(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _check_project_exists(project_id: UUID, db: Session) -> SiteProject:
@@ -63,43 +61,6 @@ def _check_manager_project_access(project: SiteProject, current_user: User) -> N
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
 
-def _snapshot_refreshed_at(snapshot) -> datetime | None:
-    if snapshot is None:
-        return None
-
-    generated_at = None
-    if getattr(snapshot, "data", None):
-        generated_at = snapshot.data.get("generated_at")
-    if isinstance(generated_at, str):
-        try:
-            parsed = datetime.fromisoformat(generated_at)
-        except ValueError:
-            parsed = None
-        else:
-            parsed = _normalize_timestamp(parsed)
-        if parsed is not None:
-            return parsed
-
-    return _normalize_timestamp(getattr(snapshot, "created_at", None))
-
-
-def _get_fresh_snapshot(project_id: UUID, db: Session):
-    """Return the current snapshot, recalculating if it is stale relative to the latest processed upload."""
-    latest_upload = get_active_programme_upload(project_id, db)
-    if latest_upload is None:
-        return None
-    snapshot = get_latest_snapshot(project_id, db)
-    latest_booking_update = _normalize_timestamp(get_latest_booking_update_for_project(project_id, db))
-    snapshot_refreshed_at = _snapshot_refreshed_at(snapshot)
-    booking_is_newer = bool(
-        snapshot_refreshed_at
-        and latest_booking_update
-        and latest_booking_update > snapshot_refreshed_at
-    )
-    if not snapshot or snapshot.programme_upload_id != latest_upload.id or booking_is_newer:
-        snapshot = calculate_lookahead_for_project(project_id, db)
-    return snapshot
-
 
 @router.get("/{project_id}", response_model=LookaheadResponse)
 def get_lookahead(
@@ -110,7 +71,7 @@ def get_lookahead(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
-    snapshot = _get_fresh_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadResponse(project_id=project_id, rows=[], message="No processed programme available yet.")
 
@@ -132,7 +93,7 @@ def get_lookahead_alerts(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
-    snapshot = _get_fresh_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadAlertsResponse(project_id=project_id, alerts={})
 
@@ -158,7 +119,7 @@ def get_subcontractor_lookahead(
     if str(current_sub.id) != str(sub_id):
         raise HTTPException(status_code=403, detail="You can only view your own lookahead data")
 
-    snapshot = _get_fresh_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     notifications = get_sub_notifications(project_id, sub_id, db)
 
     return SubcontractorLookaheadResponse(
@@ -224,7 +185,7 @@ def get_subcontractor_asset_suggestions(
     project = _check_project_exists(project_id, db)
     _check_manager_project_access(project, _)
 
-    snapshot = _get_fresh_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     suggestions = get_sub_asset_suggestions_for_project(project_id, db)
 
     return SubAssetSuggestionsResponse(
@@ -246,7 +207,7 @@ def get_lookahead_week_activities(
     _check_manager_project_access(project, _)
     normalized_week_start = week_start - timedelta(days=week_start.weekday())
 
-    snapshot = _get_fresh_snapshot(project_id, db)
+    snapshot = get_fresh_snapshot(project_id, db)
     if not snapshot:
         return LookaheadActivitiesResponse(
             project_id=project_id,
@@ -290,4 +251,52 @@ def get_lookahead_history(
             )
             for s in snapshots
         ],
+    )
+
+
+@router.get("/{project_id}/capacity-dashboard", response_model=CapacityDashboardResponse)
+def get_capacity_dashboard(
+    project_id: UUID,
+    start_week: date | None = Query(None, description="Monday-aligned week start (defaults to the earliest visible week from the fresh snapshot)"),
+    weeks: int = Query(
+        CAPACITY_DASHBOARD_DEFAULT_WEEKS,
+        ge=1,
+        le=CAPACITY_DASHBOARD_MAX_WEEKS,
+        description="Number of weeks to include",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> CapacityDashboardResponse:
+    project = _check_project_exists(project_id, db)
+    _check_manager_project_access(project, current_user)
+
+    result = compute_capacity_dashboard(project_id, db, start_week=start_week, weeks=weeks)
+
+    diagnostics_data = result.get("diagnostics")
+    diagnostics = CapacityDashboardDiagnostics(**diagnostics_data) if diagnostics_data else None
+
+    return CapacityDashboardResponse(
+        project_id=result["project_id"],
+        upload_id=result.get("upload_id"),
+        start_week=result.get("start_week"),
+        weeks=result.get("weeks", []),
+        work_days_per_week=result.get("work_days_per_week", 5),
+        asset_types=result.get("asset_types", []),
+        rows={
+            asset_type: {
+                week_start: CapacityCell(**cell)
+                for week_start, cell in week_cells.items()
+            }
+            for asset_type, week_cells in result.get("rows", {}).items()
+        },
+        summary_by_week={
+            week_start: CapacityWeekSummary(**summary)
+            for week_start, summary in result.get("summary_by_week", {}).items()
+        },
+        summary_by_asset_type={
+            asset_type: CapacityAssetTypeSummary(**summary)
+            for asset_type, summary in result.get("summary_by_asset_type", {}).items()
+        },
+        diagnostics=diagnostics,
+        message=result.get("message"),
     )

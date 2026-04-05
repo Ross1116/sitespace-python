@@ -45,6 +45,14 @@ class AssetCreate(AssetBase):
     canonical_type: Optional[str] = Field(None, max_length=50)
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
+    max_hours_per_day: Optional[Decimal] = Field(None, gt=0, le=24)
+
+    @field_validator('max_hours_per_day', mode='before')
+    @classmethod
+    def round_max_hours(cls, v):
+        if v is not None:
+            return round(Decimal(str(v)), 1)
+        return v
 
     @model_validator(mode='after')
     def validate_maintenance_window(self):
@@ -91,11 +99,19 @@ class AssetUpdate(BaseSchema):
     project_id: Optional[UUID] = None
     maintenance_start_date: Optional[date] = None
     maintenance_end_date: Optional[date] = None
+    max_hours_per_day: Optional[Decimal] = Field(None, gt=0, le=24)
 
     @field_validator('current_value', mode='before')
     def round_decimal(cls, v):
         if v is not None:
             return round(Decimal(str(v)), 2)
+        return v
+
+    @field_validator('max_hours_per_day', mode='before')
+    @classmethod
+    def round_max_hours(cls, v):
+        if v is not None:
+            return round(Decimal(str(v)), 1)
         return v
 
     @model_validator(mode='after')
@@ -159,6 +175,7 @@ class AssetResponse(AssetBase, TimestampSchema):
     maintenance_end_date: Optional[date] = None
     pending_booking_capacity: int = 5
     planning_attributes_json: Optional[dict[str, Any]] = None
+    max_hours_per_day: Optional[Decimal] = None
 
 
 class AssetBriefResponse(BaseSchema):
@@ -173,6 +190,7 @@ class AssetBriefResponse(BaseSchema):
     status: AssetStatus
     pending_booking_capacity: int = 5
     planning_attributes_json: Optional[dict[str, Any]] = None
+    max_hours_per_day: Optional[Decimal] = None
 
 
 class MaintenanceRecord(BaseSchema):

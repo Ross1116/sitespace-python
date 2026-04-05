@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, Integer, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, ForeignKey
+from sqlalchemy import Column, Index, Integer, String, Text, Date, DateTime, Enum as SQLEnum, DECIMAL, NUMERIC, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -33,6 +33,7 @@ class Asset(Base):
     type_inference_confidence = Column(DECIMAL(4, 3), nullable=True)
     pending_booking_capacity = Column(Integer, nullable=False, default=5, server_default="5")
     planning_attributes_json = Column(JSONB, nullable=True)
+    max_hours_per_day = Column(NUMERIC(4, 1), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
