@@ -91,7 +91,7 @@ class TestEffectiveAssetMaxHoursPerDay:
         asset = SimpleNamespace(max_hours_per_day=None, canonical_type=None)
         assert effective_asset_max_hours_per_day(asset, {}) == DEFAULT_FALLBACK_MAX_HOURS
 
-    def test_zero_override_is_not_used(self):
+    def test_zero_override_is_honored(self):
         # 0 is falsy but not None — per design, None means "use fallback"; 0 would
         # be an unusual but valid explicit override (though schema prevents it via gt=0).
         # The function checks `is not None`, so 0.0 would be honoured.
@@ -191,6 +191,19 @@ class TestComputeCapacityByWeekAsset:
         )
         cap_map, _ = self._run([asset])
         assert (MONDAY, "crane") not in cap_map
+
+    def test_start_only_maintenance_excludes_from_start_onward(self):
+        # maint_start set, no maint_end -> asset unavailable from Monday onward (entire week)
+        asset = _make_asset(canonical_type="crane", maint_start=MONDAY, maint_end=None)
+        cap_map, _ = self._run([asset])
+        assert (MONDAY, "crane") not in cap_map
+
+    def test_end_only_maintenance_excludes_days_up_to_end(self):
+        # maint_end=Wed, no maint_start -> Mon-Wed excluded, Thu+Fri available (2 days x 10 h = 20 h)
+        asset = _make_asset(canonical_type="crane", maint_start=None, maint_end=MONDAY + timedelta(days=2))
+        cap_map, _ = self._run([asset])
+        assert cap_map[(MONDAY, "crane")]["capacity_hours"] == 20.0
+        assert cap_map[(MONDAY, "crane")]["available_assets"] == 1
 
     def test_other_type_zero_capacity_but_counted(self):
         asset = _make_asset(canonical_type="other")

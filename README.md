@@ -1,8 +1,8 @@
 # Sitespace API
 
-Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, subcontractor management, programme ingestion, deterministic/AI-assisted programme intelligence, planning-readiness review, lookahead forecasting, and activity-backed booking workflows.
+Construction site management backend built with FastAPI. Handles asset management, slot booking, project coordination, subcontractor management, programme ingestion, deterministic/AI-assisted programme intelligence, planning-readiness review, lookahead forecasting, activity-backed booking workflows, and capacity dashboard analytics.
 
-Last updated: 2026-04-03
+Last updated: 2026-04-06
 
 Architecture reference: [AI_ARCHITECTURE_PLAN.md](AI_ARCHITECTURE_PLAN.md) is the deep-dive architecture source. Section `1A. Historical Status Addendum` is the best current-state overlay for what is implemented today versus what remains planned.
 
@@ -232,6 +232,7 @@ Notes:
 | GET    | `/{project_id}/sub/{sub_id}` | Subcontractor-facing lookahead plus related notifications |
 | GET    | `/{project_id}/sub-asset-suggestions` | Asset-type suggestions for subcontractor routing |
 | GET    | `/{project_id}/activities?week_start=YYYY-MM-DD&asset_type=...` | Weekly activity drilldown for one asset-type/week cell |
+| GET    | `/{project_id}/capacity`     | Live capacity dashboard (demand vs asset-pool capacity by week and asset type) |
 
 Notes:
 
@@ -241,6 +242,37 @@ Notes:
 - Duplicate same-day snapshots are prevented by update-on-existing (`project_id` + `snapshot_date`).
 - Lookahead rows are persisted in `lookahead_rows` and are also embedded into snapshot JSON history.
 - Lookahead now tracks excluded bookings and non-planning-ready asset counts so forecast quality issues are visible.
+- Read-path snapshot refreshes (triggered by `get_fresh_snapshot`) do not mutate notifications or commit; notification sync only runs during explicit write workflows.
+
+### Capacity Dashboard (`/api/lookahead/{project_id}/capacity`)
+
+Returns a live capacity grid merging programme demand from the lookahead snapshot with asset-pool capacity computed at read time.
+
+Query parameters:
+
+| Parameter    | Default | Description |
+| ------------ | ------- | ----------- |
+| `start_week` | earliest visible snapshot week | ISO date; normalized to Monday |
+| `weeks`      | configurable default | Number of weeks to show; clamped to `CAPACITY_DASHBOARD_MAX_WEEKS` |
+
+Response shape (`CapacityDashboardResponse`):
+
+- `rows` — `dict[asset_type, dict[week_iso, CapacityCell]]` rectangular grid; every requested week appears for every asset type
+- `headline_summary` — totals and avg utilization across all cells with capacity
+- `summary_by_week` — per-week demand/booked/capacity totals and `worst_status`
+- `summary_by_asset_type` — per-type totals, peak week, weeks over capacity / tight
+- `diagnostics` — snapshot provenance, asset evaluation counts, assumptions list
+
+Status values (Pydantic `Literal`): `idle`, `under_utilised`, `balanced`, `tight`, `over_capacity`, `no_capacity`, `review_needed`.
+
+Status and gap computation use `effective_load = max(demand, booked)` so booked-over-capacity weeks are correctly flagged without requiring demand to exceed capacity.
+
+Asset capacity respects:
+- Per-asset `max_hours_per_day` override (DB column, range 0 < x ≤ 24 enforced by CHECK constraint)
+- Type-level default from `asset_types.max_hours_per_day` (bulk-loaded, single query)
+- Global fallback constant
+- Maintenance windows with one-sided bound support (start-only or end-only windows are handled correctly)
+- Work days per week from the active programme upload
 
 ### Subcontractors (`/api/subcontractors`)
 
@@ -462,7 +494,7 @@ PostgreSQL with SQLAlchemy ORM. All primary keys are UUIDs.
 | `users` | M2M with projects (via `manager_site_project`) |
 | `subcontractors` | M2M with projects (via `subcontractor_site_project`) |
 | `site_projects` | Has many assets, bookings, managers, subcontractors |
-| `assets` | Belongs to project; includes canonical type and planning-readiness fields |
+| `assets` | Belongs to project; includes canonical type, planning-readiness fields, and `max_hours_per_day` capacity override (CHECK: 0 < x ≤ 24) |
 | `slot_bookings` | Belongs to project, manager, subcontractor, asset, optional booking group |
 | `activity_booking_groups` | Groups activity-linked bookings under one programme activity |
 | `programme_uploads` | Uploaded programme versions and processing diagnostics |
@@ -616,7 +648,7 @@ pytest tests/unit/test_lookahead_api.py tests/unit/test_programmes_api_contract.
 locust -f locustfile.py --host=http://localhost:8080
 ```
 
-Test coverage includes legacy API suites under `tests/` plus newer focused unit/service suites under `tests/unit/` for parser, classification, work-profile, lookahead, readiness, and booking integration behavior.
+Test coverage includes legacy API suites under `tests/` plus newer focused unit/service suites under `tests/unit/` for parser, classification, work-profile, lookahead, readiness, booking integration, and capacity dashboard behavior (effective hours, maintenance windows, status thresholds, dashboard merge logic, and diagnostics).
 
 ---
 

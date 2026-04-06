@@ -1416,9 +1416,7 @@ def _compute_capacity_by_week_asset(
 
     # Build type-level max hours lookup from DB with dict-based fallback.
     canonical_types = {a.canonical_type for a in planning_ready_assets if a.canonical_type}
-    max_hours_by_type: dict[str, float] = {}
-    for code in canonical_types:
-        max_hours_by_type[code] = get_max_hours_for_type(db, code)
+    max_hours_by_type = _load_max_hours_by_type(db, canonical_types)
 
     capacity_map: dict[tuple[date, str], dict[str, float | int]] = {}
 
@@ -1438,20 +1436,23 @@ def _compute_capacity_by_week_asset(
 
             for work_date in working_dates:
                 # Skip day if it falls within a scheduled maintenance window.
-                if (
-                    maint_start is not None
-                    and maint_end is not None
-                    and maint_start <= work_date <= maint_end
-                ):
+                # Handles both-bounds, start-only (open-ended), and end-only (open-started).
+                if maint_start is not None and maint_end is not None:
+                    in_maint = maint_start <= work_date <= maint_end
+                elif maint_start is not None:
+                    in_maint = work_date >= maint_start
+                elif maint_end is not None:
+                    in_maint = work_date <= maint_end
+                else:
+                    in_maint = False
+                if in_maint:
                     continue
 
                 key = (week_start, asset_type)
                 if key not in capacity_map:
                     capacity_map[key] = {"capacity_hours": 0.0, "available_assets": 0}
 
-                capacity_map[key]["capacity_hours"] = round(
-                    capacity_map[key]["capacity_hours"] + effective_hours, 2
-                )
+                capacity_map[key]["capacity_hours"] += effective_hours
 
             # Count the asset once per week in available_assets if it has at least
             # one eligible working day (i.e., not fully in maintenance for the whole week).
@@ -1459,9 +1460,9 @@ def _compute_capacity_by_week_asset(
                 1
                 for work_date in working_dates
                 if not (
-                    maint_start is not None
-                    and maint_end is not None
-                    and maint_start <= work_date <= maint_end
+                    (maint_start is not None and maint_end is not None and maint_start <= work_date <= maint_end)
+                    or (maint_start is not None and maint_end is None and work_date >= maint_start)
+                    or (maint_end is not None and maint_start is None and work_date <= maint_end)
                 )
             )
             if eligible_days > 0:
