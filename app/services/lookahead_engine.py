@@ -1363,6 +1363,21 @@ def get_sub_asset_suggestions_for_project(
     return result
 
 
+def _is_in_maintenance(work_date: date, maint_start: date | None, maint_end: date | None) -> bool:
+    """Return True if work_date falls within a maintenance window.
+
+    Handles both-bounds, start-only (open-ended forward), and end-only
+    (open-started backward) windows.
+    """
+    if maint_start is not None and maint_end is not None:
+        return maint_start <= work_date <= maint_end
+    if maint_start is not None:
+        return work_date >= maint_start
+    if maint_end is not None:
+        return work_date <= maint_end
+    return False
+
+
 def _compute_capacity_by_week_asset(
     db: Session,
     project_id: uuid.UUID,
@@ -1435,17 +1450,7 @@ def _compute_capacity_by_week_asset(
             maint_end = asset.maintenance_end_date
 
             for work_date in working_dates:
-                # Skip day if it falls within a scheduled maintenance window.
-                # Handles both-bounds, start-only (open-ended), and end-only (open-started).
-                if maint_start is not None and maint_end is not None:
-                    in_maint = maint_start <= work_date <= maint_end
-                elif maint_start is not None:
-                    in_maint = work_date >= maint_start
-                elif maint_end is not None:
-                    in_maint = work_date <= maint_end
-                else:
-                    in_maint = False
-                if in_maint:
+                if _is_in_maintenance(work_date, maint_start, maint_end):
                     continue
 
                 key = (week_start, asset_type)
@@ -1459,11 +1464,7 @@ def _compute_capacity_by_week_asset(
             eligible_days = sum(
                 1
                 for work_date in working_dates
-                if not (
-                    (maint_start is not None and maint_end is not None and maint_start <= work_date <= maint_end)
-                    or (maint_start is not None and maint_end is None and work_date >= maint_start)
-                    or (maint_end is not None and maint_start is None and work_date <= maint_end)
-                )
+                if not _is_in_maintenance(work_date, maint_start, maint_end)
             )
             if eligible_days > 0:
                 key = (week_start, asset_type)

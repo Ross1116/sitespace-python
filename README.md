@@ -232,7 +232,7 @@ Notes:
 | GET    | `/{project_id}/sub/{sub_id}` | Subcontractor-facing lookahead plus related notifications |
 | GET    | `/{project_id}/sub-asset-suggestions` | Asset-type suggestions for subcontractor routing |
 | GET    | `/{project_id}/activities?week_start=YYYY-MM-DD&asset_type=...` | Weekly activity drilldown for one asset-type/week cell |
-| GET    | `/{project_id}/capacity`     | Live capacity dashboard (demand vs asset-pool capacity by week and asset type) |
+| GET    | `/{project_id}/capacity-dashboard` | Live capacity dashboard (demand vs asset-pool capacity by week and asset type) |
 
 Notes:
 
@@ -244,7 +244,7 @@ Notes:
 - Lookahead now tracks excluded bookings and non-planning-ready asset counts so forecast quality issues are visible.
 - Read-path snapshot refreshes (triggered by `get_fresh_snapshot`) do not mutate notifications or commit; notification sync only runs during explicit write workflows.
 
-### Capacity Dashboard (`/api/lookahead/{project_id}/capacity`)
+### Capacity Dashboard (`/api/lookahead/{project_id}/capacity-dashboard`)
 
 Returns a live capacity grid merging programme demand from the lookahead snapshot with asset-pool capacity computed at read time.
 
