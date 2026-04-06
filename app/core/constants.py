@@ -26,17 +26,19 @@ ALLOWED_ASSET_TYPES: frozenset[str] = frozenset({
 
 
 # Bootstrap max-hours values used only when the asset_types table is unavailable.
+# Values are intentionally conservative, realistic site-operating ceilings in
+# 30-minute increments. Per-asset overrides still take precedence at runtime.
 DEFAULT_MAX_HOURS_PER_DAY: dict[str, float] = {
     "crane":         10.0,
-    "hoist":         10.0,
+    "hoist":         10.5,
     "loading_bay":   12.0,
-    "ewp":           12.0,
+    "ewp":           10.0,
     "concrete_pump": 10.0,
-    "excavator":     16.0,
-    "forklift":      16.0,
-    "telehandler":   16.0,
-    "compactor":     10.0,
-    "other":         16.0,
+    "excavator":     11.0,
+    "forklift":      11.0,
+    "telehandler":   11.0,
+    "compactor":      9.5,
+    "other":         10.0,
     "none":           0.0,
 }
 
@@ -53,6 +55,40 @@ DEMAND_HOURS_PER_DAY: int = 8
 DEMAND_LEVEL_LOW_MAX: int = 16
 DEMAND_LEVEL_MEDIUM_MAX: int = 32
 DEMAND_LEVEL_HIGH_MAX: int = 64
+
+
+# ---------------------------------------------------------------------------
+# Capacity dashboard thresholds and window defaults
+# ---------------------------------------------------------------------------
+
+# Utilisation ratio thresholds for capacity status derivation.
+CAPACITY_UTIL_BALANCED_MIN: float = 0.70
+CAPACITY_UTIL_TIGHT_MIN: float = 0.90
+CAPACITY_UTIL_OVER_CAPACITY_MIN: float = 1.00
+
+# Default and maximum number of weeks to show in the capacity dashboard.
+CAPACITY_DASHBOARD_DEFAULT_WEEKS: int = 8
+CAPACITY_DASHBOARD_MAX_WEEKS: int = 16
+
+# Fallback when neither the asset nor its asset_type provides max_hours_per_day.
+DEFAULT_FALLBACK_MAX_HOURS: float = 10.0
+
+
+def effective_asset_max_hours_per_day(
+    asset: object,
+    max_hours_by_type: dict[str, float],
+) -> float:
+    """Return the effective max_hours_per_day for a single asset.
+
+    Resolution priority:
+      1. asset.max_hours_per_day  (per-asset override)
+      2. max_hours_by_type[asset.canonical_type]  (AssetType table value)
+      3. DEFAULT_FALLBACK_MAX_HOURS
+    """
+    if getattr(asset, "max_hours_per_day", None) is not None:
+        return float(asset.max_hours_per_day)
+    code = getattr(asset, "canonical_type", None) or ""
+    return max_hours_by_type.get(code, DEFAULT_FALLBACK_MAX_HOURS)
 
 
 # ---------------------------------------------------------------------------
@@ -295,4 +331,4 @@ def get_max_hours_for_type(db: object, code: str) -> float:
         _logger.warning(
             "Falling back to DEFAULT_MAX_HOURS_PER_DAY for '%s': %s", code, exc,
         )
-    return DEFAULT_MAX_HOURS_PER_DAY.get(code, 16.0)
+    return DEFAULT_MAX_HOURS_PER_DAY.get(code, DEFAULT_FALLBACK_MAX_HOURS)

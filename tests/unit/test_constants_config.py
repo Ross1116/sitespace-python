@@ -29,6 +29,7 @@ from app.core.constants import (
     CLASSIFICATION_HISTORY_PAGE_DEFAULT,
     CLASSIFICATION_HISTORY_PAGE_MAX,
     CLASSIFICATION_STABLE_MIN_CONFIRMATIONS,
+    DEFAULT_FALLBACK_MAX_HOURS,
     DEFAULT_MAX_HOURS_PER_DAY,
     DEMAND_HOURS_PER_DAY,
     DEMAND_LEVEL_HIGH_MAX,
@@ -74,6 +75,8 @@ class TestConstantsSmoke:
     def test_flat_constant_imports_remain_available(self):
         assert "none" in ALLOWED_ASSET_TYPES
         assert DEFAULT_MAX_HOURS_PER_DAY["crane"] == 10.0
+        assert DEFAULT_MAX_HOURS_PER_DAY["loading_bay"] == 12.0
+        assert DEFAULT_FALLBACK_MAX_HOURS == 10.0
         assert DEMAND_HOURS_PER_DAY == 8
         assert DEMAND_LEVEL_LOW_MAX == 16
         assert DEMAND_LEVEL_MEDIUM_MAX == 32

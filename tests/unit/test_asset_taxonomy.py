@@ -3,7 +3,7 @@ Unit tests for Stage 3 — Asset Taxonomy Foundation.
 
 Tests:
   - Seed data completeness: all 11 types present in bootstrap constants
-  - max_hours_per_day values match architecture plan groupings
+  - max_hours_per_day values match realistic taxonomy defaults
   - 'none' has strictly zero max_hours_per_day
   - get_active_asset_types falls back to bootstrap set on failure
   - get_max_hours_for_type falls back to bootstrap dict on failure
@@ -47,15 +47,15 @@ class TestSeedData:
 
     @pytest.mark.parametrize("code,expected", [
         ("crane",         10.0),
-        ("hoist",         10.0),
+        ("hoist",         10.5),
         ("loading_bay",   12.0),
         ("concrete_pump", 10.0),
-        ("ewp",           12.0),
-        ("excavator",     16.0),
-        ("forklift",      16.0),
-        ("telehandler",   16.0),
-        ("compactor",     10.0),
-        ("other",         16.0),
+        ("ewp",           10.0),
+        ("excavator",     11.0),
+        ("forklift",      11.0),
+        ("telehandler",   11.0),
+        ("compactor",      9.5),
+        ("other",         10.0),
         ("none",           0.0),
     ])
     def test_max_hours_values(self, code: str, expected: float):
@@ -92,8 +92,8 @@ class TestFallbacks:
         db = MagicMock(spec=Session)
         with patch("app.crud.asset_type.get_max_hours", return_value=None):
             result = get_max_hours_for_type(db, "unknown_type")
-        # Unknown type falls back to 16.0 default
-        assert result == 16.0
+        # Unknown type falls back to the conservative bootstrap default.
+        assert result == 10.0
 
 
 # ─── Schema validation ──────────────────────────────────────────────────────
@@ -194,30 +194,39 @@ class TestAssetTypeCRUD:
 # ─── Exclusive vs. fungible grouping ─────────────────────────────────────────
 
 class TestTaxonomyGrouping:
-    """Verify the plan's grouping of asset types by max_hours_per_day."""
+    """Verify defaults stay realistic and aligned to 30-minute increments."""
 
-    # Operator-intensive or noise-restricted: capped at 10 h
-    TEN_HOUR_TYPES = frozenset({"crane", "hoist", "concrete_pump", "compactor"})
-    # Zone/facility or double-shift capable: 12 h
-    TWELVE_HOUR_TYPES = frozenset({"loading_bay", "ewp"})
-    # Freely fungible, hot-seat capable: 16 h
-    SIXTEEN_HOUR_TYPES = frozenset({"excavator", "forklift", "telehandler", "other"})
+    def test_defaults_use_half_hour_increments(self):
+        for code, value in DEFAULT_MAX_HOURS_PER_DAY.items():
+            doubled = value * 2
+            assert doubled == int(doubled), f"{code} should be in 0.5h increments"
 
-    def test_ten_hour_group(self):
-        for code in self.TEN_HOUR_TYPES:
-            assert DEFAULT_MAX_HOURS_PER_DAY[code] == 10.0, f"{code} should be 10h"
+    def test_loading_bay_has_highest_default_capacity(self):
+        non_none = {
+            code: value
+            for code, value in DEFAULT_MAX_HOURS_PER_DAY.items()
+            if code != "none"
+        }
+        assert max(non_none, key=non_none.get) == "loading_bay"
 
-    def test_twelve_hour_group(self):
-        for code in self.TWELVE_HOUR_TYPES:
-            assert DEFAULT_MAX_HOURS_PER_DAY[code] == 12.0, f"{code} should be 12h"
+    def test_mobile_plant_defaults_are_moderate_not_double_shift(self):
+        for code in {"excavator", "forklift", "telehandler"}:
+            assert DEFAULT_MAX_HOURS_PER_DAY[code] == 11.0, f"{code} should be 11h"
 
-    def test_sixteen_hour_group(self):
-        for code in self.SIXTEEN_HOUR_TYPES:
-            assert DEFAULT_MAX_HOURS_PER_DAY[code] == 16.0, f"{code} should be 16h"
+    def test_operator_or_noise_limited_assets_stay_conservative(self):
+        expected = {
+            "crane": 10.0,
+            "hoist": 10.5,
+            "concrete_pump": 10.0,
+            "compactor": 9.5,
+            "ewp": 10.0,
+            "other": 10.0,
+        }
+        for code, hours in expected.items():
+            assert DEFAULT_MAX_HOURS_PER_DAY[code] == hours
 
     def test_none_group_zero(self):
         assert DEFAULT_MAX_HOURS_PER_DAY["none"] == 0.0
 
-    def test_groups_cover_all_types(self):
-        covered = self.TEN_HOUR_TYPES | self.TWELVE_HOUR_TYPES | self.SIXTEEN_HOUR_TYPES | {"none"}
-        assert covered == ALLOWED_ASSET_TYPES
+    def test_defaults_cover_all_types(self):
+        assert set(DEFAULT_MAX_HOURS_PER_DAY) == ALLOWED_ASSET_TYPES
