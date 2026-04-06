@@ -624,16 +624,33 @@ def _upsert_snapshot_with_rows(
     )
 
     if snapshot is None:
-        snapshot = LookaheadSnapshot(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            programme_upload_id=latest_upload_id,
-            snapshot_date=snapshot_date,
-            data=snapshot_payload,
-            anomaly_flags=anomaly_flags,
-        )
-        db.add(snapshot)
-        db.flush()
+        try:
+            snapshot = LookaheadSnapshot(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                programme_upload_id=latest_upload_id,
+                snapshot_date=snapshot_date,
+                data=snapshot_payload,
+                anomaly_flags=anomaly_flags,
+            )
+            db.add(snapshot)
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            snapshot = (
+                db.query(LookaheadSnapshot)
+                .filter(
+                    LookaheadSnapshot.project_id == project_id,
+                    LookaheadSnapshot.snapshot_date == snapshot_date,
+                )
+                .first()
+            )
+            if snapshot is None:
+                raise
+            snapshot.programme_upload_id = latest_upload_id
+            snapshot.data = snapshot_payload
+            snapshot.anomaly_flags = anomaly_flags
+            db.flush()
     else:
         snapshot.programme_upload_id = latest_upload_id
         snapshot.data = snapshot_payload
@@ -880,7 +897,12 @@ def _upsert_snapshot(
     return snapshot
 
 
-def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot | None:
+def calculate_lookahead_for_project(
+    project_id: uuid.UUID,
+    db: Session,
+    *,
+    sync_notifications: bool = True,
+) -> LookaheadSnapshot | None:
     project = db.query(SiteProject).filter(SiteProject.id == project_id).first()
     if not project:
         return None
@@ -1043,17 +1065,18 @@ def calculate_lookahead_for_project(project_id: uuid.UUID, db: Session) -> Looka
         anomaly_flags=anomaly_flags,
         row_payloads=row_payloads,
     )
-    suppress_external = upload_has_warnings(latest_upload)
-    _sync_thresholded_notifications(
-        db,
-        project_id=project_id,
-        latest_upload_id=latest_upload.id,
-        snapshot_id=snapshot.id,
-        snapshot_date=snapshot_date,
-        row_payloads=row_payloads,
-        suppress_external=suppress_external,
-    )
-    db.commit()
+    if sync_notifications:
+        suppress_external = upload_has_warnings(latest_upload)
+        _sync_thresholded_notifications(
+            db,
+            project_id=project_id,
+            latest_upload_id=latest_upload.id,
+            snapshot_id=snapshot.id,
+            snapshot_date=snapshot_date,
+            row_payloads=row_payloads,
+            suppress_external=suppress_external,
+        )
+        db.commit()
     db.refresh(snapshot)
     return snapshot
 
@@ -1233,7 +1256,7 @@ def get_fresh_snapshot(project_id: uuid.UUID, db: Session) -> LookaheadSnapshot 
         and latest_booking_update > snapshot_refreshed
     )
     if not snapshot or snapshot.programme_upload_id != latest_upload.id or booking_is_newer:
-        snapshot = calculate_lookahead_for_project(project_id, db)
+        snapshot = calculate_lookahead_for_project(project_id, db, sync_notifications=False)
     return snapshot
 
 
@@ -1540,13 +1563,14 @@ def compute_capacity_dashboard(
         excluded_not_planning_ready: int = 0,
         excluded_retired: int = 0,
     ) -> dict[str, object]:
+        refreshed_at = _snapshot_refreshed_at(snapshot_obj)
         return {
             "unresolved_asset_count": unresolved_count,
             "other_demand_hours_total": round(other_total, 2),
             "excluded_asset_types": excluded_types or [],
             "snapshot_id": snapshot_obj.id if snapshot_obj else None,
             "snapshot_date": snapshot_obj.snapshot_date.isoformat() if snapshot_obj else None,
-            "snapshot_refreshed_at": _snapshot_refreshed_at(snapshot_obj).isoformat() if _snapshot_refreshed_at(snapshot_obj) else None,
+            "snapshot_refreshed_at": refreshed_at.isoformat() if refreshed_at else None,
             "total_assets_evaluated": total_assets_evaluated,
             "excluded_not_planning_ready": excluded_not_planning_ready,
             "excluded_retired": excluded_retired,
@@ -1662,11 +1686,12 @@ def compute_capacity_dashboard(
         capacity = cap_entry["capacity_hours"]
         available_assets = cap_entry["available_assets"]
 
+        effective_load = max(demand, booked)
         remaining = max(capacity - booked, 0.0)
-        uncovered = max(demand - capacity, 0.0)
+        uncovered = max(effective_load - capacity, 0.0)
         demand_util = round(demand / capacity * 100, 2) if capacity > 0 else 0.0
         booked_util = round(booked / capacity * 100, 2) if capacity > 0 else 0.0
-        status = _capacity_status(demand, capacity, asset_type)
+        status = _capacity_status(effective_load, capacity, asset_type)
 
         cell = {
             "demand_hours": round(demand, 2),

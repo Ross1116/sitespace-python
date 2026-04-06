@@ -133,6 +133,7 @@ class TestCapacityStatus:
 # ---------------------------------------------------------------------------
 
 MONDAY = date(2026, 4, 6)  # a known Monday
+WEDNESDAY = date(2026, 4, 8)  # mid-week start for partial-week tests
 WORK_DAYS = 5
 
 
@@ -163,7 +164,7 @@ class TestComputeCapacityByWeekAsset:
         assert diag["total_assets_evaluated"] == 0
 
     def test_basic_capacity_one_asset_full_week(self):
-        # crane, 10 h/day, no maintenance → 5 working days × 10 h = 50 h
+        # crane, 10 h/day, no maintenance -> 5 working days x 10 h = 50 h
         asset = _make_asset(canonical_type="crane")
         cap_map, _ = self._run([asset])
         assert (MONDAY, "crane") in cap_map
@@ -171,11 +172,11 @@ class TestComputeCapacityByWeekAsset:
         assert cap_map[(MONDAY, "crane")]["available_assets"] == 1
 
     def test_maintenance_removes_overlapping_days_only(self):
-        # Maintenance Mon–Wed → only Thu + Fri contribute (2 days × 10 h = 20 h)
+        # Maintenance Mon-Wed -> only Thu + Fri contribute (2 days x 10 h = 20 h)
         asset = _make_asset(
             canonical_type="crane",
             maint_start=MONDAY,
-            maint_end=MONDAY + timedelta(days=2),  # Mon–Wed
+            maint_end=MONDAY + timedelta(days=2),  # Mon-Wed
         )
         cap_map, _ = self._run([asset])
         assert cap_map[(MONDAY, "crane")]["capacity_hours"] == 20.0
@@ -207,7 +208,7 @@ class TestComputeCapacityByWeekAsset:
         # asset has 8 h/day override (type default is 10 via mock)
         asset = _make_asset(canonical_type="crane", max_hours_per_day=8.0)
         cap_map, _ = self._run([asset])
-        # 5 working days × 8 h = 40 h
+        # 5 working days x 8 h = 40 h
         assert cap_map[(MONDAY, "crane")]["capacity_hours"] == 40.0
 
     def test_multiple_assets_same_type_accumulate(self):
@@ -216,7 +217,7 @@ class TestComputeCapacityByWeekAsset:
             _make_asset(canonical_type="crane"),
         ]
         cap_map, _ = self._run(assets)
-        # 2 assets × 5 days × 10 h = 100 h
+        # 2 assets x 5 days x 10 h = 100 h
         assert cap_map[(MONDAY, "crane")]["capacity_hours"] == 100.0
         assert cap_map[(MONDAY, "crane")]["available_assets"] == 2
 
@@ -229,12 +230,11 @@ class TestComputeCapacityByWeekAsset:
 
     def test_partial_week_uses_actual_working_dates(self):
         # Request a week starting on a Wednesday (mid-week).
-        # _iter_working_dates normalises the span Mon-Sun but we pass week_starts directly,
-        # so the week window is still Mon–Sun of the supplied start's week.
-        # With work_days=5 and a standard week, this should still give 5 days.
+        # _iter_working_dates does not normalise to Mon-Sun; it uses the supplied
+        # start date and spans 7 calendar days, so Wed-Tue gives 5 working days x 10 h = 50 h.
         asset = _make_asset(canonical_type="crane")
-        cap_map, _ = self._run([asset], week_starts=[MONDAY])
-        assert cap_map[(MONDAY, "crane")]["capacity_hours"] == 50.0
+        cap_map, _ = self._run([asset], week_starts=[WEDNESDAY])
+        assert cap_map[(WEDNESDAY, "crane")]["capacity_hours"] == 50.0
 
 
 # ---------------------------------------------------------------------------

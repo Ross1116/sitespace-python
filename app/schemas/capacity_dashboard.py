@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import Field
@@ -20,7 +20,7 @@ class CapacityCell(BaseSchema):
     demand_utilization_pct: float = 0.0
     booked_utilization_pct: float = 0.0
     available_assets: int = 0
-    status: str  # idle | under_utilised | balanced | tight | over_capacity | no_capacity | review_needed
+    status: Literal["idle", "under_utilised", "balanced", "tight", "over_capacity", "no_capacity", "review_needed"]
     is_anomalous: bool = False
 
 
@@ -32,7 +32,7 @@ class CapacityWeekSummary(BaseSchema):
     total_capacity_hours: float = 0.0
     overall_demand_utilization_pct: float = 0.0
     overall_booked_utilization_pct: float = 0.0
-    worst_status: str = "idle"
+    worst_status: Literal["idle", "under_utilised", "balanced", "tight", "over_capacity", "no_capacity", "review_needed"] = "idle"
 
 
 class CapacityAssetTypeSummary(BaseSchema):
