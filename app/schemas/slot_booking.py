@@ -306,3 +306,81 @@ class BookingConflictResponse(BaseSchema):
     can_request: bool = True
     conflicting_bookings: List[BookingResponse] = Field(default_factory=list)
     conflict_count: int = 0
+
+
+class BulkRescheduleItem(TimeSlot):
+    """Target slot for one existing booking in a bulk reschedule."""
+    booking_id: UUID
+    booking_date: date
+    asset_id: Optional[UUID] = None
+    subcontractor_id: Optional[UUID] = None
+
+    @field_validator("booking_date")
+    @classmethod
+    def validate_booking_date(cls, value: date) -> date:
+        if value < date.today():
+            raise ValueError("Cannot reschedule bookings to past dates")
+        return value
+
+
+class BulkRescheduleRequest(BaseSchema):
+    """Preview or apply exact target slots for selected existing bookings."""
+    project_id: UUID
+    items: List[BulkRescheduleItem]
+    allow_non_working_days: bool = False
+    allow_outside_working_hours: bool = False
+    comment: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("items")
+    @classmethod
+    def validate_items(cls, value: List[BulkRescheduleItem]) -> List[BulkRescheduleItem]:
+        if not value:
+            raise ValueError("At least one booking must be selected")
+        booking_ids = [item.booking_id for item in value]
+        if len(booking_ids) != len(set(booking_ids)):
+            raise ValueError("Duplicate booking IDs are not allowed")
+        return value
+
+
+class BulkRescheduleBookingSnapshot(BaseSchema):
+    booking_id: UUID
+    project_id: UUID
+    asset_id: UUID
+    subcontractor_id: Optional[UUID] = None
+    booking_date: date
+    start_time: time
+    end_time: time
+    status: BookingStatus
+
+
+class BulkRescheduleIssue(BaseSchema):
+    code: str
+    message: str
+    field: Optional[str] = None
+
+
+class BulkRescheduleItemResult(BaseSchema):
+    booking_id: UUID
+    original: Optional[BulkRescheduleBookingSnapshot] = None
+    target: Optional[BulkRescheduleBookingSnapshot] = None
+    errors: List[BulkRescheduleIssue] = Field(default_factory=list)
+    warnings: List[BulkRescheduleIssue] = Field(default_factory=list)
+    conflicts: List[BookingResponse] = Field(default_factory=list)
+
+
+class BulkRescheduleSummary(BaseSchema):
+    total: int
+    valid: int
+    invalid: int
+    warnings: int
+
+
+class BulkRescheduleValidationResponse(BaseSchema):
+    can_apply: bool
+    summary: BulkRescheduleSummary
+    items: List[BulkRescheduleItemResult]
+
+
+class BulkRescheduleApplyResponse(BaseSchema):
+    validation: BulkRescheduleValidationResponse
+    bookings: List[BookingDetailResponse] = Field(default_factory=list)

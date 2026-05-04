@@ -2,7 +2,7 @@ from .user import User
 from .asset import Asset
 from .asset_type import AssetType
 from .slot_booking import SlotBooking
-from .site_project import SiteProject
+from .site_project import SiteProject, ProjectNonWorkingDay
 from .subcontractor import Subcontractor
 from .file_upload import FileUpload
 from .booking_audit import BookingAuditLog
@@ -43,6 +43,7 @@ __all__ = [
     "AssetType",
     "SlotBooking",
     "SiteProject",
+    "ProjectNonWorkingDay",
     "Subcontractor",
     "FileUpload",
     "BookingAuditLog",

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, time
 from uuid import UUID
 
 from .base import BaseSchema, TimestampSchema
@@ -31,6 +31,9 @@ class SiteProjectBase(BaseSchema):
     end_date: Optional[date] = None
     status: Optional[ProjectStatus] = Field(default=ProjectStatus.ACTIVE)
     timezone: Optional[str] = Field(None, max_length=64)
+    work_days_per_week: int = Field(default=5, ge=1, le=7)
+    default_work_start_time: time = time(8, 0)
+    default_work_end_time: time = time(16, 0)
 
 class SiteProjectCreate(SiteProjectBase):
     """Site project creation schema"""
@@ -46,6 +49,9 @@ class SiteProjectUpdate(BaseSchema):
     end_date: Optional[date] = None
     status: Optional[str] = Field(None, max_length=50)
     timezone: Optional[str] = Field(None, max_length=64)
+    work_days_per_week: Optional[int] = Field(None, ge=1, le=7)
+    default_work_start_time: Optional[time] = None
+    default_work_end_time: Optional[time] = None
     manager_ids: Optional[List[UUID]] = None
     subcontractor_ids: Optional[List[UUID]] = None
 
@@ -157,3 +163,18 @@ class PlanningCompletenessResponse(BaseSchema):
     window_end: date
     counts: PlanningCompletenessCountsResponse
     tasks: List[PlanningCompletenessTaskResponse]
+
+
+class ProjectNonWorkingDayUpsert(BaseSchema):
+    label: str = Field(..., min_length=1, max_length=255)
+    kind: str = Field(default="holiday", pattern="^(holiday|shutdown|weather|custom)$")
+
+
+class ProjectNonWorkingDayResponse(BaseSchema):
+    id: UUID
+    project_id: UUID
+    calendar_date: date
+    label: str
+    kind: str
+    created_by: Optional[UUID] = None
+    created_at: datetime

@@ -27,7 +27,10 @@ from app.schemas.slot_booking import (
     BookingConflictResponse,
     BookingStatusUpdate,
     BookingDeleteRequest,
-    BookingDuplicateRequest
+    BookingDuplicateRequest,
+    BulkRescheduleApplyResponse,
+    BulkRescheduleRequest,
+    BulkRescheduleValidationResponse,
 )
 from app.schemas.base import MessageResponse
 from app.schemas.enums import BookingStatus, UserRole
@@ -457,6 +460,125 @@ def create_bulk_bookings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create bulk bookings"
+        ) from e
+
+
+def _check_bulk_reschedule_project_access(
+    project: SiteProject,
+    user_role: UserRole,
+    user_id: UUID,
+) -> None:
+    if user_role == UserRole.ADMIN:
+        return
+
+    if user_role == UserRole.MANAGER:
+        if not _project_has_member(project.managers, user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this project",
+            )
+        return
+
+    if user_role == UserRole.SUBCONTRACTOR:
+        if not _project_has_member(project.subcontractors, user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not assigned to this project",
+            )
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You don't have access to this project",
+    )
+
+
+@router.post("/bulk-reschedule/preview", response_model=BulkRescheduleValidationResponse)
+def preview_bulk_reschedule(
+    payload: BulkRescheduleRequest,
+    db: Session = Depends(get_db),
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user),
+) -> BulkRescheduleValidationResponse:
+    """Preview exact target slots for selected bookings without applying changes."""
+    try:
+        user_role = get_user_role(current_entity)
+        user_id = get_entity_id(current_entity)
+        project = _load_project_booking_context(db, payload.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with id {payload.project_id} not found",
+            )
+
+        _check_bulk_reschedule_project_access(project, user_role, user_id)
+        return booking_crud.validate_bulk_reschedule(
+            db,
+            payload,
+            actor_id=user_id,
+            actor_role=user_role,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to preview bulk reschedule",
+        ) from e
+
+
+@router.post("/bulk-reschedule", response_model=BulkRescheduleApplyResponse)
+def bulk_reschedule_bookings(
+    payload: BulkRescheduleRequest,
+    db: Session = Depends(get_db),
+    current_entity: Union[User, Subcontractor] = Depends(get_current_active_user),
+) -> BulkRescheduleApplyResponse:
+    """Atomically reschedule selected bookings after re-running validation."""
+    try:
+        user_role = get_user_role(current_entity)
+        user_id = get_entity_id(current_entity)
+        project = _load_project_booking_context(db, payload.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with id {payload.project_id} not found",
+            )
+
+        _check_bulk_reschedule_project_access(project, user_role, user_id)
+        response = booking_crud.apply_bulk_reschedule(
+            db,
+            payload,
+            actor_id=user_id,
+            actor_role=user_role,
+        )
+
+        affected_project_ids = {
+            booking.project_id
+            for booking in response.bookings
+            if booking is not None
+        }
+        for booking in response.bookings:
+            if booking is not None:
+                notify_booking_change(db, booking.id, "rescheduled", user_id)
+        for project_id in affected_project_ids:
+            refresh_lookahead_after_project_change(project_id)
+
+        return response
+
+    except HTTPException:
+        raise
+    except booking_crud.BookingValidationError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=e.details if e.details is not None else str(e),
+        ) from e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to bulk reschedule bookings",
         ) from e
 
 
