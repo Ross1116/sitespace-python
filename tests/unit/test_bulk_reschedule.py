@@ -47,6 +47,13 @@ def _future_weekday(days_ahead: int = 7) -> date:
     return target
 
 
+def _future_weekday_number(weekday: int) -> date:
+    target = date.today() + timedelta(days=1)
+    while target.weekday() != weekday:
+        target += timedelta(days=1)
+    return target
+
+
 def _booking(booking_id, project_id, asset_id, *, start=time(8), end=time(12)):
     return SimpleNamespace(
         id=booking_id,
@@ -82,6 +89,27 @@ def _asset(asset_id, project_id):
     )
 
 
+def _stub_calendar(monkeypatch, days=None):
+    monkeypatch.setattr(
+        booking_crud,
+        "get_project_calendar_days",
+        lambda *args, **kwargs: days or [],
+    )
+
+
+def _stub_active_upload(monkeypatch, work_days_per_week=None):
+    upload = (
+        SimpleNamespace(work_days_per_week=work_days_per_week)
+        if work_days_per_week is not None
+        else None
+    )
+    monkeypatch.setattr(
+        booking_crud,
+        "get_active_programme_upload",
+        lambda *args, **kwargs: upload,
+    )
+
+
 def test_bulk_reschedule_blocks_project_non_working_day(monkeypatch):
     project_id = uuid4()
     booking_id = uuid4()
@@ -96,9 +124,11 @@ def test_bulk_reschedule_blocks_project_non_working_day(monkeypatch):
         _Query(first_value=project),
         _Query(all_value=[booking]),
         _Query(all_value=[asset]),
-        _Query(all_value=[non_working_day]),
+        _Query(all_value=[]),
     ]
     monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch)
+    _stub_calendar(monkeypatch, [non_working_day])
 
     response = booking_crud.validate_bulk_reschedule(
         db,
@@ -135,10 +165,11 @@ def test_bulk_reschedule_non_working_override_warns_for_manager(monkeypatch):
         _Query(first_value=project),
         _Query(all_value=[booking]),
         _Query(all_value=[asset]),
-        _Query(all_value=[non_working_day]),
         _Query(all_value=[]),
     ]
     monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch)
+    _stub_calendar(monkeypatch, [non_working_day])
 
     response = booking_crud.validate_bulk_reschedule(
         db,
@@ -185,6 +216,8 @@ def test_bulk_reschedule_blocks_outside_project_working_hours(monkeypatch):
         _Query(all_value=[]),
     ]
     monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch)
+    _stub_calendar(monkeypatch)
 
     response = booking_crud.validate_bulk_reschedule(
         db,
@@ -228,9 +261,10 @@ def test_bulk_reschedule_outside_project_working_hours_override_warns_for_manage
         _Query(all_value=[booking]),
         _Query(all_value=[asset]),
         _Query(all_value=[]),
-        _Query(all_value=[]),
     ]
     monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch)
+    _stub_calendar(monkeypatch)
 
     response = booking_crud.validate_bulk_reschedule(
         db,
@@ -273,9 +307,10 @@ def test_bulk_reschedule_allows_selected_bookings_to_swap_slots(monkeypatch):
         _Query(all_value=[asset]),
         _Query(all_value=[]),
         _Query(all_value=[]),
-        _Query(all_value=[]),
     ]
     monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch)
+    _stub_calendar(monkeypatch)
 
     response = booking_crud.validate_bulk_reschedule(
         db,
@@ -302,6 +337,47 @@ def test_bulk_reschedule_allows_selected_bookings_to_swap_slots(monkeypatch):
 
     assert response.can_apply is True
     assert all(not item.errors for item in response.items)
+
+
+def test_bulk_reschedule_uses_active_upload_work_days_per_week(monkeypatch):
+    project_id = uuid4()
+    booking_id = uuid4()
+    asset_id = uuid4()
+    target_date = _future_weekday_number(5)
+    project = SimpleNamespace(id=project_id, managers=[], subcontractors=[])
+    booking = _booking(booking_id, project_id, asset_id)
+    asset = _asset(asset_id, project_id)
+    db = MagicMock()
+    db.query.side_effect = [
+        _Query(first_value=project),
+        _Query(all_value=[booking]),
+        _Query(all_value=[asset]),
+        _Query(all_value=[]),
+    ]
+    monkeypatch.setattr(booking_crud, "sync_maintenance_status", lambda *args, **kwargs: None)
+    _stub_active_upload(monkeypatch, work_days_per_week=6)
+    _stub_calendar(monkeypatch)
+
+    response = booking_crud.validate_bulk_reschedule(
+        db,
+        BulkRescheduleRequest(
+            project_id=project_id,
+            items=[
+                BulkRescheduleItem(
+                    booking_id=booking_id,
+                    booking_date=target_date,
+                    start_time=time(8),
+                    end_time=time(12),
+                )
+            ],
+        ),
+        actor_id=uuid4(),
+        actor_role=UserRole.MANAGER,
+    )
+
+    assert response.can_apply is True
+    assert response.items[0].work_days_per_week == 6
+    assert response.items[0].work_days_source == "active_project_upload"
 
 
 def test_bulk_reschedule_route_notifies_each_booking_and_refreshes_once(monkeypatch):

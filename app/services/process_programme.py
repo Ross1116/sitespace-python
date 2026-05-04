@@ -348,6 +348,12 @@ async def _run(upload_id: str, db: Session) -> None:
     extra_rows = [] if _file_name.lower().endswith(".pdf") else (rows[100:] if len(rows) > 100 else [])
     extra_activities = _apply_mapping(extra_rows, structure.column_mapping, start_index=len(ai_activities))
     all_activity_items = ai_activities + extra_activities
+    work_week_items = (
+        all_activity_items
+        if _file_name.lower().endswith(".pdf")
+        else _apply_mapping(rows, structure.column_mapping, start_index=0)
+    )
+    inferred_work_days_per_week = _infer_work_days_per_week(work_week_items)
 
     # Re-acquire a fresh DB connection (pool_pre_ping verifies it) for all writes.
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
@@ -359,6 +365,7 @@ async def _run(upload_id: str, db: Session) -> None:
     # 5. Persist column_mapping + score on programme_uploads
     upload.column_mapping = structure.column_mapping
     upload.completeness_score = completeness_float
+    upload.work_days_per_week = inferred_work_days_per_week
     upload.ai_tokens_used = int(structure.ai_tokens_used or 0)
     upload.ai_cost_usd = structure.ai_cost_usd
     upload.completeness_notes = _normalize_completeness_notes(
@@ -366,6 +373,7 @@ async def _run(upload_id: str, db: Session) -> None:
             "missing_fields": structure.missing_fields,
             "notes": structure.notes,
             "ai_quota_exhausted": ai_execution_context.quota_exhausted,
+            "work_days_per_week": inferred_work_days_per_week,
         }
     )
     db.flush()
@@ -702,7 +710,7 @@ def _insert_activities(
             name=item.name,
             start_date=start,
             end_date=end,
-            duration_days=((end - start).days if start and end else None),
+            duration_days=item.duration_days if item.duration_days is not None else ((end - start).days if start and end else None),
             level_name=item.level_name,
             zone_name=item.zone_name,
             is_summary=item.is_summary,
@@ -733,6 +741,7 @@ def _pdf_structure(rows: list[dict[str, Any]]) -> StructureResult:
         "id": "ID",
         "name": "Name",
         "pct_complete": "PctComplete",
+        "duration": "DurationDays",
         "start_date": "Start",
         "end_date": "Finish",
     }
@@ -768,6 +777,7 @@ def _apply_mapping(
     level_col = column_mapping.get("level_name")
     zone_col = column_mapping.get("zone_name")
     pct_col = column_mapping.get("pct_complete")
+    duration_col = column_mapping.get("duration")
 
     items: list[ActivityItem] = []
     for i, row in enumerate(rows):
@@ -786,6 +796,7 @@ def _apply_mapping(
         is_summary = _to_bool(row.get(is_summary_col)) if is_summary_col else False
 
         pct_complete = parse_pct_raw(row.get(pct_col) if pct_col else None)
+        duration_days = _parse_duration_days(row.get(duration_col) if duration_col else None)
 
         activity_kind = classify_row_kind(
             is_summary=is_summary,
@@ -811,8 +822,63 @@ def _apply_mapping(
             pct_complete=pct_complete,
             activity_kind=activity_kind,
             row_confidence=row_confidence,
+            duration_days=duration_days,
         ))
     return items
+
+
+def _parse_duration_days(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        rounded = int(round(float(value)))
+        return rounded if rounded >= 0 else None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    import re as _re
+    match = _re.search(r"(\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    rounded = int(round(float(match.group(1))))
+    return rounded if rounded >= 0 else None
+
+
+def _inclusive_working_days(start: date, finish: date, work_days_per_week: int) -> int:
+    span_start = min(start, finish)
+    span_end = max(start, finish)
+    current = span_start
+    count = 0
+    while current <= span_end:
+        if current.weekday() < work_days_per_week:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _infer_work_days_per_week(items: list[ActivityItem]) -> int:
+    scores = {5: 0, 6: 0, 7: 0}
+    observations = 0
+    for item in items:
+        if item.duration_days is None or item.duration_days <= 0:
+            continue
+        start = _parse_date(item.start)
+        finish = _parse_date(item.finish)
+        if start is None or finish is None:
+            continue
+        observations += 1
+        for candidate in scores:
+            if _inclusive_working_days(start, finish, candidate) == item.duration_days:
+                scores[candidate] += 1
+
+    if observations < 3:
+        return 5
+    ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+    if ranked[0][1] >= 2 and ranked[0][1] > ranked[1][1]:
+        return ranked[0][0]
+    return 5
 
 
 def _normalize_date_cell(value: Any) -> str | None:
@@ -898,15 +964,16 @@ def _parse_file(
             #   1028 SITE CLEARANCE 100% 17 daysFri 17/01/25 Sat 8/02/25 SITE CLEARANCE
             # Duration and start day-of-week are concatenated with no space in P6 exports.
             # Group 3 captures % complete (integer, 0-100).
+            # Group 4 captures duration days.
             _ACTIVITY_RE = _re.compile(
                 r"^(\d{3,6})\s+"                                  # Group 1: ID
                 r"(.+?)\s+"                                        # Group 2: Name (non-greedy)
                 r"(\d+)%\s+"                                       # Group 3: % Complete
-                r"\d+\s+days?"                                     # Duration (discard)
+                r"(\d+)\s+days?"                                   # Group 4: Duration days
                 r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Start DOW (discard)
-                r"(\d{1,2}/\d{1,2}/\d{2,4})\s+"                  # Group 4: Start date
+                r"(\d{1,2}/\d{1,2}/\d{2,4})\s+"                  # Group 5: Start date
                 r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"             # Finish DOW (discard)
-                r"(\d{1,2}/\d{1,2}/\d{2,4})",                    # Group 5: Finish date
+                r"(\d{1,2}/\d{1,2}/\d{2,4})",                    # Group 6: Finish date
             )
 
             # Noise suppression: skip lines that are page headers, legends,
@@ -935,12 +1002,14 @@ def _parse_file(
                         if m and m.group(1) not in seen_ids:
                             seen_ids.add(m.group(1))
                             pct_raw = m.group(3)
+                            duration_raw = m.group(4)
                             all_rows.append({
                                 "ID": m.group(1),
                                 "Name": m.group(2).strip(),
                                 "PctComplete": int(pct_raw) if pct_raw.isdigit() else None,
-                                "Start": m.group(4),
-                                "Finish": m.group(5),
+                                "DurationDays": int(duration_raw) if duration_raw.isdigit() else None,
+                                "Start": m.group(5),
+                                "Finish": m.group(6),
                             })
 
             if not all_rows:

@@ -21,20 +21,23 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column(
         "site_projects",
-        sa.Column("work_days_per_week", sa.SmallInteger(), nullable=False, server_default="5"),
-    )
-    op.create_check_constraint(
-        "ck_site_projects_work_days_per_week",
-        "site_projects",
-        "work_days_per_week BETWEEN 1 AND 7",
-    )
-    op.add_column(
-        "site_projects",
         sa.Column("default_work_start_time", sa.Time(), nullable=False, server_default="08:00"),
     )
     op.add_column(
         "site_projects",
         sa.Column("default_work_end_time", sa.Time(), nullable=False, server_default="16:00"),
+    )
+    op.add_column(
+        "site_projects",
+        sa.Column("holiday_country_code", sa.String(length=2), nullable=False, server_default="AU"),
+    )
+    op.add_column(
+        "site_projects",
+        sa.Column("holiday_region_code", sa.String(length=3), nullable=False, server_default="SA"),
+    )
+    op.add_column(
+        "site_projects",
+        sa.Column("holiday_region_source", sa.String(length=20), nullable=False, server_default="default"),
     )
 
     op.create_table(
@@ -79,7 +82,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_project_non_working_days_calendar_date"), table_name="project_non_working_days")
     op.drop_index(op.f("ix_project_non_working_days_project_id"), table_name="project_non_working_days")
     op.drop_table("project_non_working_days")
+    op.drop_column("site_projects", "holiday_region_source")
+    op.drop_column("site_projects", "holiday_region_code")
+    op.drop_column("site_projects", "holiday_country_code")
     op.drop_column("site_projects", "default_work_end_time")
     op.drop_column("site_projects", "default_work_start_time")
-    op.drop_constraint("ck_site_projects_work_days_per_week", "site_projects", type_="check")
-    op.drop_column("site_projects", "work_days_per_week")

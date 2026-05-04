@@ -25,3 +25,4 @@ anthropic~=0.84.0
 openai>=1.30.0,<2.0.0
 pdfplumber~=0.11.0
 hypercorn>=0.17
+holidays>=0.70,<1.0

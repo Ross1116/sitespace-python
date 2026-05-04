@@ -17,7 +17,6 @@ from ..models.programme import (
     ProgrammeUpload,
 )
 from ..models.slot_booking import SlotBooking
-from ..models.site_project import ProjectNonWorkingDay
 from ..schemas.enums import AssetStatus, BookingAuditAction, BookingStatus, UserRole
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
@@ -47,6 +46,11 @@ from .asset import sync_maintenance_status
 from ..services.metadata_confidence_service import asset_is_planning_ready
 from ..services.lookahead_engine import build_eligible_activity_mapping_filters
 from ..services.programme_upload_service import is_upload_readable
+from ..services.programme_upload_service import get_active_programme_upload
+from ..services.project_calendar_service import (
+    get_project_calendar_days,
+    resolve_project_holiday_region,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +881,35 @@ def _is_working_weekday(target_date: date, work_days_per_week: int) -> bool:
     return target_date.weekday() < work_days_per_week
 
 
+def _resolve_upload_work_days_per_week(upload: object | None) -> tuple[int, str]:
+    raw_value = getattr(upload, "work_days_per_week", None)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return 5, "default"
+    if 1 <= value <= 7:
+        return value, "programme_upload"
+    return 5, "default"
+
+
+def _resolve_booking_work_days_per_week(
+    booking: SlotBooking,
+    active_upload: ProgrammeUpload | None,
+) -> tuple[int, str]:
+    booking_group = getattr(booking, "booking_group", None)
+    activity = getattr(booking_group, "activity", None) if booking_group else None
+    upload = getattr(activity, "upload", None) if activity else None
+    value, source = _resolve_upload_work_days_per_week(upload)
+    if source != "default":
+        return value, "linked_activity_upload"
+
+    value, source = _resolve_upload_work_days_per_week(active_upload)
+    if source != "default":
+        return value, "active_project_upload"
+
+    return 5, "default"
+
+
 def _project_work_hours(project: SiteProject) -> tuple[time, time]:
     start_time = getattr(project, "default_work_start_time", None) or time(8, 0)
     end_time = getattr(project, "default_work_end_time", None) or time(16, 0)
@@ -963,10 +996,19 @@ def validate_bulk_reschedule(
             )
 
     booking_ids = [item.booking_id for item in payload.items]
-    booking_query = db.query(SlotBooking).filter(SlotBooking.id.in_(booking_ids))
+    booking_query = (
+        db.query(SlotBooking)
+        .options(
+            joinedload(SlotBooking.booking_group)
+            .joinedload(ActivityBookingGroup.activity)
+            .joinedload(ProgrammeActivity.upload)
+        )
+        .filter(SlotBooking.id.in_(booking_ids))
+    )
     if lock_rows:
         booking_query = booking_query.with_for_update()
     bookings = {booking.id: booking for booking in booking_query.all()}
+    active_upload = get_active_programme_upload(payload.project_id, db)
 
     target_asset_ids = {
         item.asset_id
@@ -998,16 +1040,15 @@ def validate_bulk_reschedule(
     max_date = max(target_dates)
     non_working_days = {
         day.calendar_date: day
-        for day in (
-            db.query(ProjectNonWorkingDay)
-            .filter(
-                ProjectNonWorkingDay.project_id == payload.project_id,
-                ProjectNonWorkingDay.calendar_date >= min_date,
-                ProjectNonWorkingDay.calendar_date <= max_date,
-            )
-            .all()
+        for day in get_project_calendar_days(
+            db,
+            project,
+            date_from=min_date,
+            date_to=max_date,
+            include_regional=True,
         )
     }
+    _, holiday_region, holiday_region_source = resolve_project_holiday_region(project)
 
     target_snapshots: Dict[UUID, BulkRescheduleBookingSnapshot] = {}
     previous_asset_types: Dict[UUID, Optional[str]] = {}
@@ -1022,6 +1063,11 @@ def validate_bulk_reschedule(
             continue
 
         result.original = _snapshot_booking(booking)
+        work_days_per_week, work_days_source = _resolve_booking_work_days_per_week(booking, active_upload)
+        result.work_days_per_week = work_days_per_week
+        result.work_days_source = work_days_source
+        result.holiday_region_code = holiday_region
+        result.holiday_region_source = holiday_region_source
 
         if booking.project_id != payload.project_id:
             result.errors.append(_bulk_issue("project_mismatch", "Booking does not belong to this project", "project_id"))
@@ -1119,10 +1165,10 @@ def validate_bulk_reschedule(
                 )
 
         weekday_issue = None
-        if not _is_working_weekday(item.booking_date, project.work_days_per_week):
+        if not _is_working_weekday(item.booking_date, work_days_per_week):
             weekday_issue = _bulk_issue(
                 "outside_work_days",
-                f"Target date is outside the project's {project.work_days_per_week}-day working week",
+                f"Target date is outside the programme-derived {work_days_per_week}-day working week",
                 "booking_date",
             )
         calendar_day = non_working_days.get(item.booking_date)

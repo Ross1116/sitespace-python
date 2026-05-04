@@ -363,6 +363,10 @@ class BulkRescheduleItemResult(BaseSchema):
     booking_id: UUID
     original: Optional[BulkRescheduleBookingSnapshot] = None
     target: Optional[BulkRescheduleBookingSnapshot] = None
+    work_days_per_week: int = 5
+    work_days_source: str = "default"
+    holiday_region_code: Optional[str] = None
+    holiday_region_source: Optional[str] = None
     errors: List[BulkRescheduleIssue] = Field(default_factory=list)
     warnings: List[BulkRescheduleIssue] = Field(default_factory=list)
     conflicts: List[BookingResponse] = Field(default_factory=list)

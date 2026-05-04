@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Table, SmallInteger, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Table, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -23,9 +23,6 @@ subcontractor_site_project_association = Table(
 
 class SiteProject(Base):
     __tablename__ = "site_projects"
-    __table_args__ = (
-        CheckConstraint("work_days_per_week BETWEEN 1 AND 7", name="ck_site_projects_work_days_per_week"),
-    )
     
     # Essential Fields
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -38,9 +35,11 @@ class SiteProject(Base):
     end_date = Column(Date, nullable=True)         # Optional  
     status = Column(String(50), nullable=True, default="active")  # Optional
     timezone = Column(String(64), nullable=False, default="Australia/Adelaide", server_default="Australia/Adelaide")
-    work_days_per_week = Column(SmallInteger, nullable=False, default=5, server_default="5")
     default_work_start_time = Column(Time, nullable=False, default="08:00", server_default="08:00")
     default_work_end_time = Column(Time, nullable=False, default="16:00", server_default="16:00")
+    holiday_country_code = Column(String(2), nullable=False, default="AU", server_default="AU")
+    holiday_region_code = Column(String(3), nullable=False, default="SA", server_default="SA")
+    holiday_region_source = Column(String(20), nullable=False, default="default", server_default="default")
     
     # Audit Fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())

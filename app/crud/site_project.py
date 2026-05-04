@@ -11,6 +11,7 @@ from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
+from ..services.project_calendar_service import apply_project_holiday_region_defaults
 
 
 def _escape_ilike(value: str) -> str:
@@ -62,6 +63,7 @@ def create_project(
     
     # Create the project with basic fields
     project = SiteProject(**project_dict)
+    apply_project_holiday_region_defaults(project)
     
     db.add(project)
     db.flush()  # Flush to get the ID before adding relationships
@@ -210,6 +212,12 @@ def update_project(
     # Update basic fields
     for field, value in update_dict.items():
         setattr(project, field, value)
+
+    if "location" in update_dict or any(
+        field in update_dict
+        for field in ("holiday_country_code", "holiday_region_code", "holiday_region_source")
+    ):
+        apply_project_holiday_region_defaults(project)
     
     # Update managers if provided
     if manager_ids is not None:

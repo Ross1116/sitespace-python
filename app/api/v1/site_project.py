@@ -33,6 +33,7 @@ from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
 from ...services.metadata_confidence_service import get_project_planning_completeness
+from ...services.project_calendar_service import get_project_calendar_days
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,7 @@ def list_project_non_working_days(
     project_id: UUID,
     date_from: date = Query(..., description="Start date for non-working day lookup"),
     date_to: date = Query(..., description="End date for non-working day lookup"),
+    include_regional: bool = Query(True, description="Include generated regional public holidays"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> List[ProjectNonWorkingDayResponse]:
@@ -260,7 +262,26 @@ def list_project_non_working_days(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
         check_project_access(db, project_id, current_user)
-        return project_crud.get_project_non_working_days(db, project_id, date_from, date_to)
+        days = get_project_calendar_days(
+            db,
+            project,
+            date_from=date_from,
+            date_to=date_to,
+            include_regional=include_regional,
+        )
+        return [
+            ProjectNonWorkingDayResponse(
+                id=day.id,
+                project_id=project_id,
+                calendar_date=day.calendar_date,
+                label=day.label,
+                kind=day.kind,
+                source=day.source,
+                created_by=day.created_by,
+                created_at=day.created_at,
+            )
+            for day in days
+        ]
 
     except HTTPException:
         raise
