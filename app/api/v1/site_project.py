@@ -239,6 +239,7 @@ def list_project_non_working_days(
     date_from: date = Query(..., description="Start date for non-working day lookup"),
     date_to: date = Query(..., description="End date for non-working day lookup"),
     include_regional: bool = Query(True, description="Include generated regional public holidays"),
+    include_rdo: bool = Query(True, description="Include generated regional RDO advisory dates"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> List[ProjectNonWorkingDayResponse]:
@@ -268,6 +269,7 @@ def list_project_non_working_days(
             date_from=date_from,
             date_to=date_to,
             include_regional=include_regional,
+            include_rdo=include_rdo,
         )
         return [
             ProjectNonWorkingDayResponse(

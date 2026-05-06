@@ -209,7 +209,7 @@ class PlanningCompletenessResponse(BaseSchema):
 
 class ProjectNonWorkingDayUpsert(BaseSchema):
     label: str = Field(..., min_length=1, max_length=255)
-    kind: str = Field(default="holiday", pattern="^(holiday|shutdown|weather|custom)$")
+    kind: str = Field(default="holiday", pattern="^(holiday|shutdown|weather|custom|rdo)$")
 
 
 class ProjectNonWorkingDayResponse(BaseSchema):

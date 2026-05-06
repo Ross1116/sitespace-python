@@ -1174,11 +1174,20 @@ def validate_bulk_reschedule(
         calendar_day = non_working_days.get(item.booking_date)
         calendar_issue = None
         if calendar_day is not None:
-            calendar_issue = _bulk_issue(
-                "project_non_working_day",
-                f"Target date is marked non-working: {calendar_day.label}",
-                "booking_date",
-            )
+            if getattr(calendar_day, "kind", "") == "rdo":
+                result.warnings.append(
+                    _bulk_issue(
+                        "project_rdo_day",
+                        f"Target date is a rostered day off (RDO): {calendar_day.label}",
+                        "booking_date",
+                    )
+                )
+            else:
+                calendar_issue = _bulk_issue(
+                    "project_non_working_day",
+                    f"Target date is marked non-working: {calendar_day.label}",
+                    "booking_date",
+                )
         for issue in (weekday_issue, calendar_issue):
             if issue is None:
                 continue

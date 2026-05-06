@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import logging
 from typing import Iterable
 import uuid
@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 AU_HOLIDAY_REGION_CODES = frozenset({"ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"})
 DEFAULT_HOLIDAY_COUNTRY_CODE = "AU"
 DEFAULT_HOLIDAY_REGION_CODE = "SA"
+DEFAULT_RDO_ANCHOR = date(2026, 1, 26)
+RDO_ANCHORS = {
+    # Queensland's published 2026 construction RDO calendar starts one cycle earlier.
+    "QLD": date(2026, 1, 19),
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,54 @@ def get_regional_public_holidays(
     return sorted(days, key=lambda item: item.calendar_date)
 
 
+def _next_working_day(candidate: date, blocked_dates: set[date]) -> date:
+    next_date = candidate
+    while next_date.weekday() >= 5 or next_date in blocked_dates:
+        next_date += timedelta(days=1)
+    return next_date
+
+
+def get_regional_rdo_days(
+    *,
+    country_code: str,
+    region_code: str,
+    date_from: date,
+    date_to: date,
+    public_holiday_dates: set[date] | None = None,
+) -> list[CalendarDay]:
+    """Return advisory construction RDO dates for the resolved AU region."""
+
+    if country_code != "AU":
+        return []
+
+    region = normalize_holiday_region_code(region_code)
+    blocked_dates = public_holiday_dates or set()
+    anchor = RDO_ANCHORS.get(region, DEFAULT_RDO_ANCHOR)
+    cycle = timedelta(days=28)
+
+    current = anchor
+    while current + cycle < date_from:
+        current += cycle
+    while current - cycle >= date_from:
+        current -= cycle
+
+    days: list[CalendarDay] = []
+    while current <= date_to:
+        adjusted = _next_working_day(current, blocked_dates)
+        if date_from <= adjusted <= date_to:
+            days.append(
+                CalendarDay(
+                    calendar_date=adjusted,
+                    label="Rostered Day Off (RDO)",
+                    kind="rdo",
+                    source="regional_rdo",
+                )
+            )
+        current += cycle
+
+    return sorted(days, key=lambda item: item.calendar_date)
+
+
 def get_project_calendar_days(
     db: Session,
     project: SiteProject,
@@ -133,6 +186,7 @@ def get_project_calendar_days(
     date_from: date,
     date_to: date,
     include_regional: bool = True,
+    include_rdo: bool = True,
 ) -> list[CalendarDay]:
     manual_days = (
         db.query(ProjectNonWorkingDay)
@@ -157,14 +211,27 @@ def get_project_calendar_days(
         for day in manual_days
     }
 
+    public_holiday_days: list[CalendarDay] = []
     if include_regional:
         country, region, _ = resolve_project_holiday_region(project)
-        for day in get_regional_public_holidays(
+        public_holiday_days = get_regional_public_holidays(
             country_code=country,
             region_code=region,
             date_from=date_from,
             date_to=date_to,
-        ):
+        )
+        for day in public_holiday_days:
             combined.setdefault(day.calendar_date, day)
+
+        if include_rdo:
+            public_holiday_dates = {day.calendar_date for day in public_holiday_days}
+            for day in get_regional_rdo_days(
+                country_code=country,
+                region_code=region,
+                date_from=date_from,
+                date_to=date_to,
+                public_holiday_dates=public_holiday_dates,
+            ):
+                combined.setdefault(day.calendar_date, day)
 
     return sorted(combined.values(), key=lambda item: item.calendar_date)
