@@ -19,6 +19,11 @@ def test_infer_au_holiday_region_from_location_keywords():
     assert infer_au_holiday_region_from_location("Melbourne VIC") == ("VIC", "location")
 
 
+def test_infer_au_holiday_region_abbreviations_require_whole_words():
+    assert infer_au_holiday_region_from_location("Action site") == ("SA", "default")
+    assert infer_au_holiday_region_from_location("Factory wa zone") == ("WA", "location")
+
+
 def test_manual_holiday_region_overrides_location():
     project = SimpleNamespace(
         location="Adelaide",
@@ -57,3 +62,17 @@ def test_queensland_rdo_calendar_uses_region_specific_anchor():
         date(2026, 1, 19),
         date(2026, 2, 16),
     ]
+
+
+def test_regional_rdo_days_reject_inverted_range():
+    try:
+        get_regional_rdo_days(
+            country_code="AU",
+            region_code="SA",
+            date_from=date(2026, 2, 1),
+            date_to=date(2026, 1, 1),
+        )
+    except ValueError as exc:
+        assert str(exc) == "date_to must be on or after date_from"
+    else:
+        raise AssertionError("Expected inverted RDO range to fail")

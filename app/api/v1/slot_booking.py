@@ -1,6 +1,7 @@
 from typing import Optional, List, Dict, Any, Union
 from datetime import date, datetime
 from uuid import UUID
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
 from sqlalchemy.orm import Session, joinedload
@@ -47,6 +48,7 @@ from app.core.email import notify_booking_change
 from app.services.lookahead_engine import refresh_lookahead_after_project_change
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
+logger = logging.getLogger(__name__)
 
 
 # ==================== Helper Functions ====================
@@ -560,9 +562,15 @@ def bulk_reschedule_bookings(
         }
         for booking in response.bookings:
             if booking is not None:
-                notify_booking_change(db, booking.id, "rescheduled", user_id)
+                try:
+                    notify_booking_change(db, booking.id, "rescheduled", user_id)
+                except Exception:
+                    logger.exception("Failed to send bulk reschedule notification for booking %s", booking.id)
         for project_id in affected_project_ids:
-            refresh_lookahead_after_project_change(project_id)
+            try:
+                refresh_lookahead_after_project_change(project_id)
+            except Exception:
+                logger.exception("Failed to refresh lookahead after bulk reschedule for project %s", project_id)
 
         return response
 

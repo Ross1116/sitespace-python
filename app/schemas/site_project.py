@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
 from datetime import datetime, date, time
 from uuid import UUID
@@ -55,6 +55,12 @@ class SiteProjectBase(BaseSchema):
             raise ValueError("holiday_region_code must be one of ACT, NSW, NT, QLD, SA, TAS, VIC, WA")
         return token
 
+    @model_validator(mode="after")
+    def validate_default_work_hours(self) -> "SiteProjectBase":
+        if self.default_work_end_time <= self.default_work_start_time:
+            raise ValueError("default_work_end_time must be later than default_work_start_time")
+        return self
+
 class SiteProjectCreate(SiteProjectBase):
     """Site project creation schema"""
     manager_ids: Optional[List[UUID]] = []
@@ -96,6 +102,16 @@ class SiteProjectUpdate(BaseSchema):
         if token not in AU_HOLIDAY_REGION_CODES:
             raise ValueError("holiday_region_code must be one of ACT, NSW, NT, QLD, SA, TAS, VIC, WA")
         return token
+
+    @model_validator(mode="after")
+    def validate_default_work_hours(self) -> "SiteProjectUpdate":
+        if (
+            self.default_work_start_time is not None
+            and self.default_work_end_time is not None
+            and self.default_work_end_time <= self.default_work_start_time
+        ):
+            raise ValueError("default_work_end_time must be later than default_work_start_time")
+        return self
 
 class SiteProjectResponse(SiteProjectBase, TimestampSchema):
     """Site project response schema"""

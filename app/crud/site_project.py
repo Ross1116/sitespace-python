@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import date
@@ -159,6 +160,17 @@ def upsert_project_non_working_day(
             created_by=created_by,
         )
         db.add(day)
+        try:
+            db.commit()
+            db.refresh(day)
+            return day
+        except IntegrityError:
+            db.rollback()
+            day = get_project_non_working_day(db, project_id, calendar_date)
+            if day is None:
+                raise
+            day.label = label
+            day.kind = kind
     else:
         day.label = label
         day.kind = kind
@@ -212,6 +224,12 @@ def update_project(
     # Update basic fields
     for field, value in update_dict.items():
         setattr(project, field, value)
+
+    if project.default_work_end_time <= project.default_work_start_time:
+        raise HTTPException(
+            status_code=422,
+            detail="default_work_end_time must be later than default_work_start_time",
+        )
 
     if "location" in update_dict or any(
         field in update_dict

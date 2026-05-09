@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
+import re
 from typing import Iterable
 import uuid
 
@@ -45,20 +46,29 @@ def infer_au_holiday_region_from_location(location: str | None) -> tuple[str, st
         return DEFAULT_HOLIDAY_REGION_CODE, "default"
 
     region_keywords = (
-        ("SA", ("adelaide", "south australia", " sa", "sa ")),
-        ("NSW", ("sydney", "new south wales", " nsw", "nsw ")),
-        ("VIC", ("melbourne", "victoria", " vic", "vic ")),
-        ("QLD", ("brisbane", "queensland", " qld", "qld ")),
-        ("WA", ("perth", "western australia", " wa", "wa ")),
-        ("TAS", ("hobart", "tasmania", " tas", "tas ")),
-        ("NT", ("darwin", "northern territory", " nt", "nt ")),
-        ("ACT", ("canberra", "australian capital territory", " act", "act ")),
+        ("SA", ("adelaide", "south australia", "sa")),
+        ("NSW", ("sydney", "new south wales", "nsw")),
+        ("VIC", ("melbourne", "victoria", "vic")),
+        ("QLD", ("brisbane", "queensland", "qld")),
+        ("WA", ("perth", "western australia", "wa")),
+        ("TAS", ("hobart", "tasmania", "tas")),
+        ("NT", ("darwin", "northern territory", "nt")),
+        ("ACT", ("canberra", "australian capital territory", "act")),
     )
     padded = f" {text} "
     for region, keywords in region_keywords:
-        if any(keyword in padded for keyword in keywords):
+        if any(_location_keyword_matches(padded, keyword) for keyword in keywords):
             return region, "location"
     return DEFAULT_HOLIDAY_REGION_CODE, "default"
+
+
+def _location_keyword_matches(padded_text: str, keyword: str) -> bool:
+    normalized_keyword = keyword.strip().lower()
+    if not normalized_keyword:
+        return False
+    if " " in normalized_keyword:
+        return f" {normalized_keyword} " in padded_text
+    return re.search(rf"\b{re.escape(normalized_keyword)}\b", padded_text) is not None
 
 
 def resolve_project_holiday_region(project: SiteProject) -> tuple[str, str, str]:
@@ -94,6 +104,11 @@ def _iter_years(date_from: date, date_to: date) -> Iterable[int]:
         yield year
 
 
+def _validate_date_range(date_from: date, date_to: date) -> None:
+    if date_to < date_from:
+        raise ValueError("date_to must be on or after date_from")
+
+
 def get_regional_public_holidays(
     *,
     country_code: str,
@@ -101,6 +116,8 @@ def get_regional_public_holidays(
     date_from: date,
     date_to: date,
 ) -> list[CalendarDay]:
+    _validate_date_range(date_from, date_to)
+
     if country_code != "AU":
         return []
 
@@ -114,6 +131,8 @@ def get_regional_public_holidays(
     try:
         calendar = holidays_lib.country_holidays("AU", subdiv=region, years=list(_iter_years(date_from, date_to)))
     except Exception as exc:
+        # Keep calendar lookup resilient: country_holidays can fail for a region
+        # or year range produced by _iter_years, but scheduling should still load.
         logger.warning("Could not load AU holiday calendar for region %s: %s", region, exc)
         return []
 
@@ -147,6 +166,8 @@ def get_regional_rdo_days(
     public_holiday_dates: set[date] | None = None,
 ) -> list[CalendarDay]:
     """Return advisory construction RDO dates for the resolved AU region."""
+
+    _validate_date_range(date_from, date_to)
 
     if country_code != "AU":
         return []
@@ -188,6 +209,8 @@ def get_project_calendar_days(
     include_regional: bool = True,
     include_rdo: bool = True,
 ) -> list[CalendarDay]:
+    _validate_date_range(date_from, date_to)
+
     manual_days = (
         db.query(ProjectNonWorkingDay)
         .filter(

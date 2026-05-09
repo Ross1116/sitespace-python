@@ -703,6 +703,12 @@ def _insert_activities(
         if resolved_type is not None:
             resolved_cls_map[str(real_id)] = resolved_type
 
+        duration_days = (
+            item.duration_days
+            if item.duration_days is not None
+            else ((end - start).days + 1 if start and end else None)
+        )
+
         db_rows.append(ProgrammeActivity(
             id=real_id,
             programme_upload_id=upload_id,
@@ -710,7 +716,7 @@ def _insert_activities(
             name=item.name,
             start_date=start,
             end_date=end,
-            duration_days=item.duration_days if item.duration_days is not None else ((end - start).days if start and end else None),
+            duration_days=duration_days,
             level_name=item.level_name,
             zone_name=item.zone_name,
             is_summary=item.is_summary,
