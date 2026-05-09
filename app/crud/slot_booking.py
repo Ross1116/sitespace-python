@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any, Set, Tuple, Union
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import and_, or_, func, case
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 from collections import defaultdict
 
@@ -996,17 +996,22 @@ def validate_bulk_reschedule(
             )
 
     booking_ids = [item.booking_id for item in payload.items]
+    booking_group_loader = (
+        selectinload(SlotBooking.booking_group)
+        .selectinload(ActivityBookingGroup.activity)
+        .selectinload(ProgrammeActivity.upload)
+        if lock_rows
+        else joinedload(SlotBooking.booking_group)
+        .joinedload(ActivityBookingGroup.activity)
+        .joinedload(ProgrammeActivity.upload)
+    )
     booking_query = (
         db.query(SlotBooking)
-        .options(
-            joinedload(SlotBooking.booking_group)
-            .joinedload(ActivityBookingGroup.activity)
-            .joinedload(ProgrammeActivity.upload)
-        )
+        .options(booking_group_loader)
         .filter(SlotBooking.id.in_(booking_ids))
     )
     if lock_rows:
-        booking_query = booking_query.with_for_update()
+        booking_query = booking_query.with_for_update(of=SlotBooking)
     bookings = {booking.id: booking for booking in booking_query.all()}
     active_upload = get_active_programme_upload(payload.project_id, db)
 
