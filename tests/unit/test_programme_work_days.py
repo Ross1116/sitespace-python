@@ -1,5 +1,11 @@
 from app.services.ai_service import ActivityItem
-from app.services.process_programme import _infer_work_days_per_week, _parse_duration_days
+from datetime import date
+
+from app.services.process_programme import (
+    _infer_work_days_per_week,
+    _parse_duration_days,
+    _resolve_activity_duration_days,
+)
 
 
 def _item(start: str, finish: str, duration: int) -> ActivityItem:
@@ -56,3 +62,14 @@ def test_parse_duration_days_accepts_common_duration_formats():
     assert _parse_duration_days("6d") == 6
     assert _parse_duration_days(6.0) == 6
     assert _parse_duration_days("") is None
+
+
+def test_resolve_activity_duration_days_uses_inclusive_valid_date_span():
+    assert _resolve_activity_duration_days(None, date(2026, 3, 2), date(2026, 3, 2)) == 1
+    assert _resolve_activity_duration_days(None, date(2026, 3, 2), date(2026, 3, 4)) == 3
+
+
+def test_resolve_activity_duration_days_rejects_missing_or_inverted_dates():
+    assert _resolve_activity_duration_days(None, None, date(2026, 3, 4)) is None
+    assert _resolve_activity_duration_days(None, date(2026, 3, 4), date(2026, 3, 2)) is None
+    assert _resolve_activity_duration_days(0, date(2026, 3, 4), date(2026, 3, 2)) == 0

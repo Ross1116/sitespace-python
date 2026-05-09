@@ -703,11 +703,7 @@ def _insert_activities(
         if resolved_type is not None:
             resolved_cls_map[str(real_id)] = resolved_type
 
-        duration_days = (
-            item.duration_days
-            if item.duration_days is not None
-            else ((end - start).days + 1 if start and end else None)
-        )
+        duration_days = _resolve_activity_duration_days(item.duration_days, start, end)
 
         db_rows.append(ProgrammeActivity(
             id=real_id,
@@ -850,6 +846,18 @@ def _parse_duration_days(value: Any) -> int | None:
         return None
     rounded = int(round(float(match.group(1))))
     return rounded if rounded >= 0 else None
+
+
+def _resolve_activity_duration_days(
+    item_duration_days: int | None,
+    start: date | None,
+    end: date | None,
+) -> int | None:
+    if item_duration_days is not None:
+        return item_duration_days
+    if start is None or end is None or end < start:
+        return None
+    return max(1, (end - start).days + 1)
 
 
 def _inclusive_working_days(start: date, finish: date, work_days_per_week: int) -> int:
