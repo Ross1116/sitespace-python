@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Body
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from uuid import UUID
@@ -18,6 +18,8 @@ from ...schemas.site_project import (
     SiteProjectResponse,
     SiteProjectDetailResponse,
     SiteProjectListResponse,
+    ProjectNonWorkingDayResponse,
+    ProjectNonWorkingDayUpsert,
     ProjectManagerCreate,
     ProjectSubcontractorCreate,
     ProjectSubcontractorUpdate,
@@ -31,6 +33,7 @@ from ...crud import site_project as project_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
 from ...services.metadata_confidence_service import get_project_planning_completeness
+from ...services.project_calendar_service import get_project_calendar_days
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +230,135 @@ def list_projects(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve projects"
+        ) from exc
+
+
+@router.get("/{project_id}/non-working-days", response_model=List[ProjectNonWorkingDayResponse])
+def list_project_non_working_days(
+    project_id: UUID,
+    date_from: date = Query(..., description="Start date for non-working day lookup"),
+    date_to: date = Query(..., description="End date for non-working day lookup"),
+    include_regional: bool = Query(True, description="Include generated regional public holidays"),
+    include_rdo: bool = Query(True, description="Include generated regional RDO advisory dates"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> List[ProjectNonWorkingDayResponse]:
+    """List project-owned non-working days for scheduling validation."""
+
+    try:
+        if date_to < date_from:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_to must be on or after date_from",
+            )
+
+        if (date_to - date_from).days > 366:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Non-working day range cannot exceed 366 days",
+            )
+
+        project = project_crud.get_project(db, project_id)
+        if not project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        check_project_access(db, project_id, current_user)
+        days = get_project_calendar_days(
+            db,
+            project,
+            date_from=date_from,
+            date_to=date_to,
+            include_regional=include_regional,
+            include_rdo=include_rdo,
+        )
+        return [
+            ProjectNonWorkingDayResponse(
+                id=day.id,
+                project_id=project_id,
+                calendar_date=day.calendar_date,
+                label=day.label,
+                kind=day.kind,
+                source=day.source,
+                created_by=day.created_by,
+                created_at=day.created_at,
+            )
+            for day in days
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to retrieve project non-working days")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve project non-working days",
+        ) from exc
+
+
+@router.put("/{project_id}/non-working-days/{calendar_date}", response_model=ProjectNonWorkingDayResponse)
+def upsert_project_non_working_day(
+    project_id: UUID,
+    calendar_date: date,
+    payload: ProjectNonWorkingDayUpsert = Body(...),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> ProjectNonWorkingDayResponse:
+    """Create or update a project-owned non-working day."""
+
+    try:
+        project = project_crud.get_project(db, project_id)
+        if not project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        check_project_access(db, project_id, current_user, require_manager=True)
+        return project_crud.upsert_project_non_working_day(
+            db,
+            project_id,
+            calendar_date,
+            label=payload.label,
+            kind=payload.kind,
+            created_by=current_user.id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to upsert project non-working day")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upsert project non-working day",
+        ) from exc
+
+
+@router.delete("/{project_id}/non-working-days/{calendar_date}", response_model=MessageResponse)
+def delete_project_non_working_day(
+    project_id: UUID,
+    calendar_date: date,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """Remove a project-owned non-working day."""
+
+    try:
+        project = project_crud.get_project(db, project_id)
+        if not project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        check_project_access(db, project_id, current_user, require_manager=True)
+        deleted = project_crud.delete_project_non_working_day(db, project_id, calendar_date)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Non-working day not found")
+        return MessageResponse(message="Non-working day deleted successfully")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to delete project non-working day")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete project non-working day",
         ) from exc
 
 

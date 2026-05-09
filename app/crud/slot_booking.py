@@ -32,13 +32,25 @@ from ..schemas.slot_booking import (
     BookingStatistics,
     BulkBookingCreate,
     BookingDetailResponse,
-    BookingResponse
+    BookingResponse,
+    BulkRescheduleApplyResponse,
+    BulkRescheduleBookingSnapshot,
+    BulkRescheduleIssue,
+    BulkRescheduleItemResult,
+    BulkRescheduleRequest,
+    BulkRescheduleSummary,
+    BulkRescheduleValidationResponse,
 )
 from app.crud.booking_audit import log_booking_audit, build_changes_dict
 from .asset import sync_maintenance_status
 from ..services.metadata_confidence_service import asset_is_planning_ready
 from ..services.lookahead_engine import build_eligible_activity_mapping_filters
 from ..services.programme_upload_service import is_upload_readable
+from ..services.programme_upload_service import get_active_programme_upload
+from ..services.project_calendar_service import (
+    get_project_calendar_days,
+    resolve_project_holiday_region,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +836,577 @@ def create_bulk_bookings(
         raise
 
     return bookings
+
+
+def _snapshot_booking(booking: SlotBooking) -> BulkRescheduleBookingSnapshot:
+    return BulkRescheduleBookingSnapshot(
+        booking_id=booking.id,
+        project_id=booking.project_id,
+        asset_id=booking.asset_id,
+        subcontractor_id=booking.subcontractor_id,
+        booking_date=booking.booking_date,
+        start_time=booking.start_time,
+        end_time=booking.end_time,
+        status=booking.status,
+    )
+
+
+def _bulk_issue(code: str, message: str, field: Optional[str] = None) -> BulkRescheduleIssue:
+    return BulkRescheduleIssue(code=code, message=message, field=field)
+
+
+def _status_value(value: object) -> str:
+    return str(getattr(value, "value", value) or "").strip().lower()
+
+
+def _is_maintenance_blocked_for_date(asset: Asset, target_date: date) -> Optional[str]:
+    status_value = _status_value(getattr(asset, "status", None))
+    maint_start = getattr(asset, "maintenance_start_date", None)
+    maint_end = getattr(asset, "maintenance_end_date", None)
+
+    if maint_start and maint_end:
+        if maint_start <= target_date <= maint_end:
+            return f"Asset is under scheduled maintenance from {maint_start} to {maint_end}"
+        return None
+
+    if status_value == AssetStatus.MAINTENANCE.value:
+        return "Asset is in maintenance without a schedulable maintenance window"
+
+    return None
+
+
+def _is_working_weekday(target_date: date, work_days_per_week: int) -> bool:
+    if work_days_per_week < 1 or work_days_per_week > 7:
+        work_days_per_week = 5
+    return target_date.weekday() < work_days_per_week
+
+
+def _resolve_upload_work_days_per_week(upload: object | None) -> tuple[int, str]:
+    raw_value = getattr(upload, "work_days_per_week", None)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return 5, "default"
+    if 1 <= value <= 7:
+        return value, "programme_upload"
+    return 5, "default"
+
+
+def _resolve_booking_work_days_per_week(
+    booking: SlotBooking,
+    active_upload: ProgrammeUpload | None,
+) -> tuple[int, str]:
+    booking_group = getattr(booking, "booking_group", None)
+    activity = getattr(booking_group, "activity", None) if booking_group else None
+    upload = getattr(activity, "upload", None) if activity else None
+    value, source = _resolve_upload_work_days_per_week(upload)
+    if source != "default":
+        return value, "linked_activity_upload"
+
+    value, source = _resolve_upload_work_days_per_week(active_upload)
+    if source != "default":
+        return value, "active_project_upload"
+
+    return 5, "default"
+
+
+def _project_work_hours(project: SiteProject) -> tuple[time, time]:
+    start_time = getattr(project, "default_work_start_time", None) or time(8, 0)
+    end_time = getattr(project, "default_work_end_time", None) or time(16, 0)
+    return start_time, end_time
+
+
+def _is_inside_project_work_hours(
+    start_time: time,
+    end_time: time,
+    project: SiteProject,
+) -> bool:
+    work_start, work_end = _project_work_hours(project)
+    if work_end <= work_start:
+        return True
+    return start_time >= work_start and end_time <= work_end
+
+
+def _target_windows_overlap(left: BulkRescheduleBookingSnapshot, right: BulkRescheduleBookingSnapshot) -> bool:
+    return (
+        left.asset_id == right.asset_id
+        and left.booking_date == right.booking_date
+        and left.start_time < right.end_time
+        and left.end_time > right.start_time
+    )
+
+
+def _build_conflict_booking_response(booking: SlotBooking) -> BookingResponse:
+    return BookingResponse(
+        id=booking.id,
+        project_id=booking.project_id,
+        manager_id=booking.manager_id,
+        subcontractor_id=booking.subcontractor_id,
+        asset_id=booking.asset_id,
+        booking_date=booking.booking_date,
+        start_time=booking.start_time,
+        end_time=booking.end_time,
+        status=booking.status,
+        purpose=booking.purpose,
+        notes=booking.notes,
+        source=booking.source,
+        booking_group_id=booking.booking_group_id,
+        created_at=booking.created_at,
+        updated_at=booking.updated_at,
+    )
+
+
+def validate_bulk_reschedule(
+    db: Session,
+    payload: BulkRescheduleRequest,
+    *,
+    actor_id: UUID,
+    actor_role: UserRole,
+    lock_rows: bool = False,
+) -> BulkRescheduleValidationResponse:
+    project = _load_project_with_members(db, payload.project_id)
+    item_results = {
+        item.booking_id: BulkRescheduleItemResult(booking_id=item.booking_id)
+        for item in payload.items
+    }
+
+    if project is None:
+        for result in item_results.values():
+            result.errors.append(_bulk_issue("project_not_found", f"Project with id {payload.project_id} not found"))
+        return _summarize_bulk_reschedule_results(item_results.values())
+
+    if payload.allow_non_working_days and actor_role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        for result in item_results.values():
+            result.errors.append(
+                _bulk_issue(
+                    "non_working_override_forbidden",
+                    "Only managers and admins can allow non-working day reschedules",
+                    "allow_non_working_days",
+                )
+            )
+
+    if payload.allow_outside_working_hours and actor_role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        for result in item_results.values():
+            result.errors.append(
+                _bulk_issue(
+                    "working_hours_override_forbidden",
+                    "Only managers and admins can allow outside-working-hours reschedules",
+                    "allow_outside_working_hours",
+                )
+            )
+
+    booking_ids = [item.booking_id for item in payload.items]
+    booking_query = (
+        db.query(SlotBooking)
+        .options(
+            joinedload(SlotBooking.booking_group)
+            .joinedload(ActivityBookingGroup.activity)
+            .joinedload(ProgrammeActivity.upload)
+        )
+        .filter(SlotBooking.id.in_(booking_ids))
+    )
+    if lock_rows:
+        booking_query = booking_query.with_for_update()
+    bookings = {booking.id: booking for booking in booking_query.all()}
+    active_upload = get_active_programme_upload(payload.project_id, db)
+
+    target_asset_ids = {
+        item.asset_id
+        for item in payload.items
+        if item.asset_id is not None
+    }
+    target_asset_ids.update(
+        booking.asset_id
+        for booking in bookings.values()
+        if booking.id in item_results
+    )
+    assets = {
+        asset.id: asset
+        for asset in db.query(Asset).filter(Asset.id.in_(target_asset_ids)).all()
+    } if target_asset_ids else {}
+
+    target_subcontractor_ids = {
+        item.subcontractor_id
+        for item in payload.items
+        if item.subcontractor_id is not None
+    }
+    subcontractors = {
+        sub.id: sub
+        for sub in db.query(Subcontractor).filter(Subcontractor.id.in_(target_subcontractor_ids)).all()
+    } if target_subcontractor_ids else {}
+
+    target_dates = [item.booking_date for item in payload.items]
+    min_date = min(target_dates)
+    max_date = max(target_dates)
+    non_working_days = {
+        day.calendar_date: day
+        for day in get_project_calendar_days(
+            db,
+            project,
+            date_from=min_date,
+            date_to=max_date,
+            include_regional=True,
+        )
+    }
+    _, holiday_region, holiday_region_source = resolve_project_holiday_region(project)
+
+    target_snapshots: Dict[UUID, BulkRescheduleBookingSnapshot] = {}
+    previous_asset_types: Dict[UUID, Optional[str]] = {}
+    current_asset_types: Dict[UUID, Optional[str]] = {}
+    reschedulable_statuses = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
+
+    for item in payload.items:
+        result = item_results[item.booking_id]
+        booking = bookings.get(item.booking_id)
+        if booking is None:
+            result.errors.append(_bulk_issue("booking_not_found", "Booking not found", "booking_id"))
+            continue
+
+        result.original = _snapshot_booking(booking)
+        work_days_per_week, work_days_source = _resolve_booking_work_days_per_week(booking, active_upload)
+        result.work_days_per_week = work_days_per_week
+        result.work_days_source = work_days_source
+        result.holiday_region_code = holiday_region
+        result.holiday_region_source = holiday_region_source
+
+        if booking.project_id != payload.project_id:
+            result.errors.append(_bulk_issue("project_mismatch", "Booking does not belong to this project", "project_id"))
+
+        if actor_role == UserRole.SUBCONTRACTOR and booking.subcontractor_id != actor_id:
+            result.errors.append(_bulk_issue("forbidden", "Subcontractors can only reschedule their own bookings"))
+
+        if booking.status not in reschedulable_statuses:
+            result.errors.append(
+                _bulk_issue(
+                    "status_not_reschedulable",
+                    f"Only pending and confirmed bookings can be rescheduled; current status is {booking.status.value}",
+                    "status",
+                )
+            )
+
+        if item.end_time <= item.start_time:
+            result.errors.append(_bulk_issue("invalid_time_range", "Start time must be before end time"))
+
+        if not _is_inside_project_work_hours(item.start_time, item.end_time, project):
+            work_start, work_end = _project_work_hours(project)
+            working_hours_issue = _bulk_issue(
+                "outside_working_hours",
+                f"Target time is outside project working hours {work_start.strftime('%H:%M')} to {work_end.strftime('%H:%M')}",
+                "start_time",
+            )
+            if payload.allow_outside_working_hours and actor_role in {UserRole.MANAGER, UserRole.ADMIN}:
+                result.warnings.append(working_hours_issue)
+            else:
+                result.errors.append(working_hours_issue)
+
+        target_asset_id = item.asset_id or booking.asset_id
+        target_subcontractor_id = item.subcontractor_id if item.subcontractor_id is not None else booking.subcontractor_id
+        if actor_role == UserRole.SUBCONTRACTOR and target_subcontractor_id != actor_id:
+            result.errors.append(
+                _bulk_issue(
+                    "subcontractor_reassignment_forbidden",
+                    "Subcontractors can only keep bookings assigned to themselves",
+                    "subcontractor_id",
+                )
+            )
+        target = BulkRescheduleBookingSnapshot(
+            booking_id=booking.id,
+            project_id=booking.project_id,
+            asset_id=target_asset_id,
+            subcontractor_id=target_subcontractor_id,
+            booking_date=item.booking_date,
+            start_time=item.start_time,
+            end_time=item.end_time,
+            status=booking.status,
+        )
+        result.target = target
+        target_snapshots[booking.id] = target
+
+        previous_asset = assets.get(booking.asset_id)
+        previous_asset_types[booking.id] = (
+            _normalize_asset_type_value(previous_asset.canonical_type)
+            if previous_asset is not None
+            else None
+        )
+
+        target_asset = assets.get(target_asset_id)
+        if target_asset is None:
+            result.errors.append(_bulk_issue("asset_not_found", "Target asset not found", "asset_id"))
+        else:
+            current_asset_types[booking.id] = _normalize_asset_type_value(target_asset.canonical_type)
+            sync_maintenance_status(db, target_asset)
+            if target_asset.project_id != payload.project_id:
+                result.errors.append(_bulk_issue("asset_project_mismatch", "Target asset does not belong to this project", "asset_id"))
+            if not asset_is_planning_ready(target_asset):
+                result.errors.append(
+                    _bulk_issue(
+                        "asset_not_planning_ready",
+                        f"Asset '{target_asset.name}' must have a confirmed or inferred canonical type before it can be booked",
+                        "asset_id",
+                    )
+                )
+            if _status_value(target_asset.status) == AssetStatus.RETIRED.value:
+                result.errors.append(_bulk_issue("asset_retired", "Target asset is retired", "asset_id"))
+            maintenance_reason = _is_maintenance_blocked_for_date(target_asset, item.booking_date)
+            if maintenance_reason:
+                result.errors.append(_bulk_issue("asset_maintenance", maintenance_reason, "booking_date"))
+
+        if item.subcontractor_id is not None:
+            subcontractor = subcontractors.get(item.subcontractor_id)
+            if subcontractor is None:
+                result.errors.append(_bulk_issue("subcontractor_not_found", "Target subcontractor not found", "subcontractor_id"))
+            elif not any(str(s.id) == str(item.subcontractor_id) for s in project.subcontractors):
+                result.errors.append(
+                    _bulk_issue(
+                        "subcontractor_project_mismatch",
+                        "Target subcontractor is not assigned to this project",
+                        "subcontractor_id",
+                    )
+                )
+
+        weekday_issue = None
+        if not _is_working_weekday(item.booking_date, work_days_per_week):
+            weekday_issue = _bulk_issue(
+                "outside_work_days",
+                f"Target date is outside the programme-derived {work_days_per_week}-day working week",
+                "booking_date",
+            )
+        calendar_day = non_working_days.get(item.booking_date)
+        calendar_issue = None
+        if calendar_day is not None:
+            if getattr(calendar_day, "kind", "") == "rdo":
+                result.warnings.append(
+                    _bulk_issue(
+                        "project_rdo_day",
+                        f"Target date is a rostered day off (RDO): {calendar_day.label}",
+                        "booking_date",
+                    )
+                )
+            else:
+                calendar_issue = _bulk_issue(
+                    "project_non_working_day",
+                    f"Target date is marked non-working: {calendar_day.label}",
+                    "booking_date",
+                )
+        for issue in (weekday_issue, calendar_issue):
+            if issue is None:
+                continue
+            if payload.allow_non_working_days and actor_role in {UserRole.MANAGER, UserRole.ADMIN}:
+                result.warnings.append(issue)
+            else:
+                result.errors.append(issue)
+
+    valid_targets = {
+        booking_id: target
+        for booking_id, target in target_snapshots.items()
+        if not item_results[booking_id].errors
+    }
+    selected_ids = set(booking_ids)
+
+    if valid_targets:
+        for left_id, left in valid_targets.items():
+            for right_id, right in valid_targets.items():
+                if str(left_id) >= str(right_id):
+                    continue
+                if not _target_windows_overlap(left, right):
+                    continue
+                left_active = left.status in _ACTIVE_STATUSES
+                right_active = right.status in _ACTIVE_STATUSES
+                if left_active or right_active:
+                    item_results[left_id].errors.append(
+                        _bulk_issue("batch_conflict", "Target slot overlaps another selected booking in this batch")
+                    )
+                    item_results[right_id].errors.append(
+                        _bulk_issue("batch_conflict", "Target slot overlaps another selected booking in this batch")
+                    )
+
+        for booking_id, target in valid_targets.items():
+            result = item_results[booking_id]
+            overlap_filter = [
+                SlotBooking.asset_id == target.asset_id,
+                SlotBooking.booking_date == target.booking_date,
+                _overlapping_time_filter(target.start_time, target.end_time),
+                SlotBooking.id.notin_(selected_ids),
+            ]
+            external_active = (
+                db.query(SlotBooking)
+                .filter(*overlap_filter, SlotBooking.status.in_(_ACTIVE_STATUSES))
+                .all()
+            )
+            if external_active:
+                result.conflicts.extend(_build_conflict_booking_response(conflict) for conflict in external_active)
+                result.errors.append(_bulk_issue("confirmed_conflict", "Target slot conflicts with an active booking"))
+
+            if target.status == BookingStatus.PENDING and not external_active:
+                external_pending_count = (
+                    db.query(func.count(SlotBooking.id))
+                    .filter(*overlap_filter, SlotBooking.status == BookingStatus.PENDING)
+                    .scalar()
+                ) or 0
+                batch_pending_count = sum(
+                    1
+                    for other_id, other_target in valid_targets.items()
+                    if other_id != booking_id
+                    and other_target.status == BookingStatus.PENDING
+                    and _target_windows_overlap(target, other_target)
+                )
+                asset = assets.get(target.asset_id)
+                capacity = asset.pending_booking_capacity if asset else 5
+                if external_pending_count + batch_pending_count >= capacity:
+                    result.errors.append(
+                        _bulk_issue(
+                            "pending_capacity_reached",
+                            "Limit reached for this time slot. Choose another slot or contact the manager.",
+                        )
+                    )
+
+    return _summarize_bulk_reschedule_results(item_results.values())
+
+
+def _summarize_bulk_reschedule_results(
+    results: Union[List[BulkRescheduleItemResult], Any],
+) -> BulkRescheduleValidationResponse:
+    result_list = list(results)
+    invalid = sum(1 for result in result_list if result.errors)
+    warning_count = sum(len(result.warnings) for result in result_list)
+    return BulkRescheduleValidationResponse(
+        can_apply=invalid == 0,
+        summary=BulkRescheduleSummary(
+            total=len(result_list),
+            valid=len(result_list) - invalid,
+            invalid=invalid,
+            warnings=warning_count,
+        ),
+        items=result_list,
+    )
+
+
+def apply_bulk_reschedule(
+    db: Session,
+    payload: BulkRescheduleRequest,
+    *,
+    actor_id: UUID,
+    actor_role: UserRole,
+) -> BulkRescheduleApplyResponse:
+    validation = validate_bulk_reschedule(
+        db,
+        payload,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        lock_rows=True,
+    )
+    if not validation.can_apply:
+        raise BookingValidationError("Bulk reschedule validation failed", details=validation.model_dump(mode="json"))
+
+    bookings_by_id = {
+        booking.id: booking
+        for booking in (
+            db.query(SlotBooking)
+            .options(joinedload(SlotBooking.booking_group))
+            .filter(SlotBooking.id.in_([item.booking_id for item in payload.items]))
+            .all()
+        )
+    }
+    target_by_id = {item.booking_id: item for item in payload.items}
+    updated_bookings: List[SlotBooking] = []
+
+    try:
+        for booking_id, item in target_by_id.items():
+            booking = bookings_by_id[booking_id]
+            old_values = {
+                "booking_date": booking.booking_date,
+                "start_time": booking.start_time,
+                "end_time": booking.end_time,
+                "purpose": booking.purpose,
+                "notes": booking.notes,
+                "asset_id": booking.asset_id,
+                "subcontractor_id": booking.subcontractor_id,
+                "status": booking.status,
+            }
+
+            previous_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
+            previous_asset_type = (
+                _normalize_asset_type_value(previous_asset.canonical_type)
+                if previous_asset
+                else None
+            )
+
+            booking.booking_date = item.booking_date
+            booking.start_time = item.start_time
+            booking.end_time = item.end_time
+            if item.asset_id is not None:
+                booking.asset_id = item.asset_id
+            if item.subcontractor_id is not None:
+                booking.subcontractor_id = item.subcontractor_id
+            booking.updated_at = datetime.now(timezone.utc)
+
+            new_values = {
+                "booking_date": booking.booking_date,
+                "start_time": booking.start_time,
+                "end_time": booking.end_time,
+                "purpose": booking.purpose,
+                "notes": booking.notes,
+                "asset_id": booking.asset_id,
+                "subcontractor_id": booking.subcontractor_id,
+                "status": booking.status,
+            }
+            changes = build_changes_dict(old_values, new_values)
+            log_booking_audit(
+                db,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                action=BookingAuditAction.RESCHEDULED,
+                booking_id=booking.id,
+                changes=changes,
+                comment=payload.comment,
+            )
+
+            current_asset = db.query(Asset).filter(Asset.id == booking.asset_id).first()
+            current_asset_type = (
+                _normalize_asset_type_value(current_asset.canonical_type)
+                if current_asset
+                else None
+            )
+            _mark_booking_group_modified_if_needed(
+                booking.booking_group,
+                booking=booking,
+                previous_date=old_values["booking_date"],
+                previous_start_time=old_values["start_time"],
+                previous_end_time=old_values["end_time"],
+                previous_subcontractor_id=old_values["subcontractor_id"],
+                previous_asset_type=previous_asset_type,
+                current_asset_type=current_asset_type,
+            )
+
+            _auto_deny_competing_pending_bookings(
+                db,
+                booking=booking,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
+            if booking.status == BookingStatus.CONFIRMED:
+                _mark_matching_lookahead_notifications_acted(db, booking, asset=current_asset)
+            updated_bookings.append(booking)
+
+        db.commit()
+        for booking in updated_bookings:
+            db.refresh(booking)
+    except Exception:
+        db.rollback()
+        raise
+
+    post_validation = validate_bulk_reschedule(
+        db,
+        payload,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        lock_rows=False,
+    )
+    return BulkRescheduleApplyResponse(
+        validation=post_validation,
+        bookings=[get_booking_detail(db, booking.id) for booking in updated_bookings],
+    )
+
 
 def get_booking(db: Session, booking_id: UUID) -> Optional[SlotBooking]:
     return db.query(SlotBooking).filter(SlotBooking.id == booking_id).first()

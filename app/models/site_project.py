@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Table
+from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Table, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -35,6 +35,11 @@ class SiteProject(Base):
     end_date = Column(Date, nullable=True)         # Optional  
     status = Column(String(50), nullable=True, default="active")  # Optional
     timezone = Column(String(64), nullable=False, default="Australia/Adelaide", server_default="Australia/Adelaide")
+    default_work_start_time = Column(Time, nullable=False, default="08:00", server_default="08:00")
+    default_work_end_time = Column(Time, nullable=False, default="16:00", server_default="16:00")
+    holiday_country_code = Column(String(2), nullable=False, default="AU", server_default="AU")
+    holiday_region_code = Column(String(3), nullable=False, default="SA", server_default="SA")
+    holiday_region_source = Column(String(20), nullable=False, default="default", server_default="default")
     
     # Audit Fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -57,6 +62,33 @@ class SiteProject(Base):
     assets = relationship("Asset", back_populates="project")
     slot_bookings = relationship("SlotBooking", back_populates="project")
     site_plans = relationship("SitePlan", back_populates="project", cascade="all, delete-orphan")
+    non_working_days = relationship("ProjectNonWorkingDay", back_populates="project", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<SiteProject(id={self.id}, name={self.name})>"
+
+
+class ProjectNonWorkingDay(Base):
+    __tablename__ = "project_non_working_days"
+    __table_args__ = (
+        UniqueConstraint("project_id", "calendar_date", name="uq_project_non_working_days_project_date"),
+        CheckConstraint(
+            "kind IN ('holiday', 'shutdown', 'weather', 'custom')",
+            name="ck_project_non_working_days_kind",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    calendar_date = Column(Date, nullable=False, index=True)
+    label = Column(String(255), nullable=False)
+    kind = Column(String(20), nullable=False, default="holiday", server_default="holiday")
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    project = relationship("SiteProject", back_populates="non_working_days")

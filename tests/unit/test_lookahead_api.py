@@ -23,7 +23,7 @@ def test_get_fresh_snapshot_uses_degraded_upload_when_no_committed_exists(monkey
     snapshot = lookahead_engine.get_fresh_snapshot(project_id, db)
 
     assert snapshot is expected_snapshot
-    calc_mock.assert_called_once_with(project_id, db)
+    calc_mock.assert_called_once_with(project_id, db, sync_notifications=False)
 
 
 def test_get_fresh_snapshot_recalculates_when_booking_is_newer(monkeypatch):
@@ -50,7 +50,7 @@ def test_get_fresh_snapshot_recalculates_when_booking_is_newer(monkeypatch):
     snapshot = lookahead_engine.get_fresh_snapshot(project_id, db)
 
     assert snapshot is refreshed_snapshot
-    calc_mock.assert_called_once_with(project_id, db)
+    calc_mock.assert_called_once_with(project_id, db, sync_notifications=False)
 
 
 def test_get_fresh_snapshot_uses_generated_at_to_avoid_repeated_recalculation(monkeypatch):
@@ -103,7 +103,7 @@ def test_get_fresh_snapshot_normalizes_naive_booking_timestamp(monkeypatch):
     snapshot = lookahead_engine.get_fresh_snapshot(project_id, db)
 
     assert snapshot is refreshed_snapshot
-    calc_mock.assert_called_once_with(project_id, db)
+    calc_mock.assert_called_once_with(project_id, db, sync_notifications=False)
 
 
 def test_get_fresh_snapshot_normalizes_naive_snapshot_timestamp(monkeypatch):

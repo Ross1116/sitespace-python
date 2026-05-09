@@ -1,16 +1,18 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import date
 
 from fastapi import HTTPException
 
-from ..models.site_project import SiteProject
+from ..models.site_project import SiteProject, ProjectNonWorkingDay
 from ..models.user import User
 from ..models.subcontractor import Subcontractor
 from ..schemas.enums import ProjectStatus, UserRole
 from ..schemas.site_project import SiteProjectCreate, SiteProjectFilters, SiteProjectUpdate
+from ..services.project_calendar_service import apply_project_holiday_region_defaults
 
 
 def _escape_ilike(value: str) -> str:
@@ -62,6 +64,7 @@ def create_project(
     
     # Create the project with basic fields
     project = SiteProject(**project_dict)
+    apply_project_holiday_region_defaults(project)
     
     db.add(project)
     db.flush()  # Flush to get the ID before adding relationships
@@ -103,6 +106,93 @@ def get_project_with_details(db: Session, project_id: UUID) -> Optional[SiteProj
         .filter(SiteProject.id == project_id)\
         .first()
 
+
+def get_project_non_working_days(
+    db: Session,
+    project_id: UUID,
+    date_from: date,
+    date_to: date,
+) -> List[ProjectNonWorkingDay]:
+    """Get project-owned non-working dates for a bounded date range."""
+    return (
+        db.query(ProjectNonWorkingDay)
+        .filter(
+            ProjectNonWorkingDay.project_id == project_id,
+            ProjectNonWorkingDay.calendar_date >= date_from,
+            ProjectNonWorkingDay.calendar_date <= date_to,
+        )
+        .order_by(ProjectNonWorkingDay.calendar_date.asc())
+        .all()
+    )
+
+
+def get_project_non_working_day(
+    db: Session,
+    project_id: UUID,
+    calendar_date: date,
+) -> Optional[ProjectNonWorkingDay]:
+    return (
+        db.query(ProjectNonWorkingDay)
+        .filter(
+            ProjectNonWorkingDay.project_id == project_id,
+            ProjectNonWorkingDay.calendar_date == calendar_date,
+        )
+        .first()
+    )
+
+
+def upsert_project_non_working_day(
+    db: Session,
+    project_id: UUID,
+    calendar_date: date,
+    *,
+    label: str,
+    kind: str,
+    created_by: UUID,
+) -> ProjectNonWorkingDay:
+    day = get_project_non_working_day(db, project_id, calendar_date)
+    if day is None:
+        day = ProjectNonWorkingDay(
+            project_id=project_id,
+            calendar_date=calendar_date,
+            label=label,
+            kind=kind,
+            created_by=created_by,
+        )
+        db.add(day)
+        try:
+            db.commit()
+            db.refresh(day)
+            return day
+        except IntegrityError:
+            db.rollback()
+            day = get_project_non_working_day(db, project_id, calendar_date)
+            if day is None:
+                raise
+            day.label = label
+            day.kind = kind
+    else:
+        day.label = label
+        day.kind = kind
+
+    db.commit()
+    db.refresh(day)
+    return day
+
+
+def delete_project_non_working_day(
+    db: Session,
+    project_id: UUID,
+    calendar_date: date,
+) -> bool:
+    day = get_project_non_working_day(db, project_id, calendar_date)
+    if day is None:
+        return False
+
+    db.delete(day)
+    db.commit()
+    return True
+
 def get_projects(
     db: Session,
     filters: Optional[SiteProjectFilters] = None,
@@ -134,6 +224,18 @@ def update_project(
     # Update basic fields
     for field, value in update_dict.items():
         setattr(project, field, value)
+
+    if project.default_work_end_time <= project.default_work_start_time:
+        raise HTTPException(
+            status_code=422,
+            detail="default_work_end_time must be later than default_work_start_time",
+        )
+
+    if "location" in update_dict or any(
+        field in update_dict
+        for field in ("holiday_country_code", "holiday_region_code", "holiday_region_source")
+    ):
+        apply_project_holiday_region_defaults(project)
     
     # Update managers if provided
     if manager_ids is not None:

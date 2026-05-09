@@ -1,12 +1,14 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, time
 from uuid import UUID
 
 from .base import BaseSchema, TimestampSchema
 from .user import UserBriefResponse
 from .subcontractor import SubcontractorBriefResponse  # Import from subcontractor schema
 from .enums import ProjectStatus  # You might want to create/update this enum
+
+AU_HOLIDAY_REGION_CODES = {"ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"}
 
 
 class SiteProjectFilters(BaseSchema):
@@ -31,6 +33,33 @@ class SiteProjectBase(BaseSchema):
     end_date: Optional[date] = None
     status: Optional[ProjectStatus] = Field(default=ProjectStatus.ACTIVE)
     timezone: Optional[str] = Field(None, max_length=64)
+    default_work_start_time: time = time(8, 0)
+    default_work_end_time: time = time(16, 0)
+    holiday_country_code: str = Field(default="AU", min_length=2, max_length=2)
+    holiday_region_code: str = Field(default="SA", max_length=3)
+    holiday_region_source: str = Field(default="default", pattern="^(default|location|manual)$")
+
+    @field_validator("holiday_country_code")
+    @classmethod
+    def normalize_holiday_country(cls, value: str) -> str:
+        token = (value or "AU").strip().upper()
+        if token != "AU":
+            raise ValueError("Only AU holiday calendars are supported")
+        return token
+
+    @field_validator("holiday_region_code")
+    @classmethod
+    def normalize_holiday_region(cls, value: str) -> str:
+        token = (value or "SA").strip().upper()
+        if token not in AU_HOLIDAY_REGION_CODES:
+            raise ValueError("holiday_region_code must be one of ACT, NSW, NT, QLD, SA, TAS, VIC, WA")
+        return token
+
+    @model_validator(mode="after")
+    def validate_default_work_hours(self) -> "SiteProjectBase":
+        if self.default_work_end_time <= self.default_work_start_time:
+            raise ValueError("default_work_end_time must be later than default_work_start_time")
+        return self
 
 class SiteProjectCreate(SiteProjectBase):
     """Site project creation schema"""
@@ -46,8 +75,43 @@ class SiteProjectUpdate(BaseSchema):
     end_date: Optional[date] = None
     status: Optional[str] = Field(None, max_length=50)
     timezone: Optional[str] = Field(None, max_length=64)
+    default_work_start_time: Optional[time] = None
+    default_work_end_time: Optional[time] = None
+    holiday_country_code: Optional[str] = Field(None, min_length=2, max_length=2)
+    holiday_region_code: Optional[str] = Field(None, max_length=3)
+    holiday_region_source: Optional[str] = Field(None, pattern="^(default|location|manual)$")
     manager_ids: Optional[List[UUID]] = None
     subcontractor_ids: Optional[List[UUID]] = None
+
+    @field_validator("holiday_country_code")
+    @classmethod
+    def normalize_holiday_country(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        token = value.strip().upper()
+        if token != "AU":
+            raise ValueError("Only AU holiday calendars are supported")
+        return token
+
+    @field_validator("holiday_region_code")
+    @classmethod
+    def normalize_holiday_region(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        token = value.strip().upper()
+        if token not in AU_HOLIDAY_REGION_CODES:
+            raise ValueError("holiday_region_code must be one of ACT, NSW, NT, QLD, SA, TAS, VIC, WA")
+        return token
+
+    @model_validator(mode="after")
+    def validate_default_work_hours(self) -> "SiteProjectUpdate":
+        if (
+            self.default_work_start_time is not None
+            and self.default_work_end_time is not None
+            and self.default_work_end_time <= self.default_work_start_time
+        ):
+            raise ValueError("default_work_end_time must be later than default_work_start_time")
+        return self
 
 class SiteProjectResponse(SiteProjectBase, TimestampSchema):
     """Site project response schema"""
@@ -157,3 +221,19 @@ class PlanningCompletenessResponse(BaseSchema):
     window_end: date
     counts: PlanningCompletenessCountsResponse
     tasks: List[PlanningCompletenessTaskResponse]
+
+
+class ProjectNonWorkingDayUpsert(BaseSchema):
+    label: str = Field(..., min_length=1, max_length=255)
+    kind: str = Field(default="holiday", pattern="^(holiday|shutdown|weather|custom|rdo)$")
+
+
+class ProjectNonWorkingDayResponse(BaseSchema):
+    id: Optional[UUID] = None
+    project_id: UUID
+    calendar_date: date
+    label: str
+    kind: str
+    source: str = "manual"
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None

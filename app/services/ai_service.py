@@ -322,6 +322,7 @@ class ActivityItem:
     pct_complete: int | None = None  # 0–100 extracted from source file
     activity_kind: str | None = None # 'summary' | 'task' | 'milestone'
     row_confidence: str | None = None  # 'high' | 'medium' | 'low'
+    duration_days: int | None = None
 
 
 @dataclass
