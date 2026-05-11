@@ -17,6 +17,8 @@ if str(REPO_ROOT) not in sys.path:
 
 # Keep this standalone script importable in local environments where .env
 # contains server-oriented values that are irrelevant to offline backtesting.
+# DEBUG and AI_ENABLED are intentionally enforced so this script never makes
+# accidental network-backed AI calls during offline scoring.
 os.environ["DEBUG"] = "true"
 os.environ.setdefault("DATABASE_URL", "sqlite:///./backtest_activity_asset_multiasset_gold.db")
 os.environ.setdefault("JWT_SECRET", "local-backtest-secret")

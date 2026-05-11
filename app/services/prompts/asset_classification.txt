@@ -44,7 +44,8 @@ OUTPUT SCHEMA:
       "reasoning": "<short reason>"
     }
   ],
-  "skipped": ["<activity_id with no asset requirements>", "..."]
+  "skipped": ["activity_id_with_no_requirements"]
 }
 
 If hours or shape are not knowable, set them to null.
+The skipped array may be empty when every activity has at least one requirement.

@@ -163,6 +163,8 @@ def _get_activity_expected_asset_type(
     if activity_asset_mapping_id is not None:
         mapping = (
             db.query(ActivityAssetMapping)
+            .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+            .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
             .filter(
                 ActivityAssetMapping.id == activity_asset_mapping_id,
                 *build_eligible_activity_mapping_filters(),
@@ -196,6 +198,8 @@ def _get_activity_expected_asset_type(
     if activity_asset_mapping_id is None:
         eligible_mappings = (
             db.query(ActivityAssetMapping)
+            .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+            .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
             .filter(
                 ActivityAssetMapping.programme_activity_id == programme_activity_id,
                 *build_eligible_activity_mapping_filters(),

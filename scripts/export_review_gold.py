@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import json
 import math
@@ -267,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
 
     original_wb = load_workbook(args.original_workbook, data_only=False)
     reviewed_wb = load_workbook(args.reviewed_workbook, data_only=False)
+    atexit.register(original_wb.close)
+    atexit.register(reviewed_wb.close)
     original_ws = original_wb[args.sheet_name]
     reviewed_ws = reviewed_wb[args.sheet_name]
 
@@ -289,7 +292,11 @@ def main(argv: list[str] | None = None) -> int:
             "outlier_flags": _cell_value(reviewed_ws, row, 9),
             "review_source": "manual_first_pass",
         }
-        activity_number = int(activity["activity_number"])
+        try:
+            activity_number = int(activity["activity_number"])
+        except (TypeError, ValueError):
+            print(f"Skipping review row {row}: invalid activity_number={activity['activity_number']!r}")
+            continue
         activity_rows[activity_number] = activity
 
         for slot in SLOTS:
@@ -530,6 +537,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
+    original_wb.close()
+    reviewed_wb.close()
     return 0
 
 

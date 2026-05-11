@@ -166,7 +166,7 @@ class ActivityAssetMapping(Base):
     profile_shape = Column(String(50), nullable=True)
     label_confidence = Column(Numeric(4, 3), nullable=True)
     requirement_source = Column(String(20), nullable=True)  # ai | keyword | manual | imported_gold
-    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    is_active = Column(Boolean, nullable=False, default=True)
     auto_committed = Column(Boolean, nullable=False, default=False)
     manually_corrected = Column(Boolean, nullable=False, default=False)
     corrected_by = Column(
@@ -218,7 +218,7 @@ class ActivityBookingGroup(Base):
     activity_asset_mapping_id = Column(
         UUID(as_uuid=True),
         ForeignKey("activity_asset_mappings.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     expected_asset_type = Column(String(50), nullable=False)

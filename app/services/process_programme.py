@@ -1166,7 +1166,7 @@ def _write_classifications(
     """
     mapping_rows: list[ActivityAssetMapping] = []
     suggestion_rows: list[AISuggestionLog] = []
-    seen_requirements: set[tuple[str, str]] = set()
+    seen_requirements: set[tuple[str, str, str, str, str]] = set()
 
     for item in classification.requirements:
         normalised_type = (item.asset_type or "").strip().lower()
@@ -1190,7 +1190,17 @@ def _write_classifications(
 
         auto_commit = confidence in {"high", "medium"}
         act_id_str = str(item.activity_id)
-        key = (act_id_str, normalised_type)
+        role = str(item.asset_role or "lead").strip().lower()
+        if role not in {"lead", "support", "incidental"}:
+            role = "lead"
+        try:
+            label_confidence = (
+                None if item.label_confidence is None else max(0.0, min(1.0, float(item.label_confidence)))
+            )
+        except (TypeError, ValueError):
+            label_confidence = None
+        requirement_identity = str(getattr(item, "id", "") or getattr(item, "requirement_id", "") or "")
+        key = (act_id_str, normalised_type, requirement_identity, role, str(item.profile_shape or ""))
         if key in seen_requirements:
             continue
         seen_requirements.add(key)
@@ -1204,10 +1214,10 @@ def _write_classifications(
                 asset_type=normalised_type,
                 confidence=confidence,
                 source=source,
-                asset_role=(item.asset_role or "lead"),
+                asset_role=role,
                 estimated_total_hours=item.estimated_total_hours,
                 profile_shape=item.profile_shape,
-                label_confidence=item.label_confidence,
+                label_confidence=label_confidence,
                 requirement_source=requirement_source,
                 is_active=True,
                 auto_committed=auto_commit,
@@ -1229,50 +1239,6 @@ def _write_classifications(
                 fallback_used=fallback_used,
             )
         )
-        continue
-
-        # If the item-level classification resolved to a specific type, it wins
-        # over the raw AI output for the mapping row (consistency rule §17.13).
-        # The AISuggestionLog always records the raw AI output for audit purposes.
-        act_id_str = str(item.activity_id)
-        resolved_type = (resolved_classifications or {}).get(act_id_str)
-        if resolved_type and auto_commit and normalised_type != "none":
-            if resolved_type != normalised_type:
-                logger.debug(
-                    "Classification override for activity=%s: AI=%s → resolved=%s",
-                    item.activity_id, normalised_type, resolved_type,
-                )
-            mapping_asset_type = resolved_type
-        else:
-            mapping_asset_type = item.asset_type if auto_commit else None
-
-        mapping_rows.append(
-            ActivityAssetMapping(
-                id=uuid.uuid4(),
-                programme_activity_id=item.activity_id,
-                asset_type=mapping_asset_type,
-                confidence=confidence,
-                source=_normalize_mapping_source(item.source),
-                auto_committed=auto_commit,
-            )
-        )
-
-        suggestion_rows.append(
-            AISuggestionLog(
-                id=uuid.uuid4(),
-                activity_id=item.activity_id,
-                upload_id=upload_id,
-                suggested_asset_type=item.asset_type,
-                confidence=confidence,
-                accepted=auto_commit,
-                correction=None,
-                source=item.source,
-                pipeline_stage="classify_assets",
-                model_name=None if fallback_used else model_name,
-                fallback_used=fallback_used,
-            )
-        )
-
     for skipped_activity_id in classification.skipped:
         suggestion_rows.append(
             AISuggestionLog(

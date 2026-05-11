@@ -189,7 +189,7 @@ class ActivityWorkProfile(Base):
     activity_asset_mapping_id = Column(
         UUID(as_uuid=True),
         ForeignKey("activity_asset_mappings.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     item_id = Column(

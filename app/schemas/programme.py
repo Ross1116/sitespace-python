@@ -76,6 +76,7 @@ class MappingCorrectionRequest(BaseSchema):
     asset_type: str | None = Field(default=None, min_length=1, max_length=50)
     asset_role: str | None = Field(default=None, min_length=1, max_length=20)
     profile_shape: str | None = Field(default=None, min_length=1, max_length=50)
+    requirement_source: str | None = Field(default=None, min_length=1, max_length=20)
     manual_total_hours: float | None = Field(default=None, ge=0)
     manual_normalized_distribution: list[float] | None = None
 
@@ -112,6 +113,16 @@ class MappingCorrectionRequest(BaseSchema):
             raise ValueError("Invalid profile_shape")
         return normalized
 
+    @field_validator("requirement_source", mode="before")
+    @classmethod
+    def normalize_requirement_source(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        if normalized not in {"ai", "keyword", "manual", "imported_gold"}:
+            raise ValueError("requirement_source must be one of: ai, keyword, manual, imported_gold")
+        return normalized
+
     @field_validator("manual_normalized_distribution")
     @classmethod
     def validate_manual_distribution(cls, v: list[float] | None) -> list[float] | None:
@@ -133,6 +144,7 @@ class MappingCorrectionRequest(BaseSchema):
             self.asset_type is None
             and self.asset_role is None
             and self.profile_shape is None
+            and self.requirement_source is None
             and self.manual_total_hours is None
             and self.manual_normalized_distribution is None
         ):
@@ -148,6 +160,10 @@ class MappingCorrectionRequest(BaseSchema):
             if self.manual_total_hours == 0 and distribution_total > 1e-6:
                 raise ValueError(
                     "manual_normalized_distribution must be all zeros when manual_total_hours is zero"
+                )
+            if self.manual_total_hours > 0 and distribution_total <= 1e-6:
+                raise ValueError(
+                    "manual_normalized_distribution must contain positive weights when manual_total_hours is positive"
                 )
 
         return self

@@ -709,10 +709,10 @@ def classify_item_standalone(
                 except Exception as exc:
                     logger.warning("classify_item_standalone AI call failed: %s", exc)
                     return None
-                for item in raw.get("classifications") or []:
+                for item in raw.get("requirements") or raw.get("classifications") or []:
                     if str(item.get("activity_id")) == fake_id:
                         asset_type = str(item.get("asset_type") or "").strip().lower()
-                        confidence = _normalize_classification_confidence(item.get("confidence"))
+                        confidence = _confidence_tier_from_score(item.get("confidence"))
                         if asset_type in valid_types and confidence in {"high", "medium"}:
                             return asset_type, confidence
                 return None
@@ -1214,9 +1214,8 @@ async def _classify_batch(
             if isinstance(item, dict):
                 requirements.append(item)
         for item in data.get("asset_requirements") or []:
-            if isinstance(item, dict):
-                activity_id = item.get("activity_id") or data.get("activity_id")
-                requirements.append({**item, "activity_id": activity_id})
+            if isinstance(item, dict) and item.get("activity_id"):
+                requirements.append(item)
         for item in data.get("classifications") or []:
             if isinstance(item, dict):
                 requirements.append(item)
@@ -1463,15 +1462,15 @@ async def _classify_assets_real(
             for task in batch_tasks:
                 try:
                     batch_results.append(await task)
-                except Exception as exc:
-                    logger.warning("Batch classification task failed: %s", exc)
+                except (anthropic.APIError, asyncio.TimeoutError) as exc:
+                    logger.warning("Batch classification task failed: %s", exc, exc_info=True)
                     batch_results.append(exc)
 
     for result in batch_results:
         if isinstance(result, Exception):
             logger.warning("Batch result error (skipping batch): %s", result)
             continue
-        for item in result.get("requirements") or result.get("classifications", []):
+        for item in result.get("requirements", []):
             act_id = str(item.get("activity_id", ""))
             if act_id:
                 all_ai_results.setdefault(act_id, []).append(item)
@@ -1488,6 +1487,10 @@ async def _classify_assets_real(
         if rep_result is not None:
             for aid in dup_ids:
                 expanded[aid] = [{**item, "activity_id": aid} for item in rep_result]
+    # Every AI candidate should be represented by rep_to_ids; preserve any
+    # unexpected leftovers rather than silently discarding future response shapes.
+    for act_id, result_items in all_ai_results.items():
+        expanded.setdefault(act_id, result_items)
     all_ai_results = expanded
 
     requirements: list[AssetRequirementItem] = []
@@ -1545,257 +1548,6 @@ async def _classify_assets_real(
         batch_cost_usd=total_cost_usd,
         fallback_used=False,
     )
-
-    """
-    Classify activities via keyword pre-screening + Claude batched calls.
-
-    Pipeline:
-    1. Pre-screen with _KEYWORD_MAP (definite direct keyword hits)
-    2. Send remaining activities to Claude in batches of 100
-       — parallel for 500+ activities, sequential otherwise
-    3. Merge results:
-       - keyword + AI agree on same type → confidence "high"
-       - keyword match, AI diverges with low confidence → keyword wins (medium)
-       - keyword match, AI diverges with medium/high → AI wins
-       - AI only → use AI confidence/type as-is
-       - neither matched → skipped[]
-    """
-    if not activities:
-        return ClassificationResult(classifications=[], skipped=[], batch_tokens_used=0)
-
-    execution_context = _resolve_ai_execution_context(execution_context)
-    client = _get_async_client()
-    system_prompt, valid_types = _build_classification_prompt(project_assets)
-
-    # Step 1: Keyword pre-screening
-    # When project assets are provided, restrict keyword hits to types that
-    # actually exist in this project (normalised).
-    keyword_matched: dict[str, str] = {}   # activity_id → asset_type
-    ai_candidates: list[dict[str, Any]] = []
-
-    for act in activities:
-        act_id = str(act.get("id", ""))
-        matched_type = keyword_classify_activity_name(
-            str(act.get("name", "")),
-            valid_types=valid_types if project_assets else None,
-        )
-
-        if matched_type:
-            keyword_matched[act_id] = matched_type
-        else:
-            ai_candidates.append(act)
-
-    # Dedup AI candidates by normalised name: send one representative per unique
-    # name to the AI, then fan the result back to all activities sharing that name.
-    # Eliminates redundant calls for P6 day-step repetitions like
-    # "Day 7 - Commence Bubbledeck install" / "Day 8 - Continue Bubbledeck install".
-    norm_to_rep: dict[str, str] = {}       # normalised_name → representative act_id
-    rep_to_ids: dict[str, list[str]] = {}  # rep_id → all act_ids with same norm name
-    deduped_candidates: list[dict[str, Any]] = []
-
-    for act in ai_candidates:
-        act_id = str(act.get("id", ""))
-        norm = _normalize_for_dedup(str(act.get("name", "")))
-        if norm in norm_to_rep:
-            rep_to_ids[norm_to_rep[norm]].append(act_id)
-        else:
-            norm_to_rep[norm] = act_id
-            rep_to_ids[act_id] = [act_id]
-            deduped_candidates.append(act)
-
-    logger.info(
-        "Classification pre-screen: %d keyword-matched, %d AI candidates → %d unique (%d total)",
-        len(keyword_matched),
-        len(ai_candidates),
-        len(deduped_candidates),
-        len(activities),
-    )
-
-    # Step 2: Batch remaining through AI
-    BATCH_SIZE = AI_CLASSIFICATION_BATCH_SIZE
-    all_ai_results: dict[str, dict[str, Any]] = {}  # activity_id → result item
-    total_tokens = 0
-    total_cost_usd: Decimal | None = None
-
-    if deduped_candidates:
-        batches = [
-            deduped_candidates[i:i + BATCH_SIZE]
-            for i in range(0, len(deduped_candidates), BATCH_SIZE)
-        ]
-
-        if execution_context is not None and execution_context.suppress_ai:
-            batch_results = []
-        else:
-            batch_tasks = [
-                _classify_batch(
-                    batch,
-                    system_prompt,
-                    client,
-                    execution_context=execution_context,
-                )
-                for batch in batches
-            ]
-
-            if len(deduped_candidates) > AI_CLASSIFICATION_PARALLEL_THRESHOLD:
-                _sem = asyncio.Semaphore(AI_CLASSIFICATION_MAX_CONCURRENT_BATCHES)
-
-                async def _bounded(task: Coroutine[Any, Any, Any]) -> Any:
-                    async with _sem:
-                        return await task
-
-                batch_results = await asyncio.gather(
-                    *[_bounded(t) for t in batch_tasks],
-                    return_exceptions=True,
-                )
-            else:
-                batch_results = []
-                for task in batch_tasks:
-                    if execution_context is not None and execution_context.suppress_ai:
-                        break
-                    try:
-                        batch_results.append(await task)
-                    except Exception as exc:
-                        logger.warning("Batch classification task failed: %s", exc)
-                        batch_results.append(exc)
-
-        for result in batch_results:
-            if isinstance(result, Exception):
-                logger.warning("Batch result error (skipping batch): %s", result)
-                continue
-            for item in result.get("classifications", []):
-                act_id = str(item.get("activity_id", ""))
-                if act_id:
-                    all_ai_results[act_id] = item
-            # Low-confidence items returned in skipped[]
-            for skipped_id in result.get("skipped", []):
-                sid = str(skipped_id)
-                if sid and sid not in all_ai_results:
-                    all_ai_results[sid] = {
-                        "activity_id": sid,
-                        "asset_type": None,
-                        "confidence": "low",
-                    }
-            total_tokens += result.get("tokens_used", 0)
-            total_cost_usd = sum_ai_costs(total_cost_usd, result.get("cost_usd"))
-
-        # Fan-out: copy representative result to all duplicate activities
-        expanded: dict[str, dict[str, Any]] = {}
-        for rep_id, dup_ids in rep_to_ids.items():
-            rep_result = all_ai_results.get(rep_id)
-            if rep_result is not None:
-                for aid in dup_ids:
-                    expanded[aid] = rep_result
-        all_ai_results = expanded
-
-    # Step 3: Merge keyword + AI results
-    classifications: list[ClassificationItem] = []
-    skipped: list[str] = []
-    processed_ids: set[str] = set()
-
-    for act in activities:
-        act_id = str(act.get("id", ""))
-        if act_id in processed_ids:
-            continue
-        processed_ids.add(act_id)
-
-        keyword_type = keyword_matched.get(act_id)
-        ai_result = all_ai_results.get(act_id)
-
-        if keyword_type and ai_result:
-            ai_type = ai_result.get("asset_type")
-            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
-
-            if ai_type == keyword_type and ai_type in valid_types:
-                # Both agree — highest confidence
-                classifications.append(ClassificationItem(
-                    activity_id=act_id,
-                    asset_type=keyword_type,
-                    confidence="high",
-                    source="keyword_boost",
-                    reasoning=ai_result.get("reasoning"),
-                ))
-            elif ai_type and ai_type in valid_types and ai_type != "none":
-                if ai_confidence == "low":
-                    # Low-confidence AI disagreement: trust the keyword
-                    classifications.append(ClassificationItem(
-                        activity_id=act_id,
-                        asset_type=keyword_type,
-                        confidence="medium",
-                        source="keyword_boost",
-                    ))
-                else:
-                    # AI is confident and disagrees — AI wins
-                    classifications.append(ClassificationItem(
-                        activity_id=act_id,
-                        asset_type=ai_type,
-                        confidence=ai_confidence,
-                        source="ai",
-                        reasoning=ai_result.get("reasoning"),
-                    ))
-            else:
-                # AI returned none/invalid — fall back to keyword
-                classifications.append(ClassificationItem(
-                    activity_id=act_id,
-                    asset_type=keyword_type,
-                    confidence="medium",
-                    source="keyword_boost",
-                ))
-
-        elif keyword_type:
-            # Keyword match only (AI did not process this activity)
-            classifications.append(ClassificationItem(
-                activity_id=act_id,
-                asset_type=keyword_type,
-                confidence="medium",
-                source="keyword_boost",
-            ))
-
-        elif ai_result:
-            ai_type = ai_result.get("asset_type")
-            ai_confidence = _normalize_classification_confidence(ai_result.get("confidence"))
-
-            if not ai_type or ai_type not in valid_types:
-                skipped.append(act_id)
-            elif ai_type == "none":
-                if ai_confidence not in {"medium", "high"}:
-                    skipped.append(act_id)
-                else:
-                    classifications.append(ClassificationItem(
-                        activity_id=act_id,
-                        asset_type="none",
-                        confidence=ai_confidence,
-                        source=str(ai_result.get("source") or "ai"),
-                        reasoning=ai_result.get("reasoning"),
-                    ))
-            elif ai_confidence == "low":
-                skipped.append(act_id)
-            else:
-                classifications.append(ClassificationItem(
-                    activity_id=act_id,
-                    asset_type=ai_type,
-                    confidence=ai_confidence,
-                    source=str(ai_result.get("source") or "ai"),
-                    reasoning=ai_result.get("reasoning"),
-                ))
-
-        else:
-            skipped.append(act_id)
-
-    logger.info(
-        "Classification complete: %d classified, %d skipped, %d tokens used",
-        len(classifications),
-        len(skipped),
-        total_tokens,
-    )
-
-    return ClassificationResult(
-        classifications=classifications,
-        skipped=skipped,
-        batch_tokens_used=total_tokens,
-        batch_cost_usd=total_cost_usd,
-        fallback_used=False,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Subcontractor asset suggestion helper

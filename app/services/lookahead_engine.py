@@ -963,7 +963,10 @@ def calculate_lookahead_for_project(
     previous_rows = previous_data.get("rows", [])
     previous_activity_count = int(previous_data.get("activity_count", 0))
     previous_mapping_set = {
-        (entry.get("activity_id", ""), entry.get("asset_type", ""))
+        (
+            entry.get("activity_asset_mapping_id") or entry.get("activity_id", ""),
+            entry.get("asset_type", ""),
+        )
         for entry in previous_data.get("mapping_set", [])
     }
 
@@ -1053,8 +1056,8 @@ def calculate_lookahead_for_project(
             "excluded_booking_count": int(booking_diagnostics.get("excluded_booking_count", 0)),
         },
         "mapping_set": [
-            {"activity_id": activity_id, "asset_type": asset_type}
-            for activity_id, asset_type in sorted(current_mapping_set)
+            {"activity_asset_mapping_id": mapping_id, "asset_type": asset_type}
+            for mapping_id, asset_type in sorted(current_mapping_set)
         ],
     }
     snapshot = _upsert_snapshot_with_rows(

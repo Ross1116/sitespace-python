@@ -81,4 +81,5 @@ def test_hour_backtest_scores_each_reviewed_requirement_row():
     assert len(cases) == 1
     assert cases[0].asset_type == "concrete_pump"
     assert cases[0].reviewed_total_hours == 8.0
-    assert cases[0].absolute_error >= 0.0
+    assert cases[0].fallback_total_hours > 0.0
+    assert abs(cases[0].absolute_error - abs(cases[0].fallback_total_hours - 8.0)) < 1e-6

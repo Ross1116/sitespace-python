@@ -2299,12 +2299,18 @@ def _write_activity_profile(
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ActivityWorkProfile:
+    if activity_asset_mapping_id is None:
+        raise ValueError("activity_asset_mapping_id is required for ActivityWorkProfile writes")
+
     awp = (
         db.query(ActivityWorkProfile)
         .filter(
             ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
             if activity_asset_mapping_id is not None
-            else ActivityWorkProfile.activity_id == activity_id
+            else (
+                (ActivityWorkProfile.activity_id == activity_id)
+                & ActivityWorkProfile.activity_asset_mapping_id.is_(None)
+            )
         )
         .one_or_none()
     )
@@ -2339,7 +2345,10 @@ def _write_activity_profile(
                 .filter(
                     ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
                     if activity_asset_mapping_id is not None
-                    else ActivityWorkProfile.activity_id == activity_id
+                    else (
+                        (ActivityWorkProfile.activity_id == activity_id)
+                        & ActivityWorkProfile.activity_asset_mapping_id.is_(None)
+                    )
                 )
                 .one_or_none()
             )

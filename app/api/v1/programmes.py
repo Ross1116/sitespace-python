@@ -76,6 +76,7 @@ from ...services.programme_upload_service import (
 from ...services.correction_service import (
     MappingCorrectionValidationError,
     apply_mapping_correction,
+    create_manual_activity_requirement,
     load_mapping_correction_context,
 )
 
@@ -732,13 +733,7 @@ def get_activity_booking_context(
     )
     if activity_asset_mapping_id is None and len(mappings) > 1:
         lead_mappings = [m for m in mappings if (m.asset_role or "lead") == "lead"]
-        if len(lead_mappings) == 1:
-            mappings = lead_mappings
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail="Activity has multiple asset requirements. Provide activity_asset_mapping_id.",
-            )
+        mappings = lead_mappings or mappings
     mapping = mappings[0] if mappings else None
     if mapping is None or not mapping.asset_type:
         raise HTTPException(status_code=409, detail="Activity does not have a resolved asset type.")
@@ -1097,7 +1092,7 @@ def get_unclassified_activity_mappings(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> list[ActivityMappingResponse]:
-    """Return low-confidence or unresolved mapping rows for UI badge counts and triage."""
+    """Return low-confidence, resolved mapping rows for UI badge counts and triage."""
     upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
@@ -1147,25 +1142,32 @@ def add_activity_asset_requirement(
     if not payload.asset_type:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="asset_type is required")
 
-    mapping = ActivityAssetMapping(
-        id=uuid.uuid4(),
-        programme_activity_id=activity.id,
+    existing = (
+        db.query(ActivityAssetMapping)
+        .filter(
+            ActivityAssetMapping.programme_activity_id == activity.id,
+            ActivityAssetMapping.asset_type == payload.asset_type,
+            ActivityAssetMapping.is_active.is_(True),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An active requirement for this activity and asset type already exists.",
+        )
+
+    mapping = create_manual_activity_requirement(
+        db,
+        activity=activity,
+        upload=upload,
+        corrected_by_user_id=current_user.id,
         asset_type=payload.asset_type,
-        confidence="high",
-        source="manual",
         asset_role=payload.asset_role or "lead",
         estimated_total_hours=payload.manual_total_hours,
         profile_shape=payload.profile_shape,
-        label_confidence=1.0,
-        requirement_source="manual",
-        is_active=True,
-        auto_committed=False,
-        manually_corrected=True,
-        corrected_by=current_user.id,
-        corrected_at=datetime.now(timezone.utc),
+        requirement_source=payload.requirement_source or "manual",
     )
-    db.add(mapping)
-    db.flush()
     db.commit()
     db.refresh(mapping)
     return _serialize_mapping(mapping, activity.name, activity.item_id)
@@ -1181,10 +1183,28 @@ def deactivate_activity_asset_requirement(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> ActivityMappingResponse:
+    """Deactivate a requirement only when it has no booking group or linked bookings."""
     context = load_mapping_correction_context(db, mapping_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Mapping not found")
     _check_project_access(context.upload.project_id, current_user, db)
+
+    linked_group = (
+        db.query(ActivityBookingGroup)
+        .filter(ActivityBookingGroup.activity_asset_mapping_id == context.mapping.id)
+        .first()
+    )
+    if linked_group is not None:
+        linked_booking_count = (
+            db.query(func.count(SlotBooking.id))
+            .filter(SlotBooking.booking_group_id == linked_group.id)
+            .scalar()
+        )
+        detail = "Cannot deactivate an asset requirement that has a booking group."
+        if int(linked_booking_count or 0) > 0:
+            detail = "Cannot deactivate an asset requirement with linked bookings."
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
     context.mapping.is_active = False
     context.mapping.manually_corrected = True
     context.mapping.corrected_by = current_user.id

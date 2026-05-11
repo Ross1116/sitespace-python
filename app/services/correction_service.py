@@ -237,6 +237,66 @@ def _upsert_item_asset_requirement_memory(
     return requirement
 
 
+def create_manual_activity_requirement(
+    db: Session,
+    *,
+    activity: ProgrammeActivity,
+    upload: ProgrammeUpload,
+    corrected_by_user_id: uuid.UUID,
+    asset_type: str,
+    asset_role: str = "lead",
+    estimated_total_hours: float | None = None,
+    profile_shape: str | None = None,
+    requirement_source: str = "manual",
+    canonical_item: Item | None = None,
+) -> ActivityAssetMapping:
+    mapping = ActivityAssetMapping(
+        id=uuid.uuid4(),
+        programme_activity_id=activity.id,
+        asset_type=asset_type,
+        confidence="high",
+        source="manual",
+        asset_role=asset_role,
+        estimated_total_hours=estimated_total_hours,
+        profile_shape=profile_shape,
+        label_confidence=1.0,
+        requirement_source=requirement_source,
+        is_active=True,
+        auto_committed=False,
+        manually_corrected=True,
+        corrected_by=corrected_by_user_id,
+        corrected_at=datetime.now(timezone.utc),
+    )
+    db.add(mapping)
+
+    memory_item = canonical_item or _resolve_canonical_item(db, activity.item_id)
+    if memory_item is not None:
+        _upsert_item_asset_requirement_memory(
+            db,
+            item_id=memory_item.id,
+            asset_type=asset_type,
+            role=asset_role,
+            confidence="high",
+            label_confidence=1.0,
+            corrected_by_user_id=corrected_by_user_id,
+        )
+
+    db.add(
+        AISuggestionLog(
+            id=uuid.uuid4(),
+            activity_id=activity.id,
+            upload_id=upload.id,
+            suggested_asset_type=None,
+            confidence="high",
+            accepted=False,
+            correction=asset_type,
+            source="manual",
+            pipeline_stage="manual_requirement_add",
+        )
+    )
+    return mapping
+
+
 def apply_mapping_correction(
     db: Session,
     *,
@@ -307,7 +367,6 @@ def apply_mapping_correction(
     )
     should_materialize_profile = (
         (manual_total_hours is not None and manual_normalized_distribution is not None)
-        or context.activity_profile is not None
     )
     if should_materialize_profile and profile_item_id is None:
         raise MappingCorrectionValidationError(
