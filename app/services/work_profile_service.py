@@ -2284,7 +2284,7 @@ async def _precompute_validated_ai_proposal(
 def _write_activity_profile(
     db: Session,
     activity_id: uuid.UUID,
-    activity_asset_mapping_id: uuid.UUID | None,
+    activity_asset_mapping_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -2306,11 +2306,6 @@ def _write_activity_profile(
         db.query(ActivityWorkProfile)
         .filter(
             ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
-            if activity_asset_mapping_id is not None
-            else (
-                (ActivityWorkProfile.activity_id == activity_id)
-                & ActivityWorkProfile.activity_asset_mapping_id.is_(None)
-            )
         )
         .one_or_none()
     )
@@ -2344,11 +2339,6 @@ def _write_activity_profile(
                 db.query(ActivityWorkProfile)
                 .filter(
                     ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
-                    if activity_asset_mapping_id is not None
-                    else (
-                        (ActivityWorkProfile.activity_id == activity_id)
-                        & ActivityWorkProfile.activity_asset_mapping_id.is_(None)
-                    )
                 )
                 .one_or_none()
             )
@@ -2588,7 +2578,7 @@ def write_manual_activity_profile(
     db: Session,
     *,
     activity_id: uuid.UUID,
-    activity_asset_mapping_id: uuid.UUID | None = None,
+    activity_asset_mapping_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -3707,7 +3697,7 @@ def resolve_work_profile(
     asset_type: str,
     duration_days: int,
     activity_name: str,
-    activity_asset_mapping_id: uuid.UUID | None = None,
+    activity_asset_mapping_id: uuid.UUID,
     asset_role: str | None = None,
     seed_total_hours: float | None = None,
     seed_profile_shape: str | None = None,

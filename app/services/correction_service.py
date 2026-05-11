@@ -22,10 +22,13 @@ from .identity_service import follow_item_redirect
 from .work_profile_service import (
     build_compressed_context,
     build_context_key,
+    derive_distribution,
     duration_bucket_for_days,
     invalidate_context_profile,
     prepare_manual_work_profile,
     rebuild_global_knowledge_entry,
+    _fallback_shape_weights,
+    _profile_shape_to_fallback_family,
     upsert_manual_context_profile,
     write_manual_activity_profile,
 )
@@ -33,6 +36,10 @@ from .work_profile_service import (
 
 class MappingCorrectionValidationError(ValueError):
     """Raised when a Stage 8 correction payload cannot be applied safely."""
+
+
+_ALLOWED_ASSET_ROLES = {"lead", "support", "incidental"}
+_ALLOWED_REQUIREMENT_SOURCES = {"ai", "keyword", "manual", "imported_gold"}
 
 
 def apply_manual_classification(
@@ -250,6 +257,13 @@ def create_manual_activity_requirement(
     requirement_source: str = "manual",
     canonical_item: Item | None = None,
 ) -> ActivityAssetMapping:
+    if asset_role not in _ALLOWED_ASSET_ROLES:
+        raise MappingCorrectionValidationError("asset_role must be one of: lead, support, incidental")
+    if requirement_source not in _ALLOWED_REQUIREMENT_SOURCES:
+        raise MappingCorrectionValidationError(
+            "requirement_source must be one of: ai, keyword, manual, imported_gold"
+        )
+
     mapping = ActivityAssetMapping(
         id=uuid.uuid4(),
         programme_activity_id=activity.id,
@@ -305,9 +319,17 @@ def apply_mapping_correction(
     asset_type: str | None = None,
     asset_role: str | None = None,
     profile_shape: str | None = None,
+    requirement_source: str | None = None,
     manual_total_hours: float | None = None,
     manual_normalized_distribution: list[float] | None = None,
 ) -> MappingCorrectionResult:
+    if asset_role is not None and asset_role not in _ALLOWED_ASSET_ROLES:
+        raise MappingCorrectionValidationError("asset_role must be one of: lead, support, incidental")
+    if requirement_source is not None and requirement_source not in _ALLOWED_REQUIREMENT_SOURCES:
+        raise MappingCorrectionValidationError(
+            "requirement_source must be one of: ai, keyword, manual, imported_gold"
+        )
+
     corrected_asset_type = asset_type or context.mapping.asset_type
     if not corrected_asset_type:
         raise MappingCorrectionValidationError(
@@ -331,7 +353,19 @@ def apply_mapping_correction(
     if manual_total_hours is not None:
         context.mapping.estimated_total_hours = manual_total_hours
     context.mapping.label_confidence = 1.0
-    context.mapping.requirement_source = "manual"
+    if requirement_source is not None:
+        context.mapping.requirement_source = requirement_source
+    elif any(
+        value is not None
+        for value in (
+            asset_type,
+            asset_role,
+            profile_shape,
+            manual_total_hours,
+            manual_normalized_distribution,
+        )
+    ):
+        context.mapping.requirement_source = "manual"
     context.mapping.is_active = True
     context.mapping.source = "manual"
     context.mapping.manually_corrected = True
@@ -496,6 +530,63 @@ def apply_mapping_correction(
             normalized_distribution=prepared.normalized_distribution,
             context_hash=context_hash,
             context_profile_id=context_profile.id if context_profile is not None else None,
+        )
+    elif (
+        context.activity_profile is not None
+        and profile_item_id is not None
+        and any(value is not None for value in (asset_type, asset_role, profile_shape))
+    ):
+        compressed_context = build_compressed_context(
+            context.activity.name or "",
+            level_name=context.activity.level_name,
+            zone_name=context.activity.zone_name,
+        )
+        context_hash = build_context_key(
+            profile_item_id,
+            corrected_asset_type,
+            duration_days,
+            compressed_context,
+        )
+        previous_context_profile = context.context_profile
+        if previous_context_profile is not None and previous_context_profile.source != "manual":
+            old_global_key = (
+                previous_context_profile.item_id,
+                str(previous_context_profile.asset_type),
+                duration_bucket_for_days(int(previous_context_profile.duration_days or 0)),
+                int(previous_context_profile.context_version or 0),
+                int(previous_context_profile.inference_version or 0),
+            )
+            invalidate_context_profile(
+                previous_context_profile,
+                reason="metadata_correction",
+                superseded_by_profile_id=None,
+            )
+
+        existing_total_hours = float(context.activity_profile.total_hours or 0.0)
+        max_hours_per_day = get_max_hours_for_type(db, corrected_asset_type)
+        normalized_distribution = list(context.activity_profile.normalized_distribution_json or [])
+        shape_family = _profile_shape_to_fallback_family(profile_shape)
+        if shape_family is not None:
+            normalized_distribution = _fallback_shape_weights(shape_family, duration_days)
+        elif len(normalized_distribution) != duration_days:
+            normalized_distribution = _fallback_shape_weights("steady", duration_days)
+        distribution = derive_distribution(
+            normalized_distribution,
+            existing_total_hours,
+            max_hours_per_day=max_hours_per_day,
+        )
+        activity_profile = write_manual_activity_profile(
+            db,
+            activity_id=context.activity.id,
+            activity_asset_mapping_id=context.mapping.id,
+            item_id=profile_item_id,
+            asset_type=corrected_asset_type,
+            duration_days=duration_days,
+            total_hours=existing_total_hours,
+            distribution=distribution,
+            normalized_distribution=normalized_distribution,
+            context_hash=context_hash,
+            context_profile_id=None,
         )
 
     db.flush()

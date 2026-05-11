@@ -721,6 +721,8 @@ def get_activity_booking_context(
         ActivityAssetMapping.asset_type.isnot(None),
         ActivityAssetMapping.is_active.is_(True),
     )
+    if is_subcontractor:
+        mapping_query = mapping_query.filter(ActivityAssetMapping.subcontractor_id == current_entity.id)
     if activity_asset_mapping_id is not None:
         mapping_query = mapping_query.filter(ActivityAssetMapping.id == activity_asset_mapping_id)
     mappings = (
@@ -735,6 +737,8 @@ def get_activity_booking_context(
         lead_mappings = [m for m in mappings if (m.asset_role or "lead") == "lead"]
         mappings = lead_mappings or mappings
     mapping = mappings[0] if mappings else None
+    if is_subcontractor and activity_asset_mapping_id is not None and mapping is None:
+        raise HTTPException(status_code=403, detail="You can only view your own assigned activities")
     if mapping is None or not mapping.asset_type:
         raise HTTPException(status_code=409, detail="Activity does not have a resolved asset type.")
 
@@ -1157,19 +1161,39 @@ def add_activity_asset_requirement(
             detail="An active requirement for this activity and asset type already exists.",
         )
 
-    mapping = create_manual_activity_requirement(
-        db,
-        activity=activity,
-        upload=upload,
-        corrected_by_user_id=current_user.id,
-        asset_type=payload.asset_type,
-        asset_role=payload.asset_role or "lead",
-        estimated_total_hours=payload.manual_total_hours,
-        profile_shape=payload.profile_shape,
-        requirement_source=payload.requirement_source or "manual",
-    )
-    db.commit()
-    db.refresh(mapping)
+    try:
+        mapping = create_manual_activity_requirement(
+            db,
+            activity=activity,
+            upload=upload,
+            corrected_by_user_id=current_user.id,
+            asset_type=payload.asset_type,
+            asset_role=payload.asset_role or "lead",
+            estimated_total_hours=payload.manual_total_hours,
+            profile_shape=payload.profile_shape,
+            requirement_source=payload.requirement_source or "manual",
+        )
+        db.commit()
+        db.refresh(mapping)
+    except MappingCorrectionValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not create requirement because it conflicts with existing data.",
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to add activity asset requirement for activity %s", activity_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to add activity asset requirement",
+        ) from exc
     return _serialize_mapping(mapping, activity.name, activity.item_id)
 
 
@@ -1247,6 +1271,7 @@ def correct_activity_mapping(
             asset_type=payload.asset_type,
             asset_role=payload.asset_role,
             profile_shape=payload.profile_shape,
+            requirement_source=payload.requirement_source,
             manual_total_hours=payload.manual_total_hours,
             manual_normalized_distribution=payload.manual_normalized_distribution,
         )

@@ -174,6 +174,7 @@ class TestWorkProfileAIHardening:
                 db,
                 project_id=project_id,
                 activity_id=uuid.uuid4(),
+                activity_asset_mapping_id=uuid.uuid4(),
                 item_id=uuid.uuid4(),
                 asset_type="concrete_pump",
                 duration_days=3,

@@ -1161,24 +1161,61 @@ async def _detect_structure_real(
         return fallback
 
 
-def _extract_partial_classifications(text: str) -> list[dict[str, str]]:
+def _extract_partial_classifications(text: str) -> list[dict[str, Any]]:
     """
-    Last-resort extraction: pull out any syntactically complete classification
-    objects from a truncated response.  Matches objects that have all four
-    required fields in the fixed order: activity_id, asset_type, confidence,
-    source (enforced by ``pattern`` via sequential named groups — objects with
-    fields in any other order will not match).
+    Last-resort extraction for truncated classification responses.
+
+    Supports both legacy classification rows and the multi-asset requirement
+    shape with numeric confidence and optional source.
     """
-    pattern = re.compile(
-        r'\{\s*'
-        r'"activity_id"\s*:\s*"(?P<activity_id>[^"]+)"\s*,\s*'
-        r'"asset_type"\s*:\s*"(?P<asset_type>[^"]+)"\s*,\s*'
-        r'"confidence"\s*:\s*"(?P<confidence>[^"]+)"\s*,\s*'
-        r'"source"\s*:\s*"(?P<source>[^"]+)"\s*'
-        r'\}',
+    object_pattern = re.compile(
+        r'\{[^{}]*(?:"activity_id"[^{}]*"asset_type"|"asset_type"[^{}]*"activity_id")[^{}]*\}',
         re.DOTALL,
     )
-    return [m.groupdict() for m in pattern.finditer(text)]
+
+    def _extract_string(obj: str, field: str) -> str | None:
+        match = re.search(rf'"{re.escape(field)}"\s*:\s*"(?P<value>[^"]+)"', obj)
+        return match.group("value") if match else None
+
+    def _extract_scalar(obj: str, field: str) -> str | float | None:
+        match = re.search(
+            rf'"{re.escape(field)}"\s*:\s*(?:"(?P<quoted>[^"]+)"|(?P<number>-?\d+(?:\.\d+)?))',
+            obj,
+        )
+        if not match:
+            return None
+        if match.group("quoted") is not None:
+            return match.group("quoted")
+        return float(match.group("number"))
+
+    partial: list[dict[str, Any]] = []
+    for match in object_pattern.finditer(text):
+        obj = match.group(0)
+        activity_id = _extract_string(obj, "activity_id")
+        asset_type = _extract_string(obj, "asset_type")
+        if not activity_id or not asset_type:
+            continue
+        row: dict[str, Any] = {
+            "activity_id": activity_id,
+            "asset_type": asset_type,
+            "source": _extract_string(obj, "source") or "ai",
+        }
+        confidence = _extract_scalar(obj, "label_confidence")
+        if confidence is None:
+            confidence = _extract_scalar(obj, "confidence")
+        if confidence is not None:
+            row["confidence"] = confidence
+        for field in ("asset_role", "role", "profile_shape", "reasoning"):
+            value = _extract_string(obj, field)
+            if value is not None:
+                row[field] = value
+        hours = _extract_scalar(obj, "estimated_total_hours")
+        if hours is None:
+            hours = _extract_scalar(obj, "estimated_hours")
+        if hours is not None:
+            row["estimated_total_hours"] = hours
+        partial.append(row)
+    return partial
 
 
 async def _classify_batch(
@@ -1462,7 +1499,7 @@ async def _classify_assets_real(
             for task in batch_tasks:
                 try:
                     batch_results.append(await task)
-                except (anthropic.APIError, asyncio.TimeoutError) as exc:
+                except Exception as exc:
                     logger.warning("Batch classification task failed: %s", exc, exc_info=True)
                     batch_results.append(exc)
 
@@ -1523,6 +1560,11 @@ async def _classify_assets_real(
                 reasoning=raw.get("reasoning"),
             )
             existing = merged.get(asset_type)
+            if existing is not None:
+                if existing.estimated_total_hours is None and candidate.estimated_total_hours is not None:
+                    existing.estimated_total_hours = candidate.estimated_total_hours
+                if not existing.profile_shape and candidate.profile_shape:
+                    existing.profile_shape = candidate.profile_shape
             if existing is None or (candidate.label_confidence or 0.0) >= (existing.label_confidence or 0.0):
                 if existing and existing.estimated_total_hours is not None and candidate.estimated_total_hours is None:
                     candidate.estimated_total_hours = existing.estimated_total_hours
