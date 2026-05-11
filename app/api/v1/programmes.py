@@ -120,6 +120,20 @@ def _serialize_mapping(
         item_id=item_id,
         activity_name=activity_name,
         asset_type=mapping.asset_type,
+        asset_role=getattr(mapping, "asset_role", None),
+        estimated_total_hours=(
+            float(getattr(mapping, "estimated_total_hours", None))
+            if getattr(mapping, "estimated_total_hours", None) is not None
+            else None
+        ),
+        profile_shape=getattr(mapping, "profile_shape", None),
+        label_confidence=(
+            float(getattr(mapping, "label_confidence", None))
+            if getattr(mapping, "label_confidence", None) is not None
+            else None
+        ),
+        requirement_source=getattr(mapping, "requirement_source", None),
+        is_active=bool(getattr(mapping, "is_active", True)),
         confidence=mapping.confidence,
         source=mapping.source,
         auto_committed=mapping.auto_committed,
@@ -660,6 +674,7 @@ def get_activities(
 )
 def get_activity_booking_context(
     activity_id: UUID,
+    activity_asset_mapping_id: UUID | None = None,
     selected_week_start: date | None = None,
     db: Session = Depends(get_db),
     current_entity: User | Subcontractor = Depends(
@@ -700,32 +715,44 @@ def get_activity_booking_context(
     else:
         _check_project_access(upload.project_id, current_entity, db)
 
-    mapping = (
-        db.query(ActivityAssetMapping)
-        .filter(
-            ActivityAssetMapping.programme_activity_id == activity_id,
-            ActivityAssetMapping.asset_type.isnot(None),
-        )
-        .order_by(
+    mapping_query = db.query(ActivityAssetMapping).filter(
+        ActivityAssetMapping.programme_activity_id == activity_id,
+        ActivityAssetMapping.asset_type.isnot(None),
+        ActivityAssetMapping.is_active.is_(True),
+    )
+    if activity_asset_mapping_id is not None:
+        mapping_query = mapping_query.filter(ActivityAssetMapping.id == activity_asset_mapping_id)
+    mappings = (
+        mapping_query.order_by(
             ActivityAssetMapping.manually_corrected.desc(),
             ActivityAssetMapping.corrected_at.desc().nulls_last(),
             ActivityAssetMapping.created_at.desc(),
         )
-        .first()
+        .all()
     )
+    if activity_asset_mapping_id is None and len(mappings) > 1:
+        lead_mappings = [m for m in mappings if (m.asset_role or "lead") == "lead"]
+        if len(lead_mappings) == 1:
+            mappings = lead_mappings
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Activity has multiple asset requirements. Provide activity_asset_mapping_id.",
+            )
+    mapping = mappings[0] if mappings else None
     if mapping is None or not mapping.asset_type:
         raise HTTPException(status_code=409, detail="Activity does not have a resolved asset type.")
 
     profile = (
         db.query(ActivityWorkProfile)
-        .filter(ActivityWorkProfile.activity_id == activity_id)
+        .filter(ActivityWorkProfile.activity_asset_mapping_id == mapping.id)
         .one_or_none()
     )
 
     requested_week_start = _normalize_week_start(selected_week_start)
     booking_group = (
         db.query(ActivityBookingGroup)
-        .filter(ActivityBookingGroup.programme_activity_id == activity_id)
+        .filter(ActivityBookingGroup.activity_asset_mapping_id == mapping.id)
         .first()
     )
 
@@ -856,6 +883,7 @@ def get_activity_booking_context(
 
     return ProgrammeActivityBookingContextResponse(
         activity_id=activity.id,
+        activity_asset_mapping_id=mapping.id,
         programme_upload_id=upload.id,
         project_id=upload.project_id,
         activity_name=activity.name,
@@ -875,6 +903,7 @@ def get_activity_booking_context(
             ActivityBookingGroupSummary(
                 id=booking_group.id,
                 programme_activity_id=booking_group.programme_activity_id,
+                activity_asset_mapping_id=booking_group.activity_asset_mapping_id,
                 expected_asset_type=booking_group.expected_asset_type,
                 selected_week_start=(
                     booking_group.selected_week_start.isoformat()
@@ -892,6 +921,7 @@ def get_activity_booking_context(
             LinkedBookingGroupSummary(
                 booking_group_id=booking_group.id,
                 programme_activity_id=booking_group.programme_activity_id,
+                activity_asset_mapping_id=booking_group.activity_asset_mapping_id,
                 expected_asset_type=booking_group.expected_asset_type,
                 selected_week_start=(
                     booking_group.selected_week_start.isoformat()
@@ -1047,7 +1077,10 @@ def get_activity_mappings(
     rows = (
         db.query(ActivityAssetMapping, ProgrammeActivity.name, ProgrammeActivity.item_id)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
-        .filter(ProgrammeActivity.programme_upload_id == upload_id)
+        .filter(
+            ProgrammeActivity.programme_upload_id == upload_id,
+            ActivityAssetMapping.is_active.is_(True),
+        )
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
         .all()
     )
@@ -1078,7 +1111,8 @@ def get_unclassified_activity_mappings(
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             ActivityAssetMapping.confidence == "low",
-            ActivityAssetMapping.asset_type.is_(None),
+            ActivityAssetMapping.asset_type.isnot(None),
+            ActivityAssetMapping.is_active.is_(True),
             ActivityAssetMapping.manually_corrected.is_(False),
         )
         .order_by(ProgrammeActivity.sort_order.asc().nulls_last(), ActivityAssetMapping.created_at.asc())
@@ -1089,6 +1123,77 @@ def get_unclassified_activity_mappings(
         for mapping, activity_name, item_id in rows
         if not looks_like_non_demand_heading(activity_name or "")
     ]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/programmes/activities/{activity_id}/requirements
+# ---------------------------------------------------------------------------
+
+@router.post("/activities/{activity_id}/requirements", response_model=ActivityMappingResponse)
+def add_activity_asset_requirement(
+    activity_id: UUID,
+    payload: MappingCorrectionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> ActivityMappingResponse:
+    activity = db.query(ProgrammeActivity).filter(ProgrammeActivity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    upload = db.query(ProgrammeUpload).filter(ProgrammeUpload.id == activity.programme_upload_id).first()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    _require_readable_upload(upload)
+    _check_project_access(upload.project_id, current_user, db)
+    if not payload.asset_type:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="asset_type is required")
+
+    mapping = ActivityAssetMapping(
+        id=uuid.uuid4(),
+        programme_activity_id=activity.id,
+        asset_type=payload.asset_type,
+        confidence="high",
+        source="manual",
+        asset_role=payload.asset_role or "lead",
+        estimated_total_hours=payload.manual_total_hours,
+        profile_shape=payload.profile_shape,
+        label_confidence=1.0,
+        requirement_source="manual",
+        is_active=True,
+        auto_committed=False,
+        manually_corrected=True,
+        corrected_by=current_user.id,
+        corrected_at=datetime.now(timezone.utc),
+    )
+    db.add(mapping)
+    db.flush()
+    db.commit()
+    db.refresh(mapping)
+    return _serialize_mapping(mapping, activity.name, activity.item_id)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/programmes/mappings/{mapping_id}
+# ---------------------------------------------------------------------------
+
+@router.delete("/mappings/{mapping_id}", response_model=ActivityMappingResponse)
+def deactivate_activity_asset_requirement(
+    mapping_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
+) -> ActivityMappingResponse:
+    context = load_mapping_correction_context(db, mapping_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    _check_project_access(context.upload.project_id, current_user, db)
+    context.mapping.is_active = False
+    context.mapping.manually_corrected = True
+    context.mapping.corrected_by = current_user.id
+    context.mapping.corrected_at = datetime.now(timezone.utc)
+    if context.activity_profile is not None:
+        db.delete(context.activity_profile)
+    db.commit()
+    db.refresh(context.mapping)
+    return _serialize_mapping(context.mapping, context.activity.name, context.activity.item_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1120,6 +1225,8 @@ def correct_activity_mapping(
             context=context,
             corrected_by_user_id=current_user.id,
             asset_type=payload.asset_type,
+            asset_role=payload.asset_role,
+            profile_shape=payload.profile_shape,
             manual_total_hours=payload.manual_total_hours,
             manual_normalized_distribution=payload.manual_normalized_distribution,
         )

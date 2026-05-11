@@ -299,8 +299,8 @@ class TestAiClassificationMerge:
              ):
             result = await _classify_assets_real(activities, project_assets=[])
 
-        assert [item.asset_type for item in result.classifications] == ["none"]
-        assert result.skipped == []
+        assert result.classifications == []
+        assert result.skipped == ["a1"]
 
 
 class TestAiUsagePricing:

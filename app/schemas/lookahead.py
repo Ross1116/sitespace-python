@@ -63,6 +63,7 @@ class LookaheadActivityCandidate(BaseSchema):
     """A single activity contributing to a lookahead week/asset-type row."""
 
     activity_id: UUID
+    activity_asset_mapping_id: UUID | None = None
     programme_upload_id: UUID
     activity_name: str
     start_date: str | None = None

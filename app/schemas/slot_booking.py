@@ -43,6 +43,7 @@ class BookingCreate(BookingBase):
     subcontractor_id: Optional[UUID] = None
     asset_id: UUID
     programme_activity_id: Optional[UUID] = None
+    activity_asset_mapping_id: Optional[UUID] = None
     selected_week_start: Optional[date] = None
     status: Optional[BookingStatus] = None
     comment: Optional[str] = Field(
@@ -168,6 +169,7 @@ class BookingResponse(BookingBase, TimestampSchema):
     source: Optional[str] = None
     booking_group_id: Optional[UUID] = None
     programme_activity_id: Optional[UUID] = None
+    activity_asset_mapping_id: Optional[UUID] = None
     programme_activity_name: Optional[str] = None
     expected_asset_type: Optional[str] = None
     is_modified: bool = False
@@ -239,6 +241,7 @@ class BulkBookingCreate(BaseSchema):
     asset_ids: List[UUID]
     booking_dates: List[date]
     programme_activity_id: Optional[UUID] = None
+    activity_asset_mapping_id: Optional[UUID] = None
     selected_week_start: Optional[date] = None
     start_time: time
     end_time: time

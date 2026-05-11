@@ -110,6 +110,7 @@ def build_eligible_activity_mapping_filters() -> tuple[object, ...]:
     return (
         ActivityAssetMapping.asset_type.isnot(None),
         ActivityAssetMapping.asset_type != "none",
+        ActivityAssetMapping.is_active.is_(True),
         or_(
             ActivityAssetMapping.auto_committed.is_(True),
             and_(
@@ -440,7 +441,7 @@ def _compute_demand_by_week_asset(
         db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload, ActivityWorkProfile)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
-        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
+        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_asset_mapping_id == ActivityAssetMapping.id)
         .filter(
             ProgrammeActivity.programme_upload_id == upload_id,
             *build_eligible_activity_mapping_filters(),
@@ -506,7 +507,7 @@ def _compute_demand_by_week_asset(
                 bucket_flags[key]["per_day_cap_repaired"] or repaired
             )
 
-        current_mapping_set.add((str(activity.id), mapping.asset_type))
+        current_mapping_set.add((str(mapping.id), mapping.asset_type))
 
     low_confidence_buckets: set[tuple[date, str]] = {
         key
@@ -1107,7 +1108,7 @@ def get_weekly_activity_candidates(
         db.query(ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload, ActivityWorkProfile)
         .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
-        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_id == ProgrammeActivity.id)
+        .outerjoin(ActivityWorkProfile, ActivityWorkProfile.activity_asset_mapping_id == ActivityAssetMapping.id)
         .filter(
             ProgrammeUpload.id == latest_upload.id,
             ActivityAssetMapping.asset_type == normalized_asset_type,
@@ -1117,7 +1118,7 @@ def get_weekly_activity_candidates(
     )
 
     booking_groups = {
-        group.programme_activity_id: group
+        group.activity_asset_mapping_id: group
         for group in (
             db.query(ActivityBookingGroup)
             .filter(ActivityBookingGroup.project_id == project_id)
@@ -1125,10 +1126,10 @@ def get_weekly_activity_candidates(
         )
     }
     linked_counts = dict(
-        db.query(ActivityBookingGroup.programme_activity_id, func.count(SlotBooking.id))
+        db.query(ActivityBookingGroup.activity_asset_mapping_id, func.count(SlotBooking.id))
         .outerjoin(SlotBooking, SlotBooking.booking_group_id == ActivityBookingGroup.id)
         .filter(ActivityBookingGroup.project_id == project_id)
-        .group_by(ActivityBookingGroup.programme_activity_id)
+        .group_by(ActivityBookingGroup.activity_asset_mapping_id)
         .all()
     )
     max_hours_by_type = _load_max_hours_by_type(
@@ -1165,10 +1166,12 @@ def get_weekly_activity_candidates(
         if overlap_hours <= 0:
             continue
 
-        booking_group = booking_groups.get(activity.id)
+        mapping_key = getattr(mapping, "id", activity.id)
+        booking_group = booking_groups.get(mapping_key)
         candidates.append(
             {
                 "activity_id": activity.id,
+                "activity_asset_mapping_id": getattr(mapping, "id", None),
                 "programme_upload_id": upload.id,
                 "activity_name": activity.name,
                 "start_date": activity.start_date.isoformat() if activity.start_date else None,
@@ -1179,7 +1182,7 @@ def get_weekly_activity_candidates(
                 "row_confidence": activity.row_confidence,
                 "sort_order": activity.sort_order,
                 "booking_group_id": booking_group.id if booking_group else None,
-                "linked_booking_count": int(linked_counts.get(activity.id, 0)),
+                "linked_booking_count": int(linked_counts.get(mapping_key, 0)),
             }
         )
 

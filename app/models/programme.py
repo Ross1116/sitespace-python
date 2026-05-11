@@ -134,6 +134,20 @@ class ProgrammeActivity(Base):
 
 class ActivityAssetMapping(Base):
     __tablename__ = "activity_asset_mappings"
+    __table_args__ = (
+        CheckConstraint(
+            "asset_role IS NULL OR asset_role IN ('lead', 'support', 'incidental')",
+            name="ck_activity_asset_mappings_asset_role",
+        ),
+        CheckConstraint(
+            "requirement_source IS NULL OR requirement_source IN ('ai', 'keyword', 'manual', 'imported_gold')",
+            name="ck_activity_asset_mappings_requirement_source",
+        ),
+        CheckConstraint(
+            "label_confidence IS NULL OR (label_confidence >= 0 AND label_confidence <= 1)",
+            name="ck_activity_asset_mappings_label_confidence",
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     programme_activity_id = Column(
@@ -147,6 +161,12 @@ class ActivityAssetMapping(Base):
     asset_type = Column(String(50), nullable=True)
     confidence = Column(String(10), nullable=False)   # high | medium | low
     source = Column(String(20), nullable=False)        # ai | keyword | manual
+    asset_role = Column(String(20), nullable=True)     # lead | support | incidental
+    estimated_total_hours = Column(Numeric(8, 2), nullable=True)
+    profile_shape = Column(String(50), nullable=True)
+    label_confidence = Column(Numeric(4, 3), nullable=True)
+    requirement_source = Column(String(20), nullable=True)  # ai | keyword | manual | imported_gold
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     auto_committed = Column(Boolean, nullable=False, default=False)
     manually_corrected = Column(Boolean, nullable=False, default=False)
     corrected_by = Column(
@@ -175,7 +195,7 @@ class ActivityAssetMapping(Base):
 class ActivityBookingGroup(Base):
     __tablename__ = "activity_booking_groups"
     __table_args__ = (
-        UniqueConstraint("programme_activity_id", name="uq_activity_booking_groups_activity"),
+        UniqueConstraint("activity_asset_mapping_id", name="uq_activity_booking_groups_mapping"),
         CheckConstraint(
             "origin_source IN ('activity_row', 'lookahead_week_row')",
             name="ck_activity_booking_groups_origin_source",
@@ -193,6 +213,12 @@ class ActivityBookingGroup(Base):
         UUID(as_uuid=True),
         ForeignKey("programme_activities.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    activity_asset_mapping_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_asset_mappings.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     expected_asset_type = Column(String(50), nullable=False)
@@ -215,6 +241,7 @@ class ActivityBookingGroup(Base):
 
     project = relationship("SiteProject", foreign_keys=[project_id])
     activity = relationship("ProgrammeActivity", foreign_keys=[programme_activity_id])
+    activity_asset_mapping = relationship("ActivityAssetMapping", foreign_keys=[activity_asset_mapping_id])
     bookings = relationship("SlotBooking", back_populates="booking_group")
 
     def __repr__(self) -> str:

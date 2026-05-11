@@ -122,9 +122,9 @@ class TestMappingAssetType:
         mappings, _ = _run(_result(_item("forklift", "medium")))
         assert mappings[0].asset_type == "forklift"
 
-    def test_low_confidence_nulls_asset_type(self):
+    def test_low_confidence_preserves_real_asset_type(self):
         mappings, _ = _run(_result(_item("crane", "low")))
-        assert mappings[0].asset_type is None
+        assert mappings[0].asset_type == "crane"
 
     def test_asset_type_lowercased_and_stripped(self):
         # ai_service normalises before calling _write_classifications,
@@ -138,23 +138,15 @@ class TestMappingAssetType:
 # ---------------------------------------------------------------------------
 
 class TestNoneAssetTypeHandling:
-    def test_none_asset_type_is_written_as_zero_demand_mapping(self):
+    def test_none_asset_type_creates_no_demand_mapping(self):
         mappings, suggestions = _run(_result(_item("none", "high")))
-        assert len(mappings) == 1
-        assert mappings[0].asset_type == "none"
-        assert mappings[0].auto_committed is True
-        assert len(suggestions) == 1
-        assert suggestions[0].suggested_asset_type == "none"
-        assert suggestions[0].accepted is True
+        assert mappings == []
+        assert suggestions == []
 
-    def test_none_low_confidence_is_not_auto_committed(self):
+    def test_none_low_confidence_creates_no_demand_mapping(self):
         mappings, suggestions = _run(_result(_item("none", "low")))
-        assert len(mappings) == 1
-        assert mappings[0].asset_type is None
-        assert mappings[0].auto_committed is False
-        assert len(suggestions) == 1
-        assert suggestions[0].suggested_asset_type == "none"
-        assert suggestions[0].accepted is False
+        assert mappings == []
+        assert suggestions == []
 
     def test_empty_asset_type_produces_no_rows(self):
         mappings, suggestions = _run(_result(_item("", "high")))
@@ -167,14 +159,14 @@ class TestNoneAssetTypeHandling:
         assert mappings == []
         assert suggestions == []
 
-    def test_mixed_valid_and_none_all_written(self):
+    def test_mixed_valid_and_none_writes_only_real_requirements(self):
         mappings, suggestions = _run(_result(
             _item("crane", "high"),
             _item("none", "high"),
             _item("forklift", "medium"),
         ))
-        assert len(mappings) == 3
-        assert len(suggestions) == 3
+        assert len(mappings) == 2
+        assert len(suggestions) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -182,26 +174,25 @@ class TestNoneAssetTypeHandling:
 # ---------------------------------------------------------------------------
 
 class TestSkippedActivities:
-    def test_skipped_produces_mapping_row(self):
+    def test_skipped_produces_no_mapping_row(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
-        assert len(mappings) == 1
-        assert mappings[0].programme_activity_id == act_id
+        assert mappings == []
 
     def test_skipped_mapping_not_auto_committed(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
-        assert mappings[0].auto_committed is False
+        assert mappings == []
 
     def test_skipped_mapping_asset_type_is_none(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
-        assert mappings[0].asset_type is None
+        assert mappings == []
 
     def test_skipped_mapping_confidence_is_low(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
-        assert mappings[0].confidence == "low"
+        assert mappings == []
 
     def test_skipped_produces_suggestion_row(self):
         act_id = str(uuid.uuid4())

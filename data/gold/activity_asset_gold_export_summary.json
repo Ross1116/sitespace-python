@@ -1,0 +1,52 @@
+{
+  "activity_summary_rows": 165,
+  "asset_role_counts": {
+    "incidental": 121,
+    "lead": 204,
+    "support": 22
+  },
+  "candidate_rows": 370,
+  "candidate_status_counts": {
+    "accepted": 326,
+    "corrected": 21,
+    "dropped": 23
+  },
+  "changed_field_counts": {
+    "confidence": 40,
+    "estimated_hours": 9,
+    "profile_shape": 1,
+    "role": 1,
+    "type": 6
+  },
+  "dropped_generated_asset_type_counts": {
+    "concrete_pump": 1,
+    "ewp": 2,
+    "forklift": 6,
+    "loading_bay": 2,
+    "telehandler": 12
+  },
+  "multi_asset_activity_rows": 154,
+  "multilabel_wide_rows": 165,
+  "no_asset_activity_rows": 3,
+  "outputs": [
+    "activity_asset_gold_requirements_multiasset.csv",
+    "activity_asset_gold_candidate_review.csv",
+    "activity_asset_gold_activity_multiasset_summary.csv",
+    "activity_asset_gold_multilabel_wide.csv",
+    "activity_asset_gold_export_summary.json"
+  ],
+  "positive_asset_type_counts": {
+    "compactor": 1,
+    "concrete_pump": 70,
+    "crane": 65,
+    "ewp": 51,
+    "excavator": 1,
+    "forklift": 40,
+    "hoist": 14,
+    "loading_bay": 12,
+    "telehandler": 93
+  },
+  "positive_requirement_rows": 347,
+  "reviewed_activity_rows": 165,
+  "single_asset_activity_rows": 8
+}
