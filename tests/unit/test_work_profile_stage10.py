@@ -534,7 +534,7 @@ def test_resolve_work_profile_support_incidental_reduces_hours_with_cached_profi
     assert write_mock.call_args.kwargs["total_hours"] == expected_hours
     assert sum(write_mock.call_args.kwargs["distribution"]) == expected_hours
     assert write_mock.call_args.kwargs["source"] == "cache"
-    assert write_mock.call_args.kwargs["context_profile_id"] == cached.id
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
 
 
 def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():

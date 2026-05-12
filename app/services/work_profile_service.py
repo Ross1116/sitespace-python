@@ -4061,6 +4061,7 @@ def resolve_work_profile(
             final_hours,
             max_hours_per_day=preflight.max_hours_per_day,
         )
+        context_profile_id = None
 
     result = validate_stage_d(
         final_hours, distribution, norm_dist,
