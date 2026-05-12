@@ -308,6 +308,14 @@ class ItemAssetRequirementEvent(Base):
             "event_type IN ('created','confirmed','corrected','deactivated','merged')",
             name="ck_item_asset_requirement_events_type",
         ),
+        CheckConstraint(
+            "old_role IS NULL OR old_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_old_role",
+        ),
+        CheckConstraint(
+            "new_role IS NULL OR new_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_new_role",
+        ),
     )
 
     item = relationship("Item", foreign_keys=[item_id], back_populates="asset_requirement_events")

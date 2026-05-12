@@ -40,6 +40,14 @@ def upgrade() -> None:
         "requirement_source IS NULL OR requirement_source IN ('ai', 'keyword', 'manual', 'imported_gold')",
     )
     op.create_check_constraint(
+        "ck_activity_asset_mappings_profile_shape",
+        "activity_asset_mappings",
+        (
+            "profile_shape IS NULL OR profile_shape IN "
+            "('single_day', 'flat', 'front_loaded', 'back_loaded', 'bell', 'inverse_bell', 'staged')"
+        ),
+    )
+    op.create_check_constraint(
         "ck_activity_asset_mappings_label_confidence",
         "activity_asset_mappings",
         "label_confidence IS NULL OR (label_confidence >= 0 AND label_confidence <= 1)",
@@ -261,6 +269,19 @@ def upgrade() -> None:
         "activity_booking_groups",
         ["activity_asset_mapping_id"],
     )
+    op.create_unique_constraint(
+        "uq_activity_asset_mappings_activity_id_pair",
+        "activity_asset_mappings",
+        ["programme_activity_id", "id"],
+    )
+    op.create_foreign_key(
+        "fk_prog_booking_groups_activity_asset_pair",
+        "activity_booking_groups",
+        "activity_asset_mappings",
+        ["programme_activity_id", "activity_asset_mapping_id"],
+        ["programme_activity_id", "id"],
+        ondelete="CASCADE",
+    )
 
     op.create_table(
         "item_asset_requirements",
@@ -322,6 +343,14 @@ def upgrade() -> None:
             "event_type IN ('created','confirmed','corrected','deactivated','merged')",
             name="ck_item_asset_requirement_events_type",
         ),
+        sa.CheckConstraint(
+            "old_role IS NULL OR old_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_old_role",
+        ),
+        sa.CheckConstraint(
+            "new_role IS NULL OR new_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_new_role",
+        ),
     )
     op.create_index(op.f("ix_item_asset_requirement_events_item_id"), "item_asset_requirement_events", ["item_id"])
     op.create_index(
@@ -339,7 +368,9 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_item_asset_requirements_item_id"), table_name="item_asset_requirements")
     op.drop_table("item_asset_requirements")
 
+    op.drop_constraint("fk_prog_booking_groups_activity_asset_pair", "activity_booking_groups", type_="foreignkey")
     op.drop_constraint("uq_activity_booking_groups_mapping", "activity_booking_groups", type_="unique")
+    op.drop_constraint("uq_activity_asset_mappings_activity_id_pair", "activity_asset_mappings", type_="unique")
     op.alter_column(
         "activity_booking_groups",
         "activity_asset_mapping_id",
@@ -372,6 +403,7 @@ def downgrade() -> None:
     op.drop_column("activity_work_profiles", "activity_asset_mapping_id")
 
     op.drop_constraint("ck_activity_asset_mappings_label_confidence", "activity_asset_mappings", type_="check")
+    op.drop_constraint("ck_activity_asset_mappings_profile_shape", "activity_asset_mappings", type_="check")
     op.drop_constraint("ck_activity_asset_mappings_requirement_source", "activity_asset_mappings", type_="check")
     op.drop_constraint("ck_activity_asset_mappings_asset_role", "activity_asset_mappings", type_="check")
     op.drop_column("activity_asset_mappings", "is_active")

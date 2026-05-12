@@ -11,9 +11,10 @@ ROLES:
 
 CONFIDENCE:
 - Return numeric confidence from 0.0 to 1.0.
-- Use high confidence only when activity name and context clearly indicate the asset.
-- Use medium confidence when the asset is likely but inferred.
-- Use low confidence for real but uncertain requirements; do not invent demand.
+- High confidence = 0.80 to 1.00 when activity name and context clearly indicate the asset.
+- Medium confidence = 0.40 to 0.79 when the asset is likely but inferred.
+- Low confidence = 0.00 to 0.39 for real but uncertain requirements; do not invent demand.
+- Use 1.0 only for fully certain matches and 0.0 only when a requirement is impossible.
 
 CONSTRUCTION CONTEXT:
 - Structural phase tasks can require crane as lead and telehandler/forklift as support or incidental.
@@ -27,8 +28,9 @@ RULES:
 - One activity may have zero, one, or many asset requirements.
 - Do not output explicit none rows.
 - Do not output demand-free/dropped rows.
-- Milestone rows (is_milestone: true) and summary rows (is_summary: true) normally have an empty asset_requirements array.
+- Milestone rows (is_milestone: true) and summary rows (is_summary: true) normally have an empty requirements array and should appear in skipped when appropriate.
 - Respect deterministic_asset_candidates if supplied, but you may confirm, add, remove, or adjust role/hours/profile.
+- Emit the top-level keys exactly as requirements and skipped.
 - Output only valid JSON. No prose.
 
 OUTPUT SCHEMA:

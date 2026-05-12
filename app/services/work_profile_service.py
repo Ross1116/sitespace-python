@@ -4034,6 +4034,9 @@ def resolve_work_profile(
             final_hours,
             max_hours_per_day=preflight.max_hours_per_day,
         )
+        confidence = max(float(confidence), 0.75)
+        activity_source = "manual"
+        low_flag = False
 
     if seed_total_hours is not None:
         seeded_hours = max(0.0, float(seed_total_hours))
@@ -4045,7 +4048,7 @@ def resolve_work_profile(
             max_hours_per_day=preflight.max_hours_per_day,
         )
         confidence = max(float(confidence), 0.75)
-        activity_source = "manual" if activity_source == "default" else activity_source
+        activity_source = "manual"
         low_flag = False
     elif str(asset_role or "").lower() in {"support", "incidental"} and activity_source == "default":
         role_factor = 0.45 if str(asset_role or "").lower() == "support" else 0.20

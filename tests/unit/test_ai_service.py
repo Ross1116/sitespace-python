@@ -270,7 +270,7 @@ class TestKeywordNormalization:
 
 
 class TestAiClassificationMerge:
-    async def test_real_classifier_preserves_none_as_successful_result(self):
+    async def test_real_classifier_treats_none_asset_type_as_skipped(self):
         activities = [{"id": "a1", "name": "Neutral coordination row"}]
 
         with patch("app.services.ai_service._get_async_client", return_value=object()), \

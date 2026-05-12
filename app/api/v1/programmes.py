@@ -1145,6 +1145,14 @@ def add_activity_asset_requirement(
     _check_project_access(upload.project_id, current_user, db)
     if not payload.asset_type:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="asset_type is required")
+    if payload.profile_shape is not None or payload.manual_normalized_distribution is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Manual profile shape/distribution cannot be supplied when adding a requirement; "
+                "create the requirement first, then apply a mapping correction."
+            ),
+        )
 
     existing = (
         db.query(ActivityAssetMapping)

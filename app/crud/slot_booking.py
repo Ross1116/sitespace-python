@@ -174,6 +174,8 @@ def _get_activity_expected_asset_type(
         )
         if mapping is None or not mapping.asset_type:
             raise BookingValidationError("Asset requirement is not available for booking")
+        if programme_activity_id is not None and programme_activity_id != mapping.programme_activity_id:
+            raise BookingValidationError("Activity asset requirement does not belong to the supplied programme activity")
         programme_activity_id = mapping.programme_activity_id
     elif programme_activity_id is None:
         raise BookingValidationError("activity_asset_mapping_id is required for activity-linked bookings")

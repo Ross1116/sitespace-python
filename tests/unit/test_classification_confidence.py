@@ -138,12 +138,12 @@ class TestMappingAssetType:
 # ---------------------------------------------------------------------------
 
 class TestNoneAssetTypeHandling:
-    def test_none_asset_type_creates_no_demand_mapping(self):
+    def test_none_asset_type_returns_empty_mappings_and_suggestions(self):
         mappings, suggestions = _run(_result(_item("none", "high")))
         assert mappings == []
         assert suggestions == []
 
-    def test_none_low_confidence_creates_no_demand_mapping(self):
+    def test_none_low_confidence_returns_empty_mappings_and_suggestions(self):
         mappings, suggestions = _run(_result(_item("none", "low")))
         assert mappings == []
         assert suggestions == []
@@ -179,17 +179,17 @@ class TestSkippedActivities:
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
         assert mappings == []
 
-    def test_skipped_mapping_not_auto_committed(self):
+    def test_skipped_returns_empty_mappings_not_auto_committed(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
         assert mappings == []
 
-    def test_skipped_mapping_asset_type_is_none(self):
+    def test_skipped_returns_empty_mappings_without_asset_type(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
         assert mappings == []
 
-    def test_skipped_mapping_confidence_is_low(self):
+    def test_skipped_returns_empty_mappings_without_confidence(self):
         act_id = str(uuid.uuid4())
         mappings, _ = _run(ClassificationResult(classifications=[], skipped=[act_id]))
         assert mappings == []

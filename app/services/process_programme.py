@@ -1170,7 +1170,7 @@ def _write_classifications(
 
     for item in classification.requirements:
         normalised_type = (item.asset_type or "").strip().lower()
-        if not normalised_type or normalised_type in {"none", "other"}:
+        if not normalised_type or normalised_type == "none":
             logger.warning(
                 "Skipping non-demand asset_type='%s' for activity=%s",
                 item.asset_type,
@@ -1240,33 +1240,6 @@ def _write_classifications(
             )
         )
     for skipped_activity_id in classification.skipped:
-        suggestion_rows.append(
-            AISuggestionLog(
-                id=uuid.uuid4(),
-                activity_id=skipped_activity_id,
-                upload_id=upload_id,
-                suggested_asset_type=None,
-                confidence="low",
-                accepted=False,
-                correction=None,
-                source="keyword" if fallback_used else "ai",
-                pipeline_stage="classify_assets",
-                model_name=None if fallback_used else model_name,
-                fallback_used=fallback_used,
-            )
-        )
-        continue
-
-        mapping_rows.append(
-            ActivityAssetMapping(
-                id=uuid.uuid4(),
-                programme_activity_id=skipped_activity_id,
-                asset_type=None,
-                confidence="low",
-                source="ai",
-                auto_committed=False,
-            )
-        )
         suggestion_rows.append(
             AISuggestionLog(
                 id=uuid.uuid4(),

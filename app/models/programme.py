@@ -144,9 +144,17 @@ class ActivityAssetMapping(Base):
             name="ck_activity_asset_mappings_requirement_source",
         ),
         CheckConstraint(
+            (
+                "profile_shape IS NULL OR profile_shape IN "
+                "('single_day', 'flat', 'front_loaded', 'back_loaded', 'bell', 'inverse_bell', 'staged')"
+            ),
+            name="ck_activity_asset_mappings_profile_shape",
+        ),
+        CheckConstraint(
             "label_confidence IS NULL OR (label_confidence >= 0 AND label_confidence <= 1)",
             name="ck_activity_asset_mappings_label_confidence",
         ),
+        UniqueConstraint("programme_activity_id", "id", name="uq_activity_asset_mappings_activity_id_pair"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -196,6 +204,12 @@ class ActivityBookingGroup(Base):
     __tablename__ = "activity_booking_groups"
     __table_args__ = (
         UniqueConstraint("activity_asset_mapping_id", name="uq_activity_booking_groups_mapping"),
+        ForeignKeyConstraint(
+            ["programme_activity_id", "activity_asset_mapping_id"],
+            ["activity_asset_mappings.programme_activity_id", "activity_asset_mappings.id"],
+            name="fk_prog_booking_groups_activity_asset_pair",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "origin_source IN ('activity_row', 'lookahead_week_row')",
             name="ck_activity_booking_groups_origin_source",
