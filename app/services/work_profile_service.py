@@ -2347,6 +2347,7 @@ def _write_activity_profile(
                 raise
 
     awp.item_id = item_id
+    awp.activity_id = activity_id
     awp.activity_asset_mapping_id = activity_asset_mapping_id
     awp.asset_type = asset_type
     awp.duration_days = duration_days
@@ -3502,6 +3503,9 @@ def backfill_project_local_context_profiles(
     local_learning_changed = False
 
     for activity_profile, activity, upload, linked_profile in rows:
+        if activity_profile.context_profile_id is None and str(activity_profile.source or "") == "derived":
+            continue
+
         if upload.project_id is None:
             errors.append(f"activity_work_profile:{activity_profile.id}:missing_project_id")
             continue
@@ -4062,6 +4066,7 @@ def resolve_work_profile(
             max_hours_per_day=preflight.max_hours_per_day,
         )
         context_profile_id = None
+        activity_source = "derived"
 
     result = validate_stage_d(
         final_hours, distribution, norm_dist,

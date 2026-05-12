@@ -533,7 +533,7 @@ def test_resolve_work_profile_support_incidental_reduces_hours_with_cached_profi
     assert result is written_profile
     assert write_mock.call_args.kwargs["total_hours"] == expected_hours
     assert sum(write_mock.call_args.kwargs["distribution"]) == expected_hours
-    assert write_mock.call_args.kwargs["source"] == "cache"
+    assert write_mock.call_args.kwargs["source"] == "derived"
     assert write_mock.call_args.kwargs["context_profile_id"] is None
 
 
@@ -825,6 +825,51 @@ def test_backfill_project_local_context_profiles_fails_closed_on_missing_project
 
     with pytest.raises(RuntimeError, match="unresolved provenance"):
         backfill_project_local_context_profiles(db)
+
+
+def test_backfill_project_local_context_profiles_skips_detached_derived_profiles(monkeypatch):
+    activity_profile = SimpleNamespace(
+        id=uuid4(),
+        activity_id=uuid4(),
+        item_id=uuid4(),
+        asset_type="crane",
+        duration_days=5,
+        context_version=1,
+        inference_version=1,
+        total_hours=4.5,
+        distribution_json=[2.25, 2.25, 0.0, 0.0, 0.0],
+        normalized_distribution_json=[0.5, 0.5, 0.0, 0.0, 0.0],
+        confidence=0.8,
+        source="derived",
+        context_hash="exact-hash",
+        low_confidence_flag=False,
+        context_profile_id=None,
+        created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    activity = SimpleNamespace(
+        id=activity_profile.activity_id,
+        programme_upload_id=uuid4(),
+        item_id=activity_profile.item_id,
+        name="Lift panels",
+        level_name="Level 1",
+        zone_name="Zone A",
+    )
+    upload = SimpleNamespace(id=activity.programme_upload_id, project_id=uuid4())
+    db = MagicMock()
+    db.query.return_value.join.return_value.join.return_value.outerjoin.return_value.order_by.return_value.all.return_value = [
+        (activity_profile, activity, upload, None),
+    ]
+    monkeypatch.setattr(
+        "app.services.work_profile_service.lookup_cache",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not lookup cache")),
+    )
+
+    result = backfill_project_local_context_profiles(db)
+
+    assert activity_profile.context_profile_id is None
+    assert result["processed_activity_profiles"] == 1
+    assert result["repointed_activity_profiles"] == 0
+    assert result["materialized_local_profiles"] == 0
 
 
 def test_backfill_project_local_context_profiles_skips_when_already_repointed(monkeypatch):

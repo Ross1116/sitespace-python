@@ -215,7 +215,7 @@ class ActivityWorkProfile(Base):
     normalized_distribution_json = Column(JSONB, nullable=False)
     confidence = Column(Numeric(4, 3), nullable=False)
     low_confidence_flag = Column(Boolean, nullable=False, default=False, server_default="false")
-    source = Column(String(20), nullable=False)   # 'ai' | 'cache' | 'manual' | 'default'
+    source = Column(String(20), nullable=False)   # 'ai' | 'cache' | 'manual' | 'default' | 'derived'
     context_hash = Column(String(64), nullable=False)
     context_profile_id = Column(
         UUID(as_uuid=True),
@@ -231,7 +231,7 @@ class ActivityWorkProfile(Base):
             name="uq_activity_work_profiles_activity_asset_mapping_id",
         ),
         CheckConstraint(
-            "source IN ('ai', 'cache', 'manual', 'default')",
+            "source IN ('ai', 'cache', 'manual', 'default', 'derived')",
             name="ck_activity_work_profiles_source",
         ),
         CheckConstraint(
