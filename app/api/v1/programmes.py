@@ -1215,7 +1215,7 @@ def deactivate_activity_asset_requirement(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.MANAGER, UserRole.ADMIN])),
 ) -> ActivityMappingResponse:
-    """Deactivate a requirement only when it has no booking group or linked bookings."""
+    """Deactivate a requirement only when it has no active linked bookings."""
     context = load_mapping_correction_context(db, mapping_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Mapping not found")
@@ -1227,15 +1227,17 @@ def deactivate_activity_asset_requirement(
         .first()
     )
     if linked_group is not None:
-        linked_booking_count = (
+        active_linked_booking_count = (
             db.query(func.count(SlotBooking.id))
             .filter(SlotBooking.booking_group_id == linked_group.id)
+            .filter(SlotBooking.status.notin_([BookingStatus.CANCELLED, BookingStatus.DENIED]))
             .scalar()
         )
-        detail = "Cannot deactivate an asset requirement that has a booking group."
-        if int(linked_booking_count or 0) > 0:
-            detail = "Cannot deactivate an asset requirement with linked bookings."
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+        if int(active_linked_booking_count or 0) > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot deactivate an asset requirement with linked bookings.",
+            )
 
     context.mapping.is_active = False
     context.mapping.manually_corrected = True

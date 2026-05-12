@@ -4036,6 +4036,7 @@ def resolve_work_profile(
         )
         confidence = max(float(confidence), 0.75)
         activity_source = "manual"
+        context_profile_id = None
         low_flag = False
 
     if seed_total_hours is not None:
@@ -4049,6 +4050,7 @@ def resolve_work_profile(
         )
         confidence = max(float(confidence), 0.75)
         activity_source = "manual"
+        context_profile_id = None
         low_flag = False
     elif str(asset_role or "").lower() in {"support", "incidental"} and activity_source == "default":
         role_factor = 0.45 if str(asset_role or "").lower() == "support" else 0.20

@@ -8,8 +8,11 @@ from app.api.v1.programmes import (
     _require_readable_upload,
     _serialize_programme_upload,
     _serialize_mapping,
+    deactivate_activity_asset_requirement,
 )
+from app.schemas.enums import BookingStatus
 from fastapi import HTTPException
+from unittest.mock import MagicMock, patch
 
 
 def test_normalize_completeness_notes_includes_stable_defaults():
@@ -147,3 +150,87 @@ def test_require_readable_upload_distinguishes_processing_and_failed_states():
         assert exc.detail == "Programme processing did not complete successfully."
     else:
         raise AssertionError("Expected failed upload to raise HTTPException")
+
+
+class _ProgrammeQueryStub:
+    def __init__(self, result=None, scalar_result=None):
+        self.result = result
+        self.scalar_result = scalar_result
+        self.filter_calls = []
+
+    def filter(self, *args):
+        self.filter_calls.append(args)
+        return self
+
+    def first(self):
+        return self.result
+
+    def scalar(self):
+        return self.scalar_result
+
+
+def _deactivate_context():
+    return SimpleNamespace(
+        mapping=SimpleNamespace(
+            id=uuid4(),
+            is_active=True,
+            manually_corrected=False,
+            corrected_by=None,
+            corrected_at=None,
+        ),
+        upload=SimpleNamespace(project_id=uuid4()),
+        activity=SimpleNamespace(name="Install precast", item_id=uuid4()),
+        activity_profile=None,
+    )
+
+
+def test_deactivate_mapping_ignores_cancelled_or_denied_linked_bookings():
+    context = _deactivate_context()
+    linked_group = SimpleNamespace(id=uuid4())
+    group_query = _ProgrammeQueryStub(result=linked_group)
+    count_query = _ProgrammeQueryStub(scalar_result=0)
+    db = MagicMock()
+    db.query.side_effect = [group_query, count_query]
+    current_user = SimpleNamespace(id=uuid4())
+    response = object()
+
+    with patch("app.api.v1.programmes.load_mapping_correction_context", return_value=context), \
+         patch("app.api.v1.programmes._check_project_access"), \
+         patch("app.api.v1.programmes._serialize_mapping", return_value=response):
+        result = deactivate_activity_asset_requirement(context.mapping.id, db=db, current_user=current_user)
+
+    assert result is response
+    assert context.mapping.is_active is False
+    assert context.mapping.corrected_by == current_user.id
+    assert db.commit.called
+    assert len(count_query.filter_calls) == 2
+    active_status_filter = count_query.filter_calls[1][0]
+    assert "slot_bookings.status" in str(active_status_filter)
+    assert active_status_filter.right.value == [BookingStatus.CANCELLED, BookingStatus.DENIED]
+
+
+def test_deactivate_mapping_rejects_active_linked_bookings():
+    context = _deactivate_context()
+    linked_group = SimpleNamespace(id=uuid4())
+    db = MagicMock()
+    db.query.side_effect = [
+        _ProgrammeQueryStub(result=linked_group),
+        _ProgrammeQueryStub(scalar_result=1),
+    ]
+
+    with patch("app.api.v1.programmes.load_mapping_correction_context", return_value=context), \
+         patch("app.api.v1.programmes._check_project_access"):
+        try:
+            deactivate_activity_asset_requirement(
+                context.mapping.id,
+                db=db,
+                current_user=SimpleNamespace(id=uuid4()),
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 409
+            assert exc.detail == "Cannot deactivate an asset requirement with linked bookings."
+        else:
+            raise AssertionError("Expected active linked bookings to block deactivation")
+
+    assert context.mapping.is_active is True
+    db.commit.assert_not_called()

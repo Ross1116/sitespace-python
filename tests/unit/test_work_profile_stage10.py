@@ -421,6 +421,86 @@ def test_resolve_work_profile_medium_global_hit_passes_posterior_hint_to_ai():
     assert write_mock.call_args.kwargs["context_profile_id"] == updated_cache.id
 
 
+def _cached_ai_profile():
+    return SimpleNamespace(
+        id=uuid4(),
+        posterior_mean=10.0,
+        total_hours=10.0,
+        normalized_distribution_json=[0.5, 0.5],
+        source="ai",
+        confidence=0.6,
+        low_confidence_flag=False,
+        observation_count=1,
+        actuals_shape_json=None,
+        actuals_count=0,
+    )
+
+
+def _preflight_with_cached_ai_profile(cached):
+    return WorkProfilePreflight(
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        },
+        context_hash="exact-hash",
+        max_hours_per_day=10.0,
+        cached=cached,
+        tier="trusted_baseline",
+        trusted_baseline=None,
+        global_knowledge=None,
+    )
+
+
+def test_resolve_work_profile_manual_shape_seed_drops_cached_context_profile():
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            activity_name="Install tower crane",
+            seed_profile_shape="front_loaded",
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["source"] == "manual"
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
+
+
+def test_resolve_work_profile_manual_hours_seed_drops_cached_context_profile():
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            activity_name="Install tower crane",
+            seed_total_hours=6.0,
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["source"] == "manual"
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
+
+
 def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():
     project_id = uuid4()
     item_id = uuid4()
