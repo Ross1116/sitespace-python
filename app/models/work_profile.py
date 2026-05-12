@@ -186,6 +186,12 @@ class ActivityWorkProfile(Base):
         nullable=False,
         index=True,
     )
+    activity_asset_mapping_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("activity_asset_mappings.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     item_id = Column(
         UUID(as_uuid=True),
         ForeignKey("items.id", ondelete="CASCADE"),
@@ -209,7 +215,7 @@ class ActivityWorkProfile(Base):
     normalized_distribution_json = Column(JSONB, nullable=False)
     confidence = Column(Numeric(4, 3), nullable=False)
     low_confidence_flag = Column(Boolean, nullable=False, default=False, server_default="false")
-    source = Column(String(20), nullable=False)   # 'ai' | 'cache' | 'manual' | 'default'
+    source = Column(String(20), nullable=False)   # 'ai' | 'cache' | 'manual' | 'default' | 'derived'
     context_hash = Column(String(64), nullable=False)
     context_profile_id = Column(
         UUID(as_uuid=True),
@@ -221,11 +227,11 @@ class ActivityWorkProfile(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "activity_id",
-            name="uq_activity_work_profiles_activity_id",
+            "activity_asset_mapping_id",
+            name="uq_activity_work_profiles_activity_asset_mapping_id",
         ),
         CheckConstraint(
-            "source IN ('ai', 'cache', 'manual', 'default')",
+            "source IN ('ai', 'cache', 'manual', 'default', 'derived')",
             name="ck_activity_work_profiles_source",
         ),
         CheckConstraint(
@@ -243,6 +249,7 @@ class ActivityWorkProfile(Base):
     )
 
     activity = relationship("ProgrammeActivity", foreign_keys=[activity_id])
+    activity_asset_mapping = relationship("ActivityAssetMapping", foreign_keys=[activity_asset_mapping_id])
     item = relationship("Item", foreign_keys=[item_id])
     inference_policy = relationship("InferencePolicy", foreign_keys=[inference_version])
     context_profile = relationship("ItemContextProfile", foreign_keys=[context_profile_id])

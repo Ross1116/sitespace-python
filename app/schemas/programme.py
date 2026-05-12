@@ -74,6 +74,9 @@ class MappingCorrectionRequest(BaseSchema):
     """Request body for PM correction of an activity mapping."""
 
     asset_type: str | None = Field(default=None, min_length=1, max_length=50)
+    asset_role: str | None = Field(default=None, min_length=1, max_length=20)
+    profile_shape: str | None = Field(default=None, min_length=1, max_length=50)
+    requirement_source: str | None = Field(default=None, min_length=1, max_length=20)
     manual_total_hours: float | None = Field(default=None, ge=0)
     manual_normalized_distribution: list[float] | None = None
 
@@ -87,6 +90,37 @@ class MappingCorrectionRequest(BaseSchema):
             raise ValueError(
                 "Invalid asset_type. Allowed values: " + ", ".join(sorted(ALLOWED_ASSET_TYPES))
             )
+        return normalized
+
+    @field_validator("asset_role", mode="before")
+    @classmethod
+    def normalize_asset_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        if normalized not in {"lead", "support", "incidental"}:
+            raise ValueError("asset_role must be one of: lead, support, incidental")
+        return normalized
+
+    @field_validator("profile_shape", mode="before")
+    @classmethod
+    def normalize_profile_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        allowed = {"single_day", "flat", "front_loaded", "back_loaded", "bell", "inverse_bell", "staged"}
+        if normalized not in allowed:
+            raise ValueError("Invalid profile_shape")
+        return normalized
+
+    @field_validator("requirement_source", mode="before")
+    @classmethod
+    def normalize_requirement_source(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        if normalized not in {"ai", "keyword", "manual", "imported_gold"}:
+            raise ValueError("requirement_source must be one of: ai, keyword, manual, imported_gold")
         return normalized
 
     @field_validator("manual_normalized_distribution")
@@ -108,6 +142,9 @@ class MappingCorrectionRequest(BaseSchema):
     def validate_payload(self) -> "MappingCorrectionRequest":
         if (
             self.asset_type is None
+            and self.asset_role is None
+            and self.profile_shape is None
+            and self.requirement_source is None
             and self.manual_total_hours is None
             and self.manual_normalized_distribution is None
         ):
@@ -123,6 +160,10 @@ class MappingCorrectionRequest(BaseSchema):
             if self.manual_total_hours == 0 and distribution_total > 1e-6:
                 raise ValueError(
                     "manual_normalized_distribution must be all zeros when manual_total_hours is zero"
+                )
+            if self.manual_total_hours > 0 and distribution_total <= 1e-6:
+                raise ValueError(
+                    "manual_normalized_distribution must contain positive weights when manual_total_hours is positive"
                 )
 
         return self
@@ -159,6 +200,12 @@ class ActivityMappingResponse(BaseSchema):
     item_id: UUID | None = None
     activity_name: str | None = None
     asset_type: str | None = None
+    asset_role: str | None = None
+    estimated_total_hours: float | None = None
+    profile_shape: str | None = None
+    label_confidence: float | None = None
+    requirement_source: str | None = None
+    is_active: bool = True
     confidence: str
     source: str
     auto_committed: bool
@@ -174,6 +221,7 @@ class ActivityBookingGroupSummary(BaseSchema):
 
     id: UUID
     programme_activity_id: UUID
+    activity_asset_mapping_id: UUID | None = None
     expected_asset_type: str
     selected_week_start: str | None = None
     origin_source: str
@@ -212,6 +260,7 @@ class LinkedBookingGroupSummary(BaseSchema):
 
     booking_group_id: UUID
     programme_activity_id: UUID
+    activity_asset_mapping_id: UUID | None = None
     expected_asset_type: str
     selected_week_start: str | None = None
     origin_source: str
@@ -225,6 +274,7 @@ class ProgrammeActivityBookingContextResponse(BaseSchema):
     """Prefill payload for booking from a programme activity."""
 
     activity_id: UUID
+    activity_asset_mapping_id: UUID
     programme_upload_id: UUID
     project_id: UUID
     activity_name: str

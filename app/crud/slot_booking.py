@@ -157,8 +157,29 @@ def _normalize_asset_type_value(value: object | None) -> str | None:
 
 def _get_activity_expected_asset_type(
     db: Session,
-    programme_activity_id: UUID,
-) -> tuple[ProgrammeActivity, ProgrammeUpload, str]:
+    programme_activity_id: UUID | None = None,
+    activity_asset_mapping_id: UUID | None = None,
+) -> tuple[ProgrammeActivity, ProgrammeUpload, ActivityAssetMapping, str]:
+    if activity_asset_mapping_id is not None:
+        mapping = (
+            db.query(ActivityAssetMapping)
+            .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+            .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+            .filter(
+                ActivityAssetMapping.id == activity_asset_mapping_id,
+                *build_eligible_activity_mapping_filters(),
+                ActivityAssetMapping.is_active.is_(True),
+            )
+            .first()
+        )
+        if mapping is None or not mapping.asset_type:
+            raise BookingValidationError("Asset requirement is not available for booking")
+        if programme_activity_id is not None and programme_activity_id != mapping.programme_activity_id:
+            raise BookingValidationError("Activity asset requirement does not belong to the supplied programme activity")
+        programme_activity_id = mapping.programme_activity_id
+    elif programme_activity_id is None:
+        raise BookingValidationError("activity_asset_mapping_id is required for activity-linked bookings")
+
     activity = (
         db.query(ProgrammeActivity)
         .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
@@ -176,47 +197,63 @@ def _get_activity_expected_asset_type(
     if upload is None or not is_upload_readable(upload):
         raise BookingValidationError("Programme activity is not available for booking")
 
-    mapping = (
-        db.query(ActivityAssetMapping)
-        .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
-        .filter(
-            ActivityAssetMapping.programme_activity_id == programme_activity_id,
-            *build_eligible_activity_mapping_filters(),
+    if activity_asset_mapping_id is None:
+        eligible_mappings = (
+            db.query(ActivityAssetMapping)
+            .join(ProgrammeActivity, ProgrammeActivity.id == ActivityAssetMapping.programme_activity_id)
+            .join(ProgrammeUpload, ProgrammeUpload.id == ProgrammeActivity.programme_upload_id)
+            .filter(
+                ActivityAssetMapping.programme_activity_id == programme_activity_id,
+                *build_eligible_activity_mapping_filters(),
+                ActivityAssetMapping.is_active.is_(True),
+            )
+            .order_by(
+                case((ActivityAssetMapping.asset_role == "lead", 0), else_=1),
+                ActivityAssetMapping.manually_corrected.desc(),
+                ActivityAssetMapping.corrected_at.desc().nulls_last(),
+                ActivityAssetMapping.created_at.desc(),
+            )
+            .all()
         )
-        .order_by(
-            ActivityAssetMapping.manually_corrected.desc(),
-            ActivityAssetMapping.corrected_at.desc().nulls_last(),
-            ActivityAssetMapping.created_at.desc(),
-        )
-        .first()
-    )
+        lead_mappings = [m for m in eligible_mappings if (m.asset_role or "lead") == "lead"]
+        candidates = lead_mappings or eligible_mappings
+        if len(candidates) != 1:
+            raise BookingValidationError("Multiple asset requirements exist; choose an activity_asset_mapping_id")
+        mapping = candidates[0]
+
     if mapping is None or not mapping.asset_type:
         raise BookingValidationError("Programme activity does not have a resolved asset type")
 
-    return activity, upload, _normalize_asset_type_value(mapping.asset_type) or ""
+    return activity, upload, mapping, _normalize_asset_type_value(mapping.asset_type) or ""
 
 
 def _get_or_create_activity_booking_group(
     db: Session,
     *,
     project_id: UUID,
-    programme_activity_id: UUID,
+    programme_activity_id: UUID | None,
+    activity_asset_mapping_id: UUID | None = None,
     selected_week_start: Optional[date],
     created_by_id: UUID,
 ) -> ActivityBookingGroup:
-    activity, upload, expected_asset_type = _get_activity_expected_asset_type(db, programme_activity_id)
+    activity, upload, mapping, expected_asset_type = _get_activity_expected_asset_type(
+        db,
+        programme_activity_id=programme_activity_id,
+        activity_asset_mapping_id=activity_asset_mapping_id,
+    )
     if upload.project_id != project_id:
         raise BookingValidationError("Programme activity does not belong to this project")
 
     booking_group = (
         db.query(ActivityBookingGroup)
-        .filter(ActivityBookingGroup.programme_activity_id == programme_activity_id)
+        .filter(ActivityBookingGroup.activity_asset_mapping_id == mapping.id)
         .first()
     )
     if booking_group is None:
         booking_group = ActivityBookingGroup(
             project_id=project_id,
-            programme_activity_id=programme_activity_id,
+            programme_activity_id=activity.id,
+            activity_asset_mapping_id=mapping.id,
             expected_asset_type=expected_asset_type,
             selected_week_start=_normalize_selected_week_start(selected_week_start),
             origin_source="lookahead_week_row" if selected_week_start else "activity_row",
@@ -226,6 +263,8 @@ def _get_or_create_activity_booking_group(
         db.flush()
     else:
         booking_group.project_id = project_id
+        booking_group.programme_activity_id = activity.id
+        booking_group.activity_asset_mapping_id = mapping.id
         booking_group.expected_asset_type = expected_asset_type
         if booking_group.selected_week_start is None and selected_week_start is not None:
             booking_group.selected_week_start = _normalize_selected_week_start(selected_week_start)
@@ -342,6 +381,7 @@ def _build_booking_detail_response(
         asset_id=booking.asset_id,
         booking_group_id=booking_group.id if booking_group else None,
         programme_activity_id=group_activity.id if group_activity else None,
+        activity_asset_mapping_id=getattr(booking_group, "activity_asset_mapping_id", None) if booking_group else None,
         programme_activity_name=group_activity.name if group_activity else None,
         expected_asset_type=booking_group.expected_asset_type if booking_group else None,
         is_modified=bool(booking_group.is_modified) if booking_group else False,
@@ -591,11 +631,15 @@ def create_booking(
             raise BookingValidationError("Activity booking group not found")
         if booking_group.project_id != booking_data.project_id:
             raise BookingValidationError("Activity booking group does not belong to this project")
-    elif booking_data.programme_activity_id is not None:
+    elif (
+        getattr(booking_data, "programme_activity_id", None) is not None
+        or getattr(booking_data, "activity_asset_mapping_id", None) is not None
+    ):
         booking_group = _get_or_create_activity_booking_group(
             db,
             project_id=booking_data.project_id,
-            programme_activity_id=booking_data.programme_activity_id,
+            programme_activity_id=getattr(booking_data, "programme_activity_id", None),
+            activity_asset_mapping_id=getattr(booking_data, "activity_asset_mapping_id", None),
             selected_week_start=booking_data.selected_week_start,
             created_by_id=created_by_id,
         )
@@ -689,11 +733,15 @@ def create_bulk_bookings(
     )
 
     booking_group: ActivityBookingGroup | None = None
-    if bulk_data.programme_activity_id is not None:
+    if (
+        getattr(bulk_data, "programme_activity_id", None) is not None
+        or getattr(bulk_data, "activity_asset_mapping_id", None) is not None
+    ):
         booking_group = _get_or_create_activity_booking_group(
             db,
             project_id=bulk_data.project_id,
-            programme_activity_id=bulk_data.programme_activity_id,
+            programme_activity_id=getattr(bulk_data, "programme_activity_id", None),
+            activity_asset_mapping_id=getattr(bulk_data, "activity_asset_mapping_id", None),
             selected_week_start=bulk_data.selected_week_start,
             created_by_id=created_by_id,
         )

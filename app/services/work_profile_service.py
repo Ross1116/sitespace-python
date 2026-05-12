@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -1231,6 +1232,25 @@ def _fallback_shape_weights(shape_family: str, duration_days: int) -> list[float
     return _uniform_normalized(duration_days)
 
 
+def _profile_shape_to_fallback_family(profile_shape: str | None) -> str | None:
+    profile_key = str(profile_shape or "").strip().lower()
+    if profile_key == "single_day":
+        return "event_peak"
+    if profile_key == "flat":
+        return "steady"
+    if profile_key == "front_loaded":
+        return "front_loaded"
+    if profile_key == "back_loaded":
+        return "back_loaded"
+    if profile_key == "bell":
+        return "center_peak"
+    if profile_key == "inverse_bell":
+        return "steady_front"
+    if profile_key == "staged":
+        return "event_peak"
+    return None
+
+
 def _build_default_profile_prior(
     asset_type: str,
     duration_days: int,
@@ -2265,6 +2285,7 @@ async def _precompute_validated_ai_proposal(
 def _write_activity_profile(
     db: Session,
     activity_id: uuid.UUID,
+    activity_asset_mapping_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -2279,9 +2300,14 @@ def _write_activity_profile(
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ActivityWorkProfile:
+    if activity_asset_mapping_id is None:
+        raise ValueError("activity_asset_mapping_id is required for ActivityWorkProfile writes")
+
     awp = (
         db.query(ActivityWorkProfile)
-        .filter(ActivityWorkProfile.activity_id == activity_id)
+        .filter(
+            ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
+        )
         .one_or_none()
     )
     if awp is None:
@@ -2289,6 +2315,7 @@ def _write_activity_profile(
         try:
             awp = ActivityWorkProfile(
                 activity_id=activity_id,
+                activity_asset_mapping_id=activity_asset_mapping_id,
                 item_id=item_id,
                 asset_type=asset_type,
                 duration_days=duration_days,
@@ -2311,13 +2338,17 @@ def _write_activity_profile(
             savepoint.rollback()
             awp = (
                 db.query(ActivityWorkProfile)
-                .filter(ActivityWorkProfile.activity_id == activity_id)
+                .filter(
+                    ActivityWorkProfile.activity_asset_mapping_id == activity_asset_mapping_id
+                )
                 .one_or_none()
             )
             if awp is None:
                 raise
 
     awp.item_id = item_id
+    awp.activity_id = activity_id
+    awp.activity_asset_mapping_id = activity_asset_mapping_id
     awp.asset_type = asset_type
     awp.duration_days = duration_days
     awp.context_version = context_version
@@ -2549,6 +2580,7 @@ def write_manual_activity_profile(
     db: Session,
     *,
     activity_id: uuid.UUID,
+    activity_asset_mapping_id: uuid.UUID,
     item_id: uuid.UUID,
     asset_type: str,
     duration_days: int,
@@ -2563,6 +2595,7 @@ def write_manual_activity_profile(
     return _write_activity_profile(
         db,
         activity_id=activity_id,
+        activity_asset_mapping_id=activity_asset_mapping_id,
         item_id=item_id,
         asset_type=asset_type,
         duration_days=duration_days,
@@ -3470,6 +3503,9 @@ def backfill_project_local_context_profiles(
     local_learning_changed = False
 
     for activity_profile, activity, upload, linked_profile in rows:
+        if activity_profile.context_profile_id is None and str(activity_profile.source or "") == "derived":
+            continue
+
         if upload.project_id is None:
             errors.append(f"activity_work_profile:{activity_profile.id}:missing_project_id")
             continue
@@ -3666,6 +3702,10 @@ def resolve_work_profile(
     asset_type: str,
     duration_days: int,
     activity_name: str,
+    activity_asset_mapping_id: uuid.UUID,
+    asset_role: str | None = None,
+    seed_total_hours: float | None = None,
+    seed_profile_shape: str | None = None,
     level_name: Optional[str] = None,
     zone_name: Optional[str] = None,
     row_confidence: Optional[str] = None,
@@ -3991,6 +4031,43 @@ def resolve_work_profile(
             )
 
     # ── Step 5: Stage D validation ───────────────────────────────────────────
+    shape_family = _profile_shape_to_fallback_family(seed_profile_shape)
+    if shape_family:
+        norm_dist = _fallback_shape_weights(shape_family, duration_days)
+        distribution = derive_distribution(
+            norm_dist,
+            final_hours,
+            max_hours_per_day=preflight.max_hours_per_day,
+        )
+        confidence = max(float(confidence), 0.75)
+        activity_source = "manual"
+        context_profile_id = None
+        low_flag = False
+
+    if seed_total_hours is not None:
+        seeded_hours = max(0.0, float(seed_total_hours))
+        seeded_hours = min(seeded_hours, preflight.max_hours_per_day * duration_days)
+        final_hours = quantize_hours(seeded_hours)
+        distribution = derive_distribution(
+            norm_dist,
+            final_hours,
+            max_hours_per_day=preflight.max_hours_per_day,
+        )
+        confidence = max(float(confidence), 0.75)
+        activity_source = "manual"
+        context_profile_id = None
+        low_flag = False
+    elif str(asset_role or "").lower() in {"support", "incidental"}:
+        role_factor = 0.45 if str(asset_role or "").lower() == "support" else 0.20
+        final_hours = quantize_hours(float(final_hours) * role_factor)
+        distribution = derive_distribution(
+            norm_dist,
+            final_hours,
+            max_hours_per_day=preflight.max_hours_per_day,
+        )
+        context_profile_id = None
+        activity_source = "derived"
+
     result = validate_stage_d(
         final_hours, distribution, norm_dist,
         asset_type, duration_days, preflight.max_hours_per_day,
@@ -4008,6 +4085,7 @@ def resolve_work_profile(
     return _write_activity_profile(
         db,
         activity_id=activity_id,
+        activity_asset_mapping_id=activity_asset_mapping_id,
         item_id=item_id,
         asset_type=asset_type,
         duration_days=duration_days,
@@ -4044,6 +4122,15 @@ async def materialize_work_profiles_for_upload(
             ProgrammeActivity.programme_upload_id == upload.id,
             ActivityAssetMapping.asset_type.isnot(None),
             ActivityAssetMapping.asset_type != "none",
+            ActivityAssetMapping.is_active.is_(True),
+            or_(
+                ActivityAssetMapping.auto_committed.is_(True),
+                and_(
+                    ActivityAssetMapping.manually_corrected.is_(True),
+                    ActivityAssetMapping.source == "manual",
+                    ActivityAssetMapping.auto_committed.is_(False),
+                ),
+            ),
         )
         .all()
     )
@@ -4219,10 +4306,14 @@ async def materialize_work_profiles_for_upload(
                 db,
                 project_id=upload.project_id,
                 activity_id=representative_activity.id,
+                activity_asset_mapping_id=representative_mapping.id,
                 item_id=representative_activity.item_id,
                 asset_type=representative_mapping.asset_type,
                 duration_days=max(int(representative_activity.duration_days or 0), 1),
                 activity_name=representative_activity.name,
+                asset_role=representative_mapping.asset_role,
+                seed_total_hours=float(representative_mapping.estimated_total_hours) if representative_mapping.estimated_total_hours is not None else None,
+                seed_profile_shape=representative_mapping.profile_shape,
                 level_name=representative_activity.level_name,
                 zone_name=representative_activity.zone_name,
                 row_confidence=representative_activity.row_confidence,
@@ -4249,10 +4340,14 @@ async def materialize_work_profiles_for_upload(
                     db,
                     project_id=upload.project_id,
                     activity_id=sub_activity.id,
+                    activity_asset_mapping_id=sub_mapping.id,
                     item_id=sub_activity.item_id,
                     asset_type=sub_mapping.asset_type,
                     duration_days=max(int(sub_activity.duration_days or 0), 1),
                     activity_name=sub_activity.name,
+                    asset_role=sub_mapping.asset_role,
+                    seed_total_hours=float(sub_mapping.estimated_total_hours) if sub_mapping.estimated_total_hours is not None else None,
+                    seed_profile_shape=sub_mapping.profile_shape,
                     level_name=sub_activity.level_name,
                     zone_name=sub_activity.zone_name,
                     row_confidence=sub_activity.row_confidence,

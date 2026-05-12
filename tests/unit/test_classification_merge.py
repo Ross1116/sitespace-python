@@ -31,15 +31,15 @@ class TestKeywordFallbackClassification:
         assert result.skipped == []
         assert result.batch_tokens_used == 0
 
-    async def test_crane_keyword_match_returns_medium_confidence(self):
+    async def test_crane_keyword_match_returns_high_confidence(self):
         activities = [_activity("a1", "Install precast wall panels")]
         result = await classify_assets(activities)
         assert len(result.classifications) == 1
         item = result.classifications[0]
         assert item.activity_id == "a1"
         assert item.asset_type == "crane"
-        assert item.confidence == "medium"
-        assert item.source == "keyword_boost"
+        assert item.confidence == "high"
+        assert item.source == "keyword"
 
     async def test_concrete_pump_keyword_match(self):
         activities = [_activity("a1", "Slab pour, pour 1")]
@@ -129,35 +129,28 @@ class TestKeywordFallbackClassification:
     async def test_obvious_heading_maps_to_none_in_fallback(self):
         activities = [_activity("a1", "SUPERSTRUCTURE")]
         result = await classify_assets(activities)
-        assert len(result.classifications) == 1
-        assert result.classifications[0].asset_type == "none"
-        assert result.classifications[0].confidence == "medium"
-        assert result.skipped == []
+        assert result.classifications == []
+        assert result.skipped == ["a1"]
 
         scoped_result = await classify_assets(
             activities,
             project_assets=[{"name": "Crane", "type": "Crane", "code": "CR-01"}],
         )
-        assert len(scoped_result.classifications) == 1
-        assert scoped_result.classifications[0].asset_type == "none"
-        assert scoped_result.classifications[0].confidence == "medium"
-        assert scoped_result.skipped == []
+        assert scoped_result.classifications == []
+        assert scoped_result.skipped == ["a1"]
 
     async def test_zone_heading_maps_to_none_in_fallback(self):
         activities = [_activity("a1", "Zone A")]
         result = await classify_assets(activities)
-        assert len(result.classifications) == 1
-        assert result.classifications[0].asset_type == "none"
-        assert result.skipped == []
+        assert result.classifications == []
+        assert result.skipped == ["a1"]
 
         scoped_result = await classify_assets(
             activities,
             project_assets=[{"name": "Crane", "type": "Crane", "code": "CR-01"}],
         )
-        assert len(scoped_result.classifications) == 1
-        assert scoped_result.classifications[0].asset_type == "none"
-        assert scoped_result.classifications[0].confidence == "medium"
-        assert scoped_result.skipped == []
+        assert scoped_result.classifications == []
+        assert scoped_result.skipped == ["a1"]
 
     async def test_install_bd_reo_not_classified_as_crane(self):
         """

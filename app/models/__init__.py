@@ -20,7 +20,15 @@ from .programme import (
     ActivityBookingGroup,
     AISuggestionLog,
 )
-from .item_identity import Item, ItemAlias, ItemIdentityEvent, ItemClassification, ItemClassificationEvent
+from .item_identity import (
+    Item,
+    ItemAlias,
+    ItemIdentityEvent,
+    ItemClassification,
+    ItemClassificationEvent,
+    ItemAssetRequirement,
+    ItemAssetRequirementEvent,
+)
 from .stored_file import StoredFile
 from .site_plan import SitePlan
 from .work_profile import (
@@ -62,6 +70,8 @@ __all__ = [
     "ItemIdentityEvent",
     "ItemClassification",
     "ItemClassificationEvent",
+    "ItemAssetRequirement",
+    "ItemAssetRequirementEvent",
     "StoredFile",
     "SitePlan",
     "InferencePolicy",

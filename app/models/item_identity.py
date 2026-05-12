@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, SmallInteger, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Text
+from sqlalchemy import Boolean, Column, Integer, String, SmallInteger, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Text, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -30,6 +30,8 @@ class Item(Base):
     aliases = relationship("ItemAlias", back_populates="item", cascade="all, delete-orphan")
     classifications = relationship("ItemClassification", back_populates="item", cascade="all, delete-orphan")
     classification_events = relationship("ItemClassificationEvent", back_populates="item", foreign_keys="ItemClassificationEvent.item_id")
+    asset_requirements = relationship("ItemAssetRequirement", back_populates="item", cascade="all, delete-orphan")
+    asset_requirement_events = relationship("ItemAssetRequirementEvent", back_populates="item", foreign_keys="ItemAssetRequirementEvent.item_id")
 
     def __repr__(self) -> str:
         return f"<Item(id={self.id}, name='{self.display_name}', status='{self.identity_status}')>"
@@ -200,3 +202,126 @@ class ItemClassificationEvent(Base):
 
     def __repr__(self) -> str:
         return f"<ItemClassificationEvent(type='{self.event_type}', item={self.item_id})>"
+
+
+class ItemAssetRequirement(Base):
+    __tablename__ = "item_asset_requirements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    asset_type = Column(
+        String(50),
+        ForeignKey("asset_types.code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    default_role = Column(String(20), nullable=True)
+    confidence = Column(String(10), nullable=False, default="medium")
+    label_confidence = Column(Numeric(4, 3), nullable=True)
+    support_count = Column(Integer, nullable=False, default=0)
+    correction_count = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    source = Column(String(20), nullable=False, default="manual")
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "asset_type", "is_active", name="uq_item_asset_requirements_item_asset_active"),
+        CheckConstraint(
+            "default_role IS NULL OR default_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirements_role",
+        ),
+        CheckConstraint(
+            "confidence IN ('high', 'medium', 'low')",
+            name="ck_item_asset_requirements_confidence",
+        ),
+        CheckConstraint(
+            "source IN ('ai', 'keyword', 'manual', 'imported_gold')",
+            name="ck_item_asset_requirements_source",
+        ),
+        CheckConstraint(
+            "label_confidence IS NULL OR (label_confidence >= 0 AND label_confidence <= 1)",
+            name="ck_item_asset_requirements_label_confidence",
+        ),
+    )
+
+    item = relationship("Item", back_populates="asset_requirements", foreign_keys=[item_id])
+    events = relationship(
+        "ItemAssetRequirementEvent",
+        back_populates="requirement",
+        foreign_keys="ItemAssetRequirementEvent.requirement_id",
+    )
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<ItemAssetRequirement(item={self.item_id}, type='{self.asset_type}', "
+            f"role='{self.default_role}', active={self.is_active})>"
+        )
+
+
+class ItemAssetRequirementEvent(Base):
+    __tablename__ = "item_asset_requirement_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    requirement_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("item_asset_requirements.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    event_type = Column(String(30), nullable=False)
+    old_asset_type = Column(String(50), nullable=True)
+    new_asset_type = Column(String(50), nullable=True)
+    old_role = Column(String(20), nullable=True)
+    new_role = Column(String(20), nullable=True)
+    triggered_by_upload_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("programme_uploads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    performed_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    details_json = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('created','confirmed','corrected','deactivated','merged')",
+            name="ck_item_asset_requirement_events_type",
+        ),
+        CheckConstraint(
+            "old_role IS NULL OR old_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_old_role",
+        ),
+        CheckConstraint(
+            "new_role IS NULL OR new_role IN ('lead', 'support', 'incidental')",
+            name="ck_item_asset_requirement_events_new_role",
+        ),
+    )
+
+    item = relationship("Item", foreign_keys=[item_id], back_populates="asset_requirement_events")
+    requirement = relationship("ItemAssetRequirement", foreign_keys=[requirement_id], back_populates="events")
+    triggered_by_upload = relationship("ProgrammeUpload", foreign_keys=[triggered_by_upload_id])
+    performed_by_user = relationship("User", foreign_keys=[performed_by_user_id])
+
+    def __repr__(self) -> str:
+        return f"<ItemAssetRequirementEvent(type='{self.event_type}', item={self.item_id})>"

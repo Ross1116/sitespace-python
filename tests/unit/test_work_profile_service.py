@@ -54,6 +54,7 @@ from app.services.work_profile_service import (
     _uniform_normalized,
     _find_trusted_baseline,
     _update_cache_on_hit,
+    _write_activity_profile,
     _write_cache_entry,
     WORK_PROFILE_NORM_DIST_SUM_TOLERANCE,
 )
@@ -449,6 +450,37 @@ class TestWriteCacheEntry:
 
 
 # â”€â”€â”€ bayesian_update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestWriteActivityProfile:
+
+    def test_existing_mapping_keyed_profile_refreshes_activity_id(self):
+        db = MagicMock()
+        existing = MagicMock()
+        old_activity_id = uuid.uuid4()
+        new_activity_id = uuid.uuid4()
+        existing.activity_id = old_activity_id
+        db.query.return_value.filter.return_value.one_or_none.return_value = existing
+
+        result = _write_activity_profile(
+            db,
+            activity_id=new_activity_id,
+            activity_asset_mapping_id=uuid.uuid4(),
+            item_id=uuid.uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            total_hours=10.0,
+            distribution=[5.0, 5.0],
+            normalized_distribution=[0.5, 0.5],
+            confidence=0.8,
+            source="cache",
+            context_hash="hash123",
+            context_profile_id=uuid.uuid4(),
+        )
+
+        assert result is existing
+        assert existing.activity_id == new_activity_id
+        db.flush.assert_called_once()
+
 
 class TestBayesianUpdate:
 
@@ -872,6 +904,7 @@ class TestResolveWorkProfile:
                 db,
                 project_id=project_id,
                 activity_id=activity_id,
+                activity_asset_mapping_id=uuid.uuid4(),
                 item_id=item_id,
                 asset_type="crane",
                 duration_days=2,
@@ -904,6 +937,7 @@ class TestResolveWorkProfile:
                 db,
                 project_id=project_id,
                 activity_id=uuid.uuid4(),
+                activity_asset_mapping_id=uuid.uuid4(),
                 item_id=uuid.uuid4(),
                 asset_type="crane",
                 duration_days=2,

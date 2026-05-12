@@ -349,6 +349,7 @@ def test_resolve_work_profile_high_global_hit_seeds_local_cache_without_ai():
             db,
             project_id=project_id,
             activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
             item_id=item_id,
             asset_type="crane",
             duration_days=5,
@@ -406,6 +407,7 @@ def test_resolve_work_profile_medium_global_hit_passes_posterior_hint_to_ai():
             db,
             project_id=project_id,
             activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
             item_id=item_id,
             asset_type="crane",
             duration_days=2,
@@ -417,6 +419,122 @@ def test_resolve_work_profile_medium_global_hit_passes_posterior_hint_to_ai():
     assert ai_mock.call_args.kwargs["posterior_hint"]["posterior_mean"] == 11.0
     assert write_mock.call_args.kwargs["source"] == "ai"
     assert write_mock.call_args.kwargs["context_profile_id"] == updated_cache.id
+
+
+def _cached_ai_profile():
+    return SimpleNamespace(
+        id=uuid4(),
+        posterior_mean=10.0,
+        total_hours=10.0,
+        normalized_distribution_json=[0.5, 0.5],
+        source="ai",
+        confidence=0.6,
+        low_confidence_flag=False,
+        observation_count=1,
+        actuals_shape_json=None,
+        actuals_count=0,
+    )
+
+
+def _preflight_with_cached_ai_profile(cached):
+    return WorkProfilePreflight(
+        compressed_context={
+            "phase": "structure",
+            "spatial_type": "level",
+            "area_type": "internal",
+            "work_type": "slab",
+        },
+        context_hash="exact-hash",
+        max_hours_per_day=10.0,
+        cached=cached,
+        tier="trusted_baseline",
+        trusted_baseline=None,
+        global_knowledge=None,
+    )
+
+
+def test_resolve_work_profile_manual_shape_seed_drops_cached_context_profile():
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            activity_name="Install tower crane",
+            seed_profile_shape="front_loaded",
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["source"] == "manual"
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
+
+
+def test_resolve_work_profile_manual_hours_seed_drops_cached_context_profile():
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            duration_days=2,
+            activity_name="Install tower crane",
+            seed_total_hours=6.0,
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["source"] == "manual"
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("asset_role", "expected_hours"),
+    [
+        ("support", 4.5),
+        ("incidental", 2.0),
+    ],
+)
+def test_resolve_work_profile_support_incidental_reduces_hours_with_cached_profile(
+    asset_role,
+    expected_hours,
+):
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            asset_role=asset_role,
+            duration_days=2,
+            activity_name="Install tower crane",
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["total_hours"] == expected_hours
+    assert sum(write_mock.call_args.kwargs["distribution"]) == expected_hours
+    assert write_mock.call_args.kwargs["source"] == "derived"
+    assert write_mock.call_args.kwargs["context_profile_id"] is None
 
 
 def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():
@@ -707,6 +825,51 @@ def test_backfill_project_local_context_profiles_fails_closed_on_missing_project
 
     with pytest.raises(RuntimeError, match="unresolved provenance"):
         backfill_project_local_context_profiles(db)
+
+
+def test_backfill_project_local_context_profiles_skips_detached_derived_profiles(monkeypatch):
+    activity_profile = SimpleNamespace(
+        id=uuid4(),
+        activity_id=uuid4(),
+        item_id=uuid4(),
+        asset_type="crane",
+        duration_days=5,
+        context_version=1,
+        inference_version=1,
+        total_hours=4.5,
+        distribution_json=[2.25, 2.25, 0.0, 0.0, 0.0],
+        normalized_distribution_json=[0.5, 0.5, 0.0, 0.0, 0.0],
+        confidence=0.8,
+        source="derived",
+        context_hash="exact-hash",
+        low_confidence_flag=False,
+        context_profile_id=None,
+        created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    activity = SimpleNamespace(
+        id=activity_profile.activity_id,
+        programme_upload_id=uuid4(),
+        item_id=activity_profile.item_id,
+        name="Lift panels",
+        level_name="Level 1",
+        zone_name="Zone A",
+    )
+    upload = SimpleNamespace(id=activity.programme_upload_id, project_id=uuid4())
+    db = MagicMock()
+    db.query.return_value.join.return_value.join.return_value.outerjoin.return_value.order_by.return_value.all.return_value = [
+        (activity_profile, activity, upload, None),
+    ]
+    monkeypatch.setattr(
+        "app.services.work_profile_service.lookup_cache",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not lookup cache")),
+    )
+
+    result = backfill_project_local_context_profiles(db)
+
+    assert activity_profile.context_profile_id is None
+    assert result["processed_activity_profiles"] == 1
+    assert result["repointed_activity_profiles"] == 0
+    assert result["materialized_local_profiles"] == 0
 
 
 def test_backfill_project_local_context_profiles_skips_when_already_repointed(monkeypatch):
