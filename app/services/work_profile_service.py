@@ -1233,20 +1233,20 @@ def _fallback_shape_weights(shape_family: str, duration_days: int) -> list[float
 
 
 def _profile_shape_to_fallback_family(profile_shape: str | None) -> str | None:
-    token = str(profile_shape or "").strip().lower()
-    if token == "single_day":
+    profile_key = str(profile_shape or "").strip().lower()
+    if profile_key == "single_day":
         return "event_peak"
-    if token == "flat":
+    if profile_key == "flat":
         return "steady"
-    if token == "front_loaded":
+    if profile_key == "front_loaded":
         return "front_loaded"
-    if token == "back_loaded":
+    if profile_key == "back_loaded":
         return "back_loaded"
-    if token == "bell":
+    if profile_key == "bell":
         return "center_peak"
-    if token == "inverse_bell":
+    if profile_key == "inverse_bell":
         return "steady_front"
-    if token == "staged":
+    if profile_key == "staged":
         return "event_peak"
     return None
 
