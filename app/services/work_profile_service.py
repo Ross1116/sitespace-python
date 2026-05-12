@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -4052,7 +4053,7 @@ def resolve_work_profile(
         activity_source = "manual"
         context_profile_id = None
         low_flag = False
-    elif str(asset_role or "").lower() in {"support", "incidental"} and activity_source == "default":
+    elif str(asset_role or "").lower() in {"support", "incidental"}:
         role_factor = 0.45 if str(asset_role or "").lower() == "support" else 0.20
         final_hours = quantize_hours(float(final_hours) * role_factor)
         distribution = derive_distribution(
@@ -4116,7 +4117,14 @@ async def materialize_work_profiles_for_upload(
             ActivityAssetMapping.asset_type.isnot(None),
             ActivityAssetMapping.asset_type != "none",
             ActivityAssetMapping.is_active.is_(True),
-            ActivityAssetMapping.auto_committed.is_(True),
+            or_(
+                ActivityAssetMapping.auto_committed.is_(True),
+                and_(
+                    ActivityAssetMapping.manually_corrected.is_(True),
+                    ActivityAssetMapping.source == "manual",
+                    ActivityAssetMapping.auto_committed.is_(False),
+                ),
+            ),
         )
         .all()
     )

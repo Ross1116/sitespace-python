@@ -501,6 +501,42 @@ def test_resolve_work_profile_manual_hours_seed_drops_cached_context_profile():
     assert write_mock.call_args.kwargs["context_profile_id"] is None
 
 
+@pytest.mark.parametrize(
+    ("asset_role", "expected_hours"),
+    [
+        ("support", 4.5),
+        ("incidental", 2.0),
+    ],
+)
+def test_resolve_work_profile_support_incidental_reduces_hours_with_cached_profile(
+    asset_role,
+    expected_hours,
+):
+    cached = _cached_ai_profile()
+    written_profile = MagicMock()
+
+    with patch("app.services.feature_learning_service.get_feature_adjustments", return_value={}), \
+         patch("app.services.work_profile_service._write_activity_profile", return_value=written_profile) as write_mock:
+        result = resolve_work_profile(
+            MagicMock(),
+            project_id=uuid4(),
+            activity_id=uuid4(),
+            activity_asset_mapping_id=uuid4(),
+            item_id=uuid4(),
+            asset_type="crane",
+            asset_role=asset_role,
+            duration_days=2,
+            activity_name="Install tower crane",
+            preflight=_preflight_with_cached_ai_profile(cached),
+        )
+
+    assert result is written_profile
+    assert write_mock.call_args.kwargs["total_hours"] == expected_hours
+    assert sum(write_mock.call_args.kwargs["distribution"]) == expected_hours
+    assert write_mock.call_args.kwargs["source"] == "cache"
+    assert write_mock.call_args.kwargs["context_profile_id"] == cached.id
+
+
 def test_record_actual_hours_updates_non_manual_profile_and_rebuilds_global():
     project_id = uuid4()
     item_id = uuid4()

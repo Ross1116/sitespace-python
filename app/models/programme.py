@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint, Numeric
+from sqlalchemy import Column, String, Integer, SmallInteger, Float, Date, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint, Numeric, Index, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import backref, relationship
 from sqlalchemy.sql import func
@@ -155,6 +155,13 @@ class ActivityAssetMapping(Base):
             name="ck_activity_asset_mappings_label_confidence",
         ),
         UniqueConstraint("programme_activity_id", "id", name="uq_activity_asset_mappings_activity_id_pair"),
+        Index(
+            "ux_activity_asset_mappings_active_activity_asset",
+            "programme_activity_id",
+            "asset_type",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
