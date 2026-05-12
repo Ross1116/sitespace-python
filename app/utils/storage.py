@@ -29,7 +29,7 @@ class LocalStorage:
         return file_path
 
     def read(self, storage_path: str) -> bytes:
-        """Read file bytes — locally if on web, remotely if on worker/nightly."""
+        """Read local bytes first; worker/nightly may fetch remotely if missing."""
         if os.path.exists(storage_path):
             with open(storage_path, "rb") as f:
                 return f.read()
