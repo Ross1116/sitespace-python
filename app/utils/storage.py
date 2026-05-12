@@ -3,6 +3,7 @@
 import logging
 import os
 import uuid
+from urllib.parse import urlparse
 
 import aiofiles
 import httpx
@@ -29,14 +30,29 @@ class LocalStorage:
 
     def read(self, storage_path: str) -> bytes:
         """Read file bytes — locally if on web, remotely if on worker/nightly."""
+        if os.path.exists(storage_path):
+            with open(storage_path, "rb") as f:
+                return f.read()
         if settings.SERVICE_ROLE != "web" and settings.WEB_INTERNAL_URL:
             return self._read_remote(storage_path)
         with open(storage_path, "rb") as f:
             return f.read()
 
+    def _remote_fetch_url(self) -> str:
+        raw_url = settings.WEB_INTERNAL_URL.strip().rstrip("/")
+        parsed = urlparse(raw_url)
+        if "://" not in raw_url and raw_url and not raw_url.startswith("/"):
+            raw_url = f"http://{raw_url}"
+            parsed = urlparse(raw_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "WEB_INTERNAL_URL must be an http(s) URL for remote file fetches"
+            )
+        return f"{raw_url}/internal/files/fetch"
+
     def _read_remote(self, storage_path: str) -> bytes:
         """Fetch file from web service over Railway private networking."""
-        url = f"{settings.WEB_INTERNAL_URL.rstrip('/')}/internal/files/fetch"
+        url = self._remote_fetch_url()
         try:
             resp = httpx.get(
                 url,
