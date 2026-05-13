@@ -2959,19 +2959,6 @@ def rebuild_global_knowledge_entry(
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
 ) -> ItemKnowledgeBase | None:
-    if not is_global_asset_type(db, asset_type):
-        existing = _query_item_knowledge_entry(
-            db,
-            item_id=item_id,
-            asset_type=asset_type,
-            duration_bucket=duration_bucket,
-            context_version=context_version,
-            inference_version=inference_version,
-        )
-        if existing is not None:
-            db.delete(existing)
-            db.flush()
-        return None
     existing = _query_item_knowledge_entry(
         db,
         item_id=item_id,
@@ -2980,6 +2967,11 @@ def rebuild_global_knowledge_entry(
         context_version=context_version,
         inference_version=inference_version,
     )
+    if not is_global_asset_type(db, asset_type):
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        return None
 
     rows = _eligible_local_profiles_for_global_entry(
         db,

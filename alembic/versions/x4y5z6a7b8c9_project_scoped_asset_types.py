@@ -58,7 +58,10 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_asset_types_scope_project",
         "asset_types",
-        "(scope = 'global' AND project_id IS NULL) OR (scope = 'project' AND project_id IS NOT NULL)",
+        (
+            "(scope = 'global' AND project_id IS NULL AND local_slug IS NULL) OR "
+            "(scope = 'project' AND project_id IS NOT NULL AND local_slug IS NOT NULL)"
+        ),
     )
     op.create_index(
         "ux_asset_types_project_local_slug",

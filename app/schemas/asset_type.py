@@ -10,6 +10,16 @@ from pydantic import Field, field_validator
 from .base import BaseSchema
 
 
+def normalize_max_hours_per_day(value: object) -> Decimal:
+    try:
+        hours = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("max_hours_per_day must be a numeric value") from exc
+    if not (Decimal(0) <= hours <= Decimal(24)):
+        raise ValueError("max_hours_per_day must be between 0 and 24")
+    return round(hours, 1)
+
+
 class AssetTypeResponse(BaseSchema):
     """Public representation of an asset type from the taxonomy."""
     code: str
@@ -43,13 +53,7 @@ class AssetTypeCreate(BaseSchema):
     @field_validator("max_hours_per_day", mode="before")
     @classmethod
     def round_hours(cls, v: object) -> Decimal:
-        try:
-            d = Decimal(str(v))
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise ValueError("max_hours_per_day must be a numeric value") from exc
-        if not (Decimal(0) <= d <= Decimal(24)):
-            raise ValueError("max_hours_per_day must be between 0 and 24")
-        return round(d, 1)
+        return normalize_max_hours_per_day(v)
 
 
 class AssetTypeUpdate(BaseSchema):
@@ -66,15 +70,9 @@ class AssetTypeUpdate(BaseSchema):
     @field_validator("max_hours_per_day", mode="before")
     @classmethod
     def round_hours(cls, v: object) -> Decimal | None:
-        if v is not None:
-            try:
-                d = Decimal(str(v))
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise ValueError("max_hours_per_day must be a numeric value") from exc
-            if not (Decimal(0) <= d <= Decimal(24)):
-                raise ValueError("max_hours_per_day must be between 0 and 24")
-            return round(d, 1)
-        return v
+        if v is None:
+            return None
+        return normalize_max_hours_per_day(v)
 
 
 class AssetTypeBriefResponse(BaseSchema):
@@ -97,13 +95,7 @@ class ProjectAssetTypeCreate(BaseSchema):
     @field_validator("max_hours_per_day", mode="before")
     @classmethod
     def round_hours(cls, v: object) -> Decimal:
-        try:
-            d = Decimal(str(v))
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise ValueError("max_hours_per_day must be a numeric value") from exc
-        if not (Decimal(0) <= d <= Decimal(24)):
-            raise ValueError("max_hours_per_day must be between 0 and 24")
-        return round(d, 1)
+        return normalize_max_hours_per_day(v)
 
 
 class ProjectAssetTypeUpdate(BaseSchema):
@@ -120,13 +112,7 @@ class ProjectAssetTypeUpdate(BaseSchema):
     def round_hours(cls, v: object) -> Decimal | None:
         if v is None:
             return None
-        try:
-            d = Decimal(str(v))
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise ValueError("max_hours_per_day must be a numeric value") from exc
-        if not (Decimal(0) <= d <= Decimal(24)):
-            raise ValueError("max_hours_per_day must be between 0 and 24")
-        return round(d, 1)
+        return normalize_max_hours_per_day(v)
 
 
 class AssetTypeListResponse(BaseSchema):

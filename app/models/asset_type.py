@@ -12,7 +12,10 @@ class AssetType(Base):
     __table_args__ = (
         CheckConstraint("scope IN ('global', 'project')", name="ck_asset_types_scope"),
         CheckConstraint(
-            "(scope = 'global' AND project_id IS NULL) OR (scope = 'project' AND project_id IS NOT NULL)",
+            (
+                "(scope = 'global' AND project_id IS NULL AND local_slug IS NULL) OR "
+                "(scope = 'project' AND project_id IS NOT NULL AND local_slug IS NOT NULL)"
+            ),
             name="ck_asset_types_scope_project",
         ),
         Index(

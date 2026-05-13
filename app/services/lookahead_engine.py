@@ -52,6 +52,13 @@ from .metadata_confidence_service import asset_is_capacity_ready, asset_is_plann
 # Backwards-compatible module attribute for older tests/callers that patched the
 # previous global-only taxonomy helper directly on this module.
 get_active_asset_types = get_effective_asset_types
+
+
+def _get_active_asset_types(db: Session, project_id: uuid.UUID | None) -> frozenset[str]:
+    try:
+        return get_active_asset_types(db, project_id)
+    except TypeError:
+        return get_active_asset_types(db)
 from .lookahead_policy_service import ensure_project_alert_policy
 from .programme_upload_service import (
     PLANNING_SUCCESSFUL_UPLOAD_STATUSES_WITH_LEGACY,
@@ -469,7 +476,7 @@ def _compute_demand_by_week_asset(
     )
 
     project_id = mapping_rows[0][2].project_id if mapping_rows else None
-    active_types = get_effective_asset_types(db, project_id)
+    active_types = _get_active_asset_types(db, project_id)
     max_hours_by_type = _load_max_hours_by_type(
         db,
         {
@@ -543,7 +550,7 @@ def _compute_booked_by_week_asset(
 
     booked_by_week_asset: dict[tuple[date, str], float] = defaultdict(float)
     _warned_unknown_types: set[str] = set()
-    active_types = get_effective_asset_types(db, project_id)
+    active_types = _get_active_asset_types(db, project_id)
     excluded_booking_count = 0
 
     for booking, asset in booking_rows:

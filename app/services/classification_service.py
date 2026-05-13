@@ -439,6 +439,35 @@ def apply_manual_classification(
         .first()
     )
     previous_asset_type = previous.asset_type if previous is not None else None
+    conflicting_active = [
+        row
+        for row in (
+            db.query(ItemClassification)
+            .filter_by(item_id=item_id, is_active=True)
+            .with_for_update()
+            .all()
+        )
+        if row.project_id != classification_project_id
+    ]
+    conflicting_asset_types = {row.asset_type for row in conflicting_active}
+    for row in conflicting_active:
+        row.is_active = False
+        db.add(ItemClassificationEvent(
+            id=uuid.uuid4(),
+            item_id=item_id,
+            classification_id=row.id,
+            event_type="deactivated",
+            old_asset_type=row.asset_type,
+            new_asset_type=asset_type,
+            performed_by_user_id=performed_by_user_id,
+            details_json={
+                "reason": "manual_classification_scope_override",
+                "new_project_id": str(classification_project_id) if classification_project_id else None,
+                "old_project_id": str(row.project_id) if row.project_id else None,
+            },
+        ))
+    if conflicting_active:
+        db.flush()
 
     try:
         new_cls = _persist_classification(
@@ -483,16 +512,21 @@ def apply_manual_classification(
         last_event.event_type = "manual_override"
         db.flush()
 
-    if previous_asset_type and previous_asset_type != asset_type:
+    changed_asset_types = set(conflicting_asset_types)
+    if previous_asset_type:
+        changed_asset_types.add(previous_asset_type)
+    changed_asset_types.discard(asset_type)
+    if changed_asset_types:
         from .work_profile_service import invalidate_profiles_for_item_asset_type
 
-        invalidate_profiles_for_item_asset_type(
-            db,
-            item_id=item_id,
-            old_asset_type=previous_asset_type,
-            new_asset_type=asset_type,
-            reason="manual_classification_change",
-        )
+        for old_asset_type in changed_asset_types:
+            invalidate_profiles_for_item_asset_type(
+                db,
+                item_id=item_id,
+                old_asset_type=old_asset_type,
+                new_asset_type=asset_type,
+                reason="manual_classification_change",
+            )
 
     return new_cls
 
@@ -528,78 +562,76 @@ def reconcile_classifications_on_merge(
     The survivor's confirmation_count absorbs the loser's count.
     Called from identity_service.merge_items() inside the same transaction.
     """
-    source_cls = (
+    source_rows = (
         db.query(ItemClassification)
         .filter_by(item_id=source_item_id, is_active=True)
         .with_for_update()
-        .first()
+        .all()
     )
-    target_cls = (
+    target_rows = (
         db.query(ItemClassification)
         .filter_by(item_id=target_item_id, is_active=True)
         .with_for_update()
-        .first()
+        .all()
     )
 
-    if source_cls is None and target_cls is None:
+    if not source_rows and not target_rows:
         return  # Nothing to reconcile.
 
-    if source_cls is None:
+    if not source_rows:
         # Target wins by default — nothing to do.
         return
 
-    if target_cls is None:
-        # Source has a classification; target doesn't — move it to the canonical
-        # target item so get_active_classification(db, target_item_id) works.
-        source_cls.item_id = target_item_id
-        db.add(ItemClassificationEvent(
-            id=uuid.uuid4(),
-            item_id=target_item_id,
-            classification_id=source_cls.id,
-            event_type="merge_reconcile",
-            old_asset_type=source_cls.asset_type,
-            new_asset_type=source_cls.asset_type,
-            details_json={"note": "source_only_moved_to_target", "original_source_item_id": str(source_item_id)},
-        ))
-        db.flush()
-        return
-
-    # Both have active classifications — determine winner by precedence.
     def _score(c: ItemClassification) -> int:
         return _MERGE_SCORE.get((c.source, c.confidence), 0)
 
-    source_score = _score(source_cls)
-    target_score = _score(target_cls)
+    target_by_scope = {row.project_id: row for row in target_rows}
 
-    if source_score > target_score:
-        winner, loser = source_cls, target_cls
-    else:
-        # target wins on tie (target is the canonical survivor)
-        winner, loser = target_cls, source_cls
+    for source_cls in source_rows:
+        target_cls = target_by_scope.get(source_cls.project_id)
+        if target_cls is None:
+            source_cls.item_id = target_item_id
+            target_by_scope[source_cls.project_id] = source_cls
+            db.add(ItemClassificationEvent(
+                id=uuid.uuid4(),
+                item_id=target_item_id,
+                classification_id=source_cls.id,
+                event_type="merge_reconcile",
+                old_asset_type=source_cls.asset_type,
+                new_asset_type=source_cls.asset_type,
+                details_json={
+                    "note": "source_only_moved_to_target",
+                    "original_source_item_id": str(source_item_id),
+                    "project_id": str(source_cls.project_id) if source_cls.project_id else None,
+                },
+            ))
+            continue
 
-    # Reassign winner to the canonical target item so get_active_classification
-    # on target_item_id returns the winner after the merge.
-    winner.item_id = target_item_id
+        if _score(source_cls) > _score(target_cls):
+            winner, loser = source_cls, target_cls
+        else:
+            winner, loser = target_cls, source_cls
 
-    # Absorb confirmation count from loser into winner.
-    combined_confirmations = winner.confirmation_count + loser.confirmation_count
-    winner.confirmation_count = combined_confirmations
+        winner.item_id = target_item_id
+        combined_confirmations = winner.confirmation_count + loser.confirmation_count
+        winner.confirmation_count = combined_confirmations
+        loser.is_active = False
+        target_by_scope[winner.project_id] = winner
 
-    # Deactivate loser.
-    loser.is_active = False
-
-    db.add(ItemClassificationEvent(
-        id=uuid.uuid4(),
-        item_id=target_item_id,
-        classification_id=winner.id,
-        event_type="merge_reconcile",
-        old_asset_type=loser.asset_type,
-        new_asset_type=winner.asset_type,
-        details_json={
-            "source_item_id": str(source_item_id),
-            "winner_source": winner.source,
-            "loser_source": loser.source,
-            "combined_confirmation_count": combined_confirmations,
-        },
-    ))
+        db.add(ItemClassificationEvent(
+            id=uuid.uuid4(),
+            item_id=target_item_id,
+            classification_id=winner.id,
+            event_type="merge_reconcile",
+            old_asset_type=loser.asset_type,
+            new_asset_type=winner.asset_type,
+            details_json={
+                "source_item_id": str(source_item_id),
+                "winner_source": winner.source,
+                "loser_source": loser.source,
+                "combined_confirmation_count": combined_confirmations,
+                "project_id": str(winner.project_id) if winner.project_id else None,
+            },
+        ))
     db.flush()
+    return

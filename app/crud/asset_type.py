@@ -2,6 +2,7 @@ import re
 from uuid import UUID
 
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -137,7 +138,7 @@ def create_project_local(
     db_obj = AssetType(
         code=code,
         display_name=obj_in.display_name.strip(),
-        description=obj_in.description.strip(),
+        description=(obj_in.description or "").strip() or None,
         scope="project",
         project_id=project_id,
         local_slug=slug,
@@ -149,7 +150,25 @@ def create_project_local(
         created_by_user_id=created_by_user_id,
     )
     db.add(db_obj)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing_slug = (
+            db.query(AssetType)
+            .filter(
+                AssetType.scope == "project",
+                AssetType.project_id == project_id,
+                AssetType.local_slug == slug,
+            )
+            .first()
+        )
+        if existing_slug is not None:
+            raise ValueError("A local asset type with this name already exists for this project") from None
+        existing_code = get_by_code(db, code)
+        if existing_code is not None:
+            raise ValueError("A local asset type code conflict occurred; please try again") from None
+        raise
     db.refresh(db_obj)
     return db_obj
 

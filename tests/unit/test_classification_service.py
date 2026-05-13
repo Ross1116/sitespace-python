@@ -41,6 +41,7 @@ def _make_cls(
     correction_count: int = 0,
     asset_type: str = "crane",
     item_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification:
     c = MagicMock(spec=ItemClassification)
     c.id = uuid.uuid4()
@@ -51,6 +52,7 @@ def _make_cls(
     c.is_active = is_active
     c.confirmation_count = confirmation_count
     c.correction_count = correction_count
+    c.project_id = project_id
     return c
 
 
@@ -378,7 +380,7 @@ class TestReconcileClassificationsOnMerge:
                 result = target_cls
             else:
                 result = None
-            m.with_for_update.return_value.first.return_value = result
+            m.with_for_update.return_value.all.return_value = [] if result is None else [result]
             return m
 
         db.query.return_value.filter_by.side_effect = filter_by_side
