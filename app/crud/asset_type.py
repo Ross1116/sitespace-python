@@ -221,8 +221,12 @@ def update_project_local(
             raise DuplicateAssetTypeError("A local asset type with this name already exists for this project")
         db_obj.local_slug = slug
         db_obj.display_name = str(display_name).strip()
-    if "description" in update_data and update_data["description"] is not None:
-        db_obj.description = str(update_data.pop("description")).strip()
+    if "description" in update_data:
+        raw_description = update_data.pop("description")
+        if raw_description is None:
+            db_obj.description = None
+        else:
+            db_obj.description = str(raw_description).strip() or None
     for field, value in update_data.items():
         setattr(db_obj, field, value)
     try:
