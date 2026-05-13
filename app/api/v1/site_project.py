@@ -281,7 +281,10 @@ def create_project_asset_type(
             created_by_user_id=current_user.id,
         )
         return AssetTypeResponse.model_validate(row)
-    except ValueError as exc:
+    except asset_type_crud.InvalidAssetTypeNameError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except asset_type_crud.DuplicateAssetTypeError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:
@@ -310,6 +313,12 @@ def update_project_asset_type(
     try:
         updated = asset_type_crud.update_project_local(db, row, body)
         return AssetTypeResponse.model_validate(updated)
+    except asset_type_crud.InvalidAssetTypeNameError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except asset_type_crud.DuplicateAssetTypeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

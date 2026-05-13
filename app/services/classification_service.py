@@ -247,7 +247,10 @@ def resolve_item_classification(
 
         # Step 1 — existing active classification
         existing = get_active_classification(db, item_id, project_id)
-        effective_project_id = existing.project_id if existing is not None else project_id
+        # Re-checks intentionally use the existing classification's scope, so a
+        # project-local row is evaluated against its project while global rows
+        # remain global even when the request has project context.
+        resolved_project_scope = existing.project_id if existing is not None else project_id
         if existing is not None:
             tier = maturity_tier(existing)
 
@@ -292,7 +295,7 @@ def resolve_item_classification(
             )
 
             # Run AI re-check (import inside function to avoid circular imports).
-            ai_result = _run_standalone_ai(activity_name, db, effective_project_id)
+            ai_result = _run_standalone_ai(activity_name, db, resolved_project_scope)
             if ai_result is None:
                 # AI unavailable/timed out — leave tentative as-is, no count change.
                 return tentative_type
@@ -429,8 +432,9 @@ def apply_manual_classification(
     db_type = asset_type_crud.get_by_code(db, asset_type)
     if db_type is None or not db_type.is_active:
         raise ValueError(f"Asset type '{asset_type}' is not in the active taxonomy")
-    if db_type.scope == "project" and str(db_type.project_id) != str(project_id):
-        raise ValueError(f"Asset type '{asset_type}' is not available for this project")
+    if db_type.scope == "project":
+        if db_type.project_id is None or db_type.project_id != project_id:
+            raise ValueError(f"Asset type '{asset_type}' is not available for this project")
     classification_project_id = None if db_type.scope == "global" else project_id
 
     previous = (

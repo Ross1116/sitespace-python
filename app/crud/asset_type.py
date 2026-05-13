@@ -18,11 +18,19 @@ from ..schemas.asset_type import (
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 
 
+class InvalidAssetTypeNameError(ValueError):
+    """Raised when a project-local asset type name cannot produce a valid slug."""
+
+
+class DuplicateAssetTypeError(ValueError):
+    """Raised when a project-local asset type conflicts with an existing type."""
+
+
 def normalize_local_slug(value: str) -> str:
     slug = _SLUG_RE.sub("_", str(value or "").strip().lower()).strip("_")
     slug = re.sub(r"_+", "_", slug)
     if not slug:
-        raise ValueError("Asset type name must contain at least one letter or number")
+        raise InvalidAssetTypeNameError("Asset type name must contain at least one letter or number")
     if not slug[0].isalpha():
         slug = f"asset_{slug}"
     return slug[:32]
@@ -127,7 +135,7 @@ def create_project_local(
         .first()
     )
     if existing_slug is not None:
-        raise ValueError("A local asset type with this name already exists for this project")
+        raise DuplicateAssetTypeError("A local asset type with this name already exists for this project")
 
     suffix: int | None = None
     code = _local_code(project_id, slug)
@@ -164,10 +172,10 @@ def create_project_local(
             .first()
         )
         if existing_slug is not None:
-            raise ValueError("A local asset type with this name already exists for this project") from None
+            raise DuplicateAssetTypeError("A local asset type with this name already exists for this project") from None
         existing_code = get_by_code(db, code)
         if existing_code is not None:
-            raise ValueError("A local asset type code conflict occurred; please try again") from None
+            raise DuplicateAssetTypeError("A local asset type code conflict occurred; please try again") from None
         raise
     db.refresh(db_obj)
     return db_obj
@@ -194,8 +202,11 @@ def update_project_local(
     if db_obj.scope != "project":
         raise ValueError("Only project-local asset types can be updated here")
     update_data = obj_in.model_dump(exclude_unset=True)
-    if "display_name" in update_data and update_data["display_name"]:
-        slug = normalize_local_slug(update_data["display_name"])
+    if "display_name" in update_data:
+        display_name = update_data.pop("display_name")
+        if display_name is None or str(display_name).strip() == "":
+            raise InvalidAssetTypeNameError("Asset type name must contain at least one letter or number")
+        slug = normalize_local_slug(str(display_name))
         conflict = (
             db.query(AssetType)
             .filter(
@@ -207,14 +218,18 @@ def update_project_local(
             .first()
         )
         if conflict is not None:
-            raise ValueError("A local asset type with this name already exists for this project")
+            raise DuplicateAssetTypeError("A local asset type with this name already exists for this project")
         db_obj.local_slug = slug
-        db_obj.display_name = update_data.pop("display_name").strip()
+        db_obj.display_name = str(display_name).strip()
     if "description" in update_data and update_data["description"] is not None:
         db_obj.description = str(update_data.pop("description")).strip()
     for field, value in update_data.items():
         setattr(db_obj, field, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise DuplicateAssetTypeError("A local asset type with this name already exists for this project") from None
     db.refresh(db_obj)
     return db_obj
 
