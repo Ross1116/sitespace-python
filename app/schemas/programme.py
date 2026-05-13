@@ -7,7 +7,6 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from .base import BaseSchema
-from ..core.constants import ALLOWED_ASSET_TYPES
 from .slot_booking import BookingDetailResponse
 
 
@@ -86,10 +85,6 @@ class MappingCorrectionRequest(BaseSchema):
         if v is None:
             return None
         normalized = str(v).strip().lower()
-        if normalized not in ALLOWED_ASSET_TYPES:
-            raise ValueError(
-                "Invalid asset_type. Allowed values: " + ", ".join(sorted(ALLOWED_ASSET_TYPES))
-            )
         return normalized
 
     @field_validator("asset_role", mode="before")

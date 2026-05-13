@@ -245,6 +245,7 @@ def _classification_response(cls) -> ItemClassificationResponse:
     return ItemClassificationResponse(
         id=cls.id,
         item_id=cls.item_id,
+        project_id=cls.project_id,
         asset_type=cls.asset_type,
         confidence=cls.confidence,
         source=cls.source,
@@ -301,6 +302,7 @@ def override_item_classification(
             item_id=item_id,
             asset_type=body.asset_type,
             performed_by_user_id=current_user.id,
+            project_id=body.project_id,
         )
         db.commit()
     except LookupError as exc:

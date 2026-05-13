@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session, joinedload
 from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models.asset import Asset
+from ..models.asset_type import AssetType
 from ..models.lookahead import SubcontractorAssetTypeAssignment
 from ..models.programme import ActivityAssetMapping, AISuggestionLog, ProgrammeActivity, ProgrammeUpload
 from ..models.site_project import SiteProject
@@ -413,8 +414,30 @@ async def _run(upload_id: str, db: Session) -> None:
             {"name": a.name, "type": a.type or "", "code": a.asset_code, "canonical_type": a.canonical_type or ""}
             for a in db_assets
         ]
+        taxonomy_rows = (
+            db.query(AssetType)
+            .filter(
+                AssetType.is_active.is_(True),
+                AssetType.is_user_selectable.is_(True),
+                or_(
+                    AssetType.scope == "global",
+                    (AssetType.scope == "project") & (AssetType.project_id == upload.project_id),
+                ),
+            )
+            .all()
+        )
+        project_assets.extend(
+            {
+                "name": row.display_name,
+                "type": row.display_name,
+                "code": row.code,
+                "canonical_type": row.code,
+                "description": row.description or "",
+            }
+            for row in taxonomy_rows
+        )
         logger.info(
-            "Loaded %d project assets for classification (project %s)",
+            "Loaded %d project assets/types for classification (project %s)",
             len(project_assets),
             upload.project_id,
         )

@@ -392,7 +392,13 @@ def apply_mapping_correction(
             label_confidence=1.0,
             corrected_by_user_id=corrected_by_user_id,
         )
-        apply_manual_classification(db, memory_item.id, corrected_asset_type, corrected_by_user_id)
+        apply_manual_classification(
+            db,
+            memory_item.id,
+            corrected_asset_type,
+            corrected_by_user_id,
+            project_id=context.upload.project_id,
+        )
 
     profile_item_id = (
         memory_item.id

@@ -26,6 +26,8 @@ from sqlalchemy.orm import Session
 from ..core.constants import (
     CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS,
     CLASSIFICATION_STABLE_MIN_CONFIRMATIONS,
+    get_effective_asset_types,
+    is_global_asset_type,
 )
 from ..crud import asset_type as asset_type_crud
 from ..models.item_identity import Item, ItemClassification, ItemClassificationEvent
@@ -87,13 +89,32 @@ def _keyword_scan(activity_name: str) -> str | None:
 def get_active_classification(
     db: Session,
     item_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification | None:
-    """Return the active classification for *item_id*, or None."""
+    """Return project-local active classification first, then global."""
+    if project_id is not None:
+        local = (
+            db.query(ItemClassification)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
+            .first()
+        )
+        if local is not None:
+            return local
     return (
         db.query(ItemClassification)
-        .filter_by(item_id=item_id, is_active=True)
+        .filter_by(item_id=item_id, project_id=None, is_active=True)
         .first()
     )
+
+
+def _classification_scope_project_id(
+    db: Session,
+    asset_type: str,
+    project_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    if is_global_asset_type(db, asset_type):
+        return None
+    return project_id
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +127,7 @@ def _persist_classification(
     asset_type: str,
     confidence: str,
     source: str,
+    project_id: uuid.UUID | None = None,
     upload_id: Optional[uuid.UUID] = None,
     performed_by_user_id: Optional[uuid.UUID] = None,
     raise_on_conflict: bool = False,
@@ -127,7 +149,7 @@ def _persist_classification(
     try:
         existing = (
             db.query(ItemClassification)
-            .filter_by(item_id=item_id, is_active=True)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
             .with_for_update()
             .first()
         )
@@ -153,6 +175,7 @@ def _persist_classification(
         new_row = ItemClassification(
             id=uuid.uuid4(),
             item_id=item_id,
+            project_id=project_id,
             asset_type=asset_type,
             confidence=confidence,
             source=source,
@@ -184,7 +207,7 @@ def _persist_classification(
         # Re-query to find whichever row the winner committed.
         winner = (
             db.query(ItemClassification)
-            .filter_by(item_id=item_id, is_active=True)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
             .first()
         )
         if winner is not None:
@@ -203,6 +226,7 @@ def resolve_item_classification(
     item_id: uuid.UUID,
     activity_name: str,
     upload_id: Optional[uuid.UUID] = None,
+    project_id: uuid.UUID | None = None,
 ) -> str | None:
     """
     Return the resolved asset_type for *item_id*, persisting a new
@@ -222,7 +246,8 @@ def resolve_item_classification(
             return None
 
         # Step 1 — existing active classification
-        existing = get_active_classification(db, item_id)
+        existing = get_active_classification(db, item_id, project_id)
+        effective_project_id = existing.project_id if existing is not None else project_id
         if existing is not None:
             tier = maturity_tier(existing)
 
@@ -233,7 +258,7 @@ def resolve_item_classification(
                 try:
                     locked = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -267,7 +292,7 @@ def resolve_item_classification(
             )
 
             # Run AI re-check (import inside function to avoid circular imports).
-            ai_result = _run_standalone_ai(activity_name, db)
+            ai_result = _run_standalone_ai(activity_name, db, effective_project_id)
             if ai_result is None:
                 # AI unavailable/timed out — leave tentative as-is, no count change.
                 return tentative_type
@@ -281,7 +306,7 @@ def resolve_item_classification(
                     # row, otherwise the event would reference an inactive row.
                     revalidated = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -305,7 +330,7 @@ def resolve_item_classification(
                     # concurrent increments are serialised.
                     locked = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -331,10 +356,10 @@ def resolve_item_classification(
         # Step 2 — keyword scan (validate against active taxonomy before persisting)
         keyword_type = _keyword_scan(activity_name)
         if keyword_type:
-            from ..core.constants import get_active_asset_types
-            if keyword_type in get_active_asset_types(db):
+            if keyword_type in get_effective_asset_types(db, project_id):
+                classification_project_id = _classification_scope_project_id(db, keyword_type, project_id)
                 new_cls = _persist_classification(
-                    db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id,
+                    db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id, project_id=classification_project_id,
                 )
                 logger.debug("Item %s classified via keyword → %s", item_id, keyword_type)
                 return new_cls.asset_type
@@ -342,11 +367,12 @@ def resolve_item_classification(
                 logger.debug("Item %s keyword match '%s' is not an active asset type — skipping", item_id, keyword_type)
 
         # Step 3 — standalone AI
-        ai_result = _run_standalone_ai(activity_name, db)
+        ai_result = _run_standalone_ai(activity_name, db, project_id)
         if ai_result:
             ai_type, ai_confidence = ai_result
+            classification_project_id = _classification_scope_project_id(db, ai_type, project_id)
             new_cls = _persist_classification(
-                db, item_id, ai_type, ai_confidence, "ai", upload_id=upload_id,
+                db, item_id, ai_type, ai_confidence, "ai", upload_id=upload_id, project_id=classification_project_id,
             )
             logger.debug("Item %s classified via standalone AI → %s (%s)", item_id, ai_type, ai_confidence)
             return new_cls.asset_type
@@ -362,13 +388,15 @@ def resolve_item_classification(
         return None
 
 
-def _run_standalone_ai(activity_name: str, db: Session) -> tuple[str, str] | None:
+def _run_standalone_ai(
+    activity_name: str,
+    db: Session,
+    project_id: uuid.UUID | None = None,
+) -> tuple[str, str] | None:
     """Run standalone AI classification; return (asset_type, confidence) or None."""
     try:
         from .ai_service import classify_item_standalone  # type: ignore[attr-defined]
-        from ..core.constants import get_active_asset_types
-
-        valid_types = get_active_asset_types(db)
+        valid_types = get_effective_asset_types(db, project_id)
         return classify_item_standalone(activity_name, valid_types)
     except Exception as exc:
         logger.warning("Standalone AI classification failed: %s", exc)
@@ -384,6 +412,7 @@ def apply_manual_classification(
     item_id: uuid.UUID,
     asset_type: str,
     performed_by_user_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification:
     """
     Apply a human-driven classification.  Result is PERMANENT (source='manual').
@@ -400,8 +429,15 @@ def apply_manual_classification(
     db_type = asset_type_crud.get_by_code(db, asset_type)
     if db_type is None or not db_type.is_active:
         raise ValueError(f"Asset type '{asset_type}' is not in the active taxonomy")
+    if db_type.scope == "project" and str(db_type.project_id) != str(project_id):
+        raise ValueError(f"Asset type '{asset_type}' is not available for this project")
+    classification_project_id = None if db_type.scope == "global" else project_id
 
-    previous = get_active_classification(db, item_id)
+    previous = (
+        db.query(ItemClassification)
+        .filter_by(item_id=item_id, project_id=classification_project_id, is_active=True)
+        .first()
+    )
     previous_asset_type = previous.asset_type if previous is not None else None
 
     try:
@@ -411,6 +447,7 @@ def apply_manual_classification(
             asset_type,
             confidence="high",
             source="manual",
+            project_id=classification_project_id,
             raise_on_conflict=True,
             performed_by_user_id=performed_by_user_id,
         )
@@ -429,6 +466,7 @@ def apply_manual_classification(
             asset_type,
             confidence="high",
             source="manual",
+            project_id=classification_project_id,
             raise_on_conflict=True,
             performed_by_user_id=performed_by_user_id,
         )

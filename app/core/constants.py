@@ -299,7 +299,7 @@ SUBCONTRACTOR_PAGE_MAX: int = 1000
 
 
 def get_active_asset_types(db: object) -> frozenset[str]:
-    """Load active asset type codes from the DB taxonomy.
+    """Load active global asset type codes from the DB taxonomy.
 
     Falls back to the bootstrap ALLOWED_ASSET_TYPES if the asset_types
     table doesn't exist yet or the query fails.
@@ -311,10 +311,35 @@ def get_active_asset_types(db: object) -> frozenset[str]:
     """
     try:
         from ..crud.asset_type import get_active_codes
-        return get_active_codes(db)  # type: ignore[arg-type]
+        active_codes = get_active_codes(db)  # type: ignore[arg-type]
+        return active_codes or ALLOWED_ASSET_TYPES
     except Exception as exc:
         _logger.warning("Falling back to bootstrap ALLOWED_ASSET_TYPES: %s", exc)
         return ALLOWED_ASSET_TYPES
+
+
+def get_effective_asset_types(db: object, project_id: object | None = None) -> frozenset[str]:
+    """Load active global + project-local asset type codes for a project."""
+    if project_id is None:
+        return get_active_asset_types(db)
+    try:
+        from ..crud.asset_type import get_effective_active_codes
+        active_codes = get_effective_active_codes(db, project_id)  # type: ignore[arg-type]
+        return active_codes or ALLOWED_ASSET_TYPES
+    except Exception as exc:
+        _logger.warning("Falling back to bootstrap ALLOWED_ASSET_TYPES: %s", exc)
+        return ALLOWED_ASSET_TYPES
+
+
+def is_global_asset_type(db: object, code: str) -> bool:
+    """Return whether *code* belongs to the global taxonomy."""
+    if code in ALLOWED_ASSET_TYPES:
+        return True
+    try:
+        from ..crud.asset_type import is_global_code
+        return is_global_code(db, code)  # type: ignore[arg-type]
+    except Exception:
+        return code in ALLOWED_ASSET_TYPES
 
 
 def get_max_hours_for_type(db: object, code: str) -> float:
