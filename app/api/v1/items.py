@@ -245,6 +245,7 @@ def _classification_response(cls) -> ItemClassificationResponse:
     return ItemClassificationResponse(
         id=cls.id,
         item_id=cls.item_id,
+        project_id=cls.project_id,
         asset_type=cls.asset_type,
         confidence=cls.confidence,
         source=cls.source,
@@ -274,6 +275,7 @@ def _alias_response(alias) -> ItemAliasResponse:
 @router.get("/{item_id}/classification", response_model=ItemClassificationResponse)
 def get_item_classification(
     item_id: UUID,
+    project_id: UUID | None = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role([UserRole.ADMIN, UserRole.MANAGER])),
 ):
@@ -281,7 +283,7 @@ def get_item_classification(
     item = db.get(Item, item_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
-    cls = get_active_classification(db, item_id)
+    cls = get_active_classification(db, item_id, project_id=project_id)
     if not cls:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active classification for this item")
     return _classification_response(cls)
@@ -301,6 +303,7 @@ def override_item_classification(
             item_id=item_id,
             asset_type=body.asset_type,
             performed_by_user_id=current_user.id,
+            project_id=body.project_id,
         )
         db.commit()
     except LookupError as exc:

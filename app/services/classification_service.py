@@ -26,6 +26,8 @@ from sqlalchemy.orm import Session
 from ..core.constants import (
     CLASSIFICATION_CONFIRMED_MIN_CONFIRMATIONS,
     CLASSIFICATION_STABLE_MIN_CONFIRMATIONS,
+    get_effective_asset_types,
+    is_global_asset_type,
 )
 from ..crud import asset_type as asset_type_crud
 from ..models.item_identity import Item, ItemClassification, ItemClassificationEvent
@@ -87,13 +89,32 @@ def _keyword_scan(activity_name: str) -> str | None:
 def get_active_classification(
     db: Session,
     item_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification | None:
-    """Return the active classification for *item_id*, or None."""
+    """Return project-local active classification first, then global."""
+    if project_id is not None:
+        local = (
+            db.query(ItemClassification)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
+            .first()
+        )
+        if local is not None:
+            return local
     return (
         db.query(ItemClassification)
-        .filter_by(item_id=item_id, is_active=True)
+        .filter_by(item_id=item_id, project_id=None, is_active=True)
         .first()
     )
+
+
+def _classification_scope_project_id(
+    db: Session,
+    asset_type: str,
+    project_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    if is_global_asset_type(db, asset_type):
+        return None
+    return project_id
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +127,7 @@ def _persist_classification(
     asset_type: str,
     confidence: str,
     source: str,
+    project_id: uuid.UUID | None = None,
     upload_id: Optional[uuid.UUID] = None,
     performed_by_user_id: Optional[uuid.UUID] = None,
     raise_on_conflict: bool = False,
@@ -127,7 +149,7 @@ def _persist_classification(
     try:
         existing = (
             db.query(ItemClassification)
-            .filter_by(item_id=item_id, is_active=True)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
             .with_for_update()
             .first()
         )
@@ -153,6 +175,7 @@ def _persist_classification(
         new_row = ItemClassification(
             id=uuid.uuid4(),
             item_id=item_id,
+            project_id=project_id,
             asset_type=asset_type,
             confidence=confidence,
             source=source,
@@ -184,7 +207,7 @@ def _persist_classification(
         # Re-query to find whichever row the winner committed.
         winner = (
             db.query(ItemClassification)
-            .filter_by(item_id=item_id, is_active=True)
+            .filter_by(item_id=item_id, project_id=project_id, is_active=True)
             .first()
         )
         if winner is not None:
@@ -203,6 +226,7 @@ def resolve_item_classification(
     item_id: uuid.UUID,
     activity_name: str,
     upload_id: Optional[uuid.UUID] = None,
+    project_id: uuid.UUID | None = None,
 ) -> str | None:
     """
     Return the resolved asset_type for *item_id*, persisting a new
@@ -222,7 +246,11 @@ def resolve_item_classification(
             return None
 
         # Step 1 — existing active classification
-        existing = get_active_classification(db, item_id)
+        existing = get_active_classification(db, item_id, project_id)
+        # Re-checks intentionally use the existing classification's scope, so a
+        # project-local row is evaluated against its project while global rows
+        # remain global even when the request has project context.
+        resolved_project_scope = existing.project_id if existing is not None else project_id
         if existing is not None:
             tier = maturity_tier(existing)
 
@@ -233,7 +261,7 @@ def resolve_item_classification(
                 try:
                     locked = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -267,7 +295,7 @@ def resolve_item_classification(
             )
 
             # Run AI re-check (import inside function to avoid circular imports).
-            ai_result = _run_standalone_ai(activity_name, db)
+            ai_result = _run_standalone_ai(activity_name, db, resolved_project_scope)
             if ai_result is None:
                 # AI unavailable/timed out — leave tentative as-is, no count change.
                 return tentative_type
@@ -281,7 +309,7 @@ def resolve_item_classification(
                     # row, otherwise the event would reference an inactive row.
                     revalidated = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -305,7 +333,7 @@ def resolve_item_classification(
                     # concurrent increments are serialised.
                     locked = (
                         db.query(ItemClassification)
-                        .filter_by(item_id=item_id, is_active=True)
+                        .filter_by(item_id=item_id, project_id=existing.project_id, is_active=True)
                         .with_for_update()
                         .first()
                     )
@@ -331,10 +359,10 @@ def resolve_item_classification(
         # Step 2 — keyword scan (validate against active taxonomy before persisting)
         keyword_type = _keyword_scan(activity_name)
         if keyword_type:
-            from ..core.constants import get_active_asset_types
-            if keyword_type in get_active_asset_types(db):
+            if keyword_type in get_effective_asset_types(db, project_id):
+                classification_project_id = _classification_scope_project_id(db, keyword_type, project_id)
                 new_cls = _persist_classification(
-                    db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id,
+                    db, item_id, keyword_type, "medium", "keyword", upload_id=upload_id, project_id=classification_project_id,
                 )
                 logger.debug("Item %s classified via keyword → %s", item_id, keyword_type)
                 return new_cls.asset_type
@@ -342,11 +370,12 @@ def resolve_item_classification(
                 logger.debug("Item %s keyword match '%s' is not an active asset type — skipping", item_id, keyword_type)
 
         # Step 3 — standalone AI
-        ai_result = _run_standalone_ai(activity_name, db)
+        ai_result = _run_standalone_ai(activity_name, db, project_id)
         if ai_result:
             ai_type, ai_confidence = ai_result
+            classification_project_id = _classification_scope_project_id(db, ai_type, project_id)
             new_cls = _persist_classification(
-                db, item_id, ai_type, ai_confidence, "ai", upload_id=upload_id,
+                db, item_id, ai_type, ai_confidence, "ai", upload_id=upload_id, project_id=classification_project_id,
             )
             logger.debug("Item %s classified via standalone AI → %s (%s)", item_id, ai_type, ai_confidence)
             return new_cls.asset_type
@@ -362,13 +391,15 @@ def resolve_item_classification(
         return None
 
 
-def _run_standalone_ai(activity_name: str, db: Session) -> tuple[str, str] | None:
+def _run_standalone_ai(
+    activity_name: str,
+    db: Session,
+    project_id: uuid.UUID | None = None,
+) -> tuple[str, str] | None:
     """Run standalone AI classification; return (asset_type, confidence) or None."""
     try:
         from .ai_service import classify_item_standalone  # type: ignore[attr-defined]
-        from ..core.constants import get_active_asset_types
-
-        valid_types = get_active_asset_types(db)
+        valid_types = get_effective_asset_types(db, project_id)
         return classify_item_standalone(activity_name, valid_types)
     except Exception as exc:
         logger.warning("Standalone AI classification failed: %s", exc)
@@ -384,6 +415,7 @@ def apply_manual_classification(
     item_id: uuid.UUID,
     asset_type: str,
     performed_by_user_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification:
     """
     Apply a human-driven classification.  Result is PERMANENT (source='manual').
@@ -400,9 +432,46 @@ def apply_manual_classification(
     db_type = asset_type_crud.get_by_code(db, asset_type)
     if db_type is None or not db_type.is_active:
         raise ValueError(f"Asset type '{asset_type}' is not in the active taxonomy")
+    if db_type.scope == "project":
+        if db_type.project_id is None or db_type.project_id != project_id:
+            raise ValueError(f"Asset type '{asset_type}' is not available for this project")
+    classification_project_id = None if db_type.scope == "global" else project_id
 
-    previous = get_active_classification(db, item_id)
+    previous = (
+        db.query(ItemClassification)
+        .filter_by(item_id=item_id, project_id=classification_project_id, is_active=True)
+        .first()
+    )
     previous_asset_type = previous.asset_type if previous is not None else None
+    conflicting_active = [
+        row
+        for row in (
+            db.query(ItemClassification)
+            .filter_by(item_id=item_id, is_active=True)
+            .with_for_update()
+            .all()
+        )
+        if row.project_id != classification_project_id
+    ]
+    conflicting_asset_types = {row.asset_type for row in conflicting_active}
+    for row in conflicting_active:
+        row.is_active = False
+        db.add(ItemClassificationEvent(
+            id=uuid.uuid4(),
+            item_id=item_id,
+            classification_id=row.id,
+            event_type="deactivated",
+            old_asset_type=row.asset_type,
+            new_asset_type=asset_type,
+            performed_by_user_id=performed_by_user_id,
+            details_json={
+                "reason": "manual_classification_scope_override",
+                "new_project_id": str(classification_project_id) if classification_project_id else None,
+                "old_project_id": str(row.project_id) if row.project_id else None,
+            },
+        ))
+    if conflicting_active:
+        db.flush()
 
     try:
         new_cls = _persist_classification(
@@ -411,6 +480,7 @@ def apply_manual_classification(
             asset_type,
             confidence="high",
             source="manual",
+            project_id=classification_project_id,
             raise_on_conflict=True,
             performed_by_user_id=performed_by_user_id,
         )
@@ -429,6 +499,7 @@ def apply_manual_classification(
             asset_type,
             confidence="high",
             source="manual",
+            project_id=classification_project_id,
             raise_on_conflict=True,
             performed_by_user_id=performed_by_user_id,
         )
@@ -445,16 +516,21 @@ def apply_manual_classification(
         last_event.event_type = "manual_override"
         db.flush()
 
-    if previous_asset_type and previous_asset_type != asset_type:
+    changed_asset_types = set(conflicting_asset_types)
+    if previous_asset_type:
+        changed_asset_types.add(previous_asset_type)
+    changed_asset_types.discard(asset_type)
+    if changed_asset_types:
         from .work_profile_service import invalidate_profiles_for_item_asset_type
 
-        invalidate_profiles_for_item_asset_type(
-            db,
-            item_id=item_id,
-            old_asset_type=previous_asset_type,
-            new_asset_type=asset_type,
-            reason="manual_classification_change",
-        )
+        for old_asset_type in changed_asset_types:
+            invalidate_profiles_for_item_asset_type(
+                db,
+                item_id=item_id,
+                old_asset_type=old_asset_type,
+                new_asset_type=asset_type,
+                reason="manual_classification_change",
+            )
 
     return new_cls
 
@@ -490,78 +566,76 @@ def reconcile_classifications_on_merge(
     The survivor's confirmation_count absorbs the loser's count.
     Called from identity_service.merge_items() inside the same transaction.
     """
-    source_cls = (
+    source_rows = (
         db.query(ItemClassification)
         .filter_by(item_id=source_item_id, is_active=True)
         .with_for_update()
-        .first()
+        .all()
     )
-    target_cls = (
+    target_rows = (
         db.query(ItemClassification)
         .filter_by(item_id=target_item_id, is_active=True)
         .with_for_update()
-        .first()
+        .all()
     )
 
-    if source_cls is None and target_cls is None:
+    if not source_rows and not target_rows:
         return  # Nothing to reconcile.
 
-    if source_cls is None:
+    if not source_rows:
         # Target wins by default — nothing to do.
         return
 
-    if target_cls is None:
-        # Source has a classification; target doesn't — move it to the canonical
-        # target item so get_active_classification(db, target_item_id) works.
-        source_cls.item_id = target_item_id
-        db.add(ItemClassificationEvent(
-            id=uuid.uuid4(),
-            item_id=target_item_id,
-            classification_id=source_cls.id,
-            event_type="merge_reconcile",
-            old_asset_type=source_cls.asset_type,
-            new_asset_type=source_cls.asset_type,
-            details_json={"note": "source_only_moved_to_target", "original_source_item_id": str(source_item_id)},
-        ))
-        db.flush()
-        return
-
-    # Both have active classifications — determine winner by precedence.
     def _score(c: ItemClassification) -> int:
         return _MERGE_SCORE.get((c.source, c.confidence), 0)
 
-    source_score = _score(source_cls)
-    target_score = _score(target_cls)
+    target_by_scope = {row.project_id: row for row in target_rows}
 
-    if source_score > target_score:
-        winner, loser = source_cls, target_cls
-    else:
-        # target wins on tie (target is the canonical survivor)
-        winner, loser = target_cls, source_cls
+    for source_cls in source_rows:
+        target_cls = target_by_scope.get(source_cls.project_id)
+        if target_cls is None:
+            source_cls.item_id = target_item_id
+            target_by_scope[source_cls.project_id] = source_cls
+            db.add(ItemClassificationEvent(
+                id=uuid.uuid4(),
+                item_id=target_item_id,
+                classification_id=source_cls.id,
+                event_type="merge_reconcile",
+                old_asset_type=source_cls.asset_type,
+                new_asset_type=source_cls.asset_type,
+                details_json={
+                    "note": "source_only_moved_to_target",
+                    "original_source_item_id": str(source_item_id),
+                    "project_id": str(source_cls.project_id) if source_cls.project_id else None,
+                },
+            ))
+            continue
 
-    # Reassign winner to the canonical target item so get_active_classification
-    # on target_item_id returns the winner after the merge.
-    winner.item_id = target_item_id
+        if _score(source_cls) > _score(target_cls):
+            winner, loser = source_cls, target_cls
+        else:
+            winner, loser = target_cls, source_cls
 
-    # Absorb confirmation count from loser into winner.
-    combined_confirmations = winner.confirmation_count + loser.confirmation_count
-    winner.confirmation_count = combined_confirmations
+        winner.item_id = target_item_id
+        combined_confirmations = winner.confirmation_count + loser.confirmation_count
+        winner.confirmation_count = combined_confirmations
+        loser.is_active = False
+        target_by_scope[winner.project_id] = winner
 
-    # Deactivate loser.
-    loser.is_active = False
-
-    db.add(ItemClassificationEvent(
-        id=uuid.uuid4(),
-        item_id=target_item_id,
-        classification_id=winner.id,
-        event_type="merge_reconcile",
-        old_asset_type=loser.asset_type,
-        new_asset_type=winner.asset_type,
-        details_json={
-            "source_item_id": str(source_item_id),
-            "winner_source": winner.source,
-            "loser_source": loser.source,
-            "combined_confirmation_count": combined_confirmations,
-        },
-    ))
+        db.add(ItemClassificationEvent(
+            id=uuid.uuid4(),
+            item_id=target_item_id,
+            classification_id=winner.id,
+            event_type="merge_reconcile",
+            old_asset_type=loser.asset_type,
+            new_asset_type=winner.asset_type,
+            details_json={
+                "source_item_id": str(source_item_id),
+                "winner_source": winner.source,
+                "loser_source": loser.source,
+                "combined_confirmation_count": combined_confirmations,
+                "project_id": str(winner.project_id) if winner.project_id else None,
+            },
+        ))
     db.flush()
+    return

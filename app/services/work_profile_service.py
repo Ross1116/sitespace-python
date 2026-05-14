@@ -47,6 +47,7 @@ from ..core.constants import (
     WORK_PROFILE_NORM_DIST_SUM_TOLERANCE,
     WORK_PROFILE_OPERATIONAL_UNIT,
     WORK_PROFILE_TOKENS_PER_DAY,
+    is_global_asset_type,
 )
 from ..models.asset import Asset
 from ..models.programme import ActivityAssetMapping, ProgrammeActivity, ProgrammeUpload
@@ -2848,6 +2849,8 @@ def _eligible_local_profiles_for_global_entry(
     context_version: int,
     inference_version: int,
 ) -> list[ItemContextProfile]:
+    if not is_global_asset_type(db, asset_type):
+        return []
     rows = (
         active_context_profile_query(db)
         .filter(
@@ -2880,10 +2883,12 @@ def get_global_knowledge_entry(
     duration_days: int,
     context_version: int = WORK_PROFILE_CONTEXT_VERSION,
     inference_version: int = WORK_PROFILE_INFERENCE_VERSION,
-    ) -> ItemKnowledgeBase | None:
+) -> ItemKnowledgeBase | None:
     if asset_type in {"other", "none"}:
         return None
     if not _project_has_asset_type(db, project_id, asset_type):
+        return None
+    if not is_global_asset_type(db, asset_type):
         return None
     duration_bucket = duration_bucket_for_days(duration_days)
     return (
@@ -2962,6 +2967,11 @@ def rebuild_global_knowledge_entry(
         context_version=context_version,
         inference_version=inference_version,
     )
+    if not is_global_asset_type(db, asset_type):
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        return None
 
     rows = _eligible_local_profiles_for_global_entry(
         db,

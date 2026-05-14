@@ -50,6 +50,7 @@ class ItemClassificationResponse(BaseSchema):
     """Active classification for an item, including computed maturity tier."""
     id: UUID
     item_id: UUID
+    project_id: Optional[UUID] = None
     asset_type: str
     confidence: str
     source: str
@@ -64,6 +65,7 @@ class ItemClassificationResponse(BaseSchema):
 class ItemClassificationOverrideRequest(BaseSchema):
     """Body for manually setting the classification of an item (ADMIN only)."""
     asset_type: str
+    project_id: Optional[UUID] = None
 
 
 class ItemClassificationEventResponse(BaseSchema):

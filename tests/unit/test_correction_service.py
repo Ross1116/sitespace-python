@@ -95,8 +95,20 @@ def test_apply_mapping_correction_propagates_manual_truth(monkeypatch):
 
     monkeypatch.setattr(correction_service, "get_max_hours_for_type", lambda _db, asset_type: 8.0)
 
-    def fake_apply_manual_classification(db, item_id_arg, asset_type_arg, performed_by_user_id_arg):
-        classification_calls["args"] = (item_id_arg, asset_type_arg, performed_by_user_id_arg)
+    def fake_apply_manual_classification(
+        db,
+        item_id_arg,
+        asset_type_arg,
+        performed_by_user_id_arg,
+        *,
+        project_id=None,
+    ):
+        classification_calls["args"] = (
+            item_id_arg,
+            asset_type_arg,
+            performed_by_user_id_arg,
+            project_id,
+        )
         return SimpleNamespace(id=uuid4(), item_id=item_id_arg, asset_type=asset_type_arg, source="manual")
 
     monkeypatch.setattr(correction_service, "apply_manual_classification", fake_apply_manual_classification)
@@ -133,7 +145,7 @@ def test_apply_mapping_correction_propagates_manual_truth(monkeypatch):
     assert suggestion_log.accepted is False
     assert suggestion_log.correction == "forklift"
 
-    assert classification_calls["args"] == (item_id, "forklift", user_id)
+    assert classification_calls["args"] == (item_id, "forklift", user_id, upload.project_id)
     assert cache_calls["project_id"] == upload.project_id
     assert cache_calls["item_id"] == item_id
     assert cache_calls["asset_type"] == "forklift"

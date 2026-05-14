@@ -1344,7 +1344,7 @@ def _build_classification_prompt(
 
         # Prefer pre-computed canonical_type (Stage 3) when available.
         canonical = str(a.get("canonical_type") or "").strip() or None
-        if not canonical or canonical not in ALLOWED_ASSET_TYPES:
+        if not canonical:
             canonical = normalize_asset_type(raw_type)
         if canonical is None:
             # Type is generic (e.g. "EQUIPMENT") — fall back to the asset name.
@@ -1353,11 +1353,16 @@ def _build_classification_prompt(
         if canonical and canonical != "none":
             valid_types.add(canonical)
 
+        description = str(a.get("description") or "").strip()
         label = f"- {raw_name}"
         if raw_type:
             label += f" (type: {raw_type})"
+        if canonical:
+            label += f" -> {canonical}"
         if code:
             label += f" [code: {code}]"
+        if description:
+            label += f": {description}"
         asset_lines.append(label)
 
     # If no project assets mapped to canonical types, fall back to the full
@@ -1386,10 +1391,20 @@ def _build_classification_prompt(
         "other":         "other          → Any asset need that doesn't fit the types above",
         "none":          "none           → Activity genuinely requires no bookable site asset",
     }
+    local_descriptions: dict[str, str] = {}
+    for a in project_assets:
+        canonical = str(a.get("canonical_type") or "").strip()
+        if canonical and canonical not in _TYPE_DESCRIPTIONS:
+            label = str(a.get("type") or a.get("name") or canonical).strip()
+            description = str(a.get("description") or "").strip()
+            local_descriptions[canonical] = (
+                f"{canonical:<14} -> {label}: {description}" if description else f"{canonical:<14} -> {label}"
+            )
+
     type_lines = "\n".join(
-        f"  - {_TYPE_DESCRIPTIONS[t]}"
+        f"  - {_TYPE_DESCRIPTIONS.get(t, local_descriptions.get(t, t))}"
         for t in sorted(valid_types)
-        if t in _TYPE_DESCRIPTIONS
+        if t in _TYPE_DESCRIPTIONS or t in local_descriptions
     )
 
     asset_block = (
@@ -2155,7 +2170,9 @@ def _classify_assets_fallback(
     if project_assets:
         vt: set[str] = set()
         for a in project_assets:
-            canonical = normalize_asset_type(str(a.get("type") or ""))
+            canonical = str(a.get("canonical_type") or "").strip() or None
+            if canonical is None:
+                canonical = normalize_asset_type(str(a.get("type") or ""))
             if canonical is None:
                 canonical = normalize_asset_type(str(a.get("name") or ""))
             if canonical and canonical != "none":

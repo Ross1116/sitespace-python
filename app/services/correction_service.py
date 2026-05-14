@@ -18,6 +18,7 @@ from ..models.programme import (
     ProgrammeUpload,
 )
 from ..models.work_profile import ActivityWorkProfile, ItemContextProfile
+from .classification_service import apply_manual_classification as _apply_manual_classification
 from .identity_service import follow_item_redirect
 from .work_profile_service import (
     build_compressed_context,
@@ -47,9 +48,17 @@ def apply_manual_classification(
     item_id: uuid.UUID,
     asset_type: str,
     performed_by_user_id: uuid.UUID,
+    *,
+    project_id: uuid.UUID | None = None,
 ) -> None:
-    """Compatibility hook for legacy tests/callers; multi-asset memory is canonical."""
-    return None
+    """Compatibility hook for legacy tests/callers; forwards scoped item memory."""
+    _apply_manual_classification(
+        db,
+        item_id,
+        asset_type,
+        performed_by_user_id,
+        project_id=project_id,
+    )
 
 
 @dataclass
@@ -392,7 +401,13 @@ def apply_mapping_correction(
             label_confidence=1.0,
             corrected_by_user_id=corrected_by_user_id,
         )
-        apply_manual_classification(db, memory_item.id, corrected_asset_type, corrected_by_user_id)
+        apply_manual_classification(
+            db,
+            memory_item.id,
+            corrected_asset_type,
+            corrected_by_user_id,
+            project_id=context.upload.project_id,
+        )
 
     profile_item_id = (
         memory_item.id

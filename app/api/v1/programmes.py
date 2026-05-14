@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from ...core.config import settings
 from ...core.database import get_db
 from ...core.security import normalize_role, require_role
+from ...core.constants import get_effective_asset_types
 from ...crud import asset as asset_crud
 from ...crud import slot_booking as booking_crud
 from ...crud.site_project import check_sub_project_access
@@ -108,6 +109,16 @@ def _check_project_access(project_id: UUID, current_user: User, db: Session) -> 
         raise HTTPException(status_code=403, detail="You don't have access to this project")
 
     return project
+
+
+def _validate_effective_asset_type(db: Session, project_id: UUID, asset_type: str | None) -> None:
+    if asset_type is None:
+        return
+    if asset_type not in get_effective_asset_types(db, project_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Asset type '{asset_type}' is not available for this project",
+        )
 
 
 def _serialize_mapping(
@@ -1145,6 +1156,7 @@ def add_activity_asset_requirement(
     _check_project_access(upload.project_id, current_user, db)
     if not payload.asset_type:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="asset_type is required")
+    _validate_effective_asset_type(db, upload.project_id, payload.asset_type)
     if payload.profile_shape is not None or payload.manual_normalized_distribution is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1273,6 +1285,7 @@ def correct_activity_mapping(
             raise HTTPException(status_code=404, detail="Mapping not found")
 
         _check_project_access(context.upload.project_id, current_user, db)
+        _validate_effective_asset_type(db, context.upload.project_id, payload.asset_type)
 
         result = apply_mapping_correction(
             db,

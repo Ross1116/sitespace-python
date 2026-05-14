@@ -26,10 +26,17 @@ from ...schemas.site_project import (
     ProjectStatisticsResponse,
     PlanningCompletenessResponse,
 )
+from ...schemas.asset_type import (
+    AssetTypeBriefResponse,
+    AssetTypeResponse,
+    ProjectAssetTypeCreate,
+    ProjectAssetTypeUpdate,
+)
 from ...schemas.base import MessageResponse
 from ...schemas.enums import UserRole, ProjectStatus
 from ...schemas.subcontractor import SubcontractorResponse
 from ...crud import site_project as project_crud
+from ...crud import asset_type as asset_type_crud
 from ...crud import subcontractor as subcontractor_crud
 from ...crud import user as user_crud
 from ...services.metadata_confidence_service import get_project_planning_completeness
@@ -77,6 +84,16 @@ def validate_subcontractors_exist(db: Session, subcontractor_ids: List[UUID]) ->
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Subcontractor {subcontractor.email} is not active"
             )
+
+
+def get_project_or_404(db: Session, project_id: UUID) -> SiteProject:
+    project = project_crud.get_project(db, project_id=project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+    return project
 
 
 def check_project_access(
@@ -230,6 +247,87 @@ def list_projects(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve projects"
+        ) from exc
+
+
+@router.get("/{project_id}/asset-types", response_model=List[AssetTypeBriefResponse])
+def list_project_asset_types(
+    project_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> List[AssetTypeBriefResponse]:
+    """Return global plus project-local selectable asset types."""
+    get_project_or_404(db, project_id)
+    check_project_access(db, project_id, current_user)
+    rows = asset_type_crud.get_selectable(db, project_id=project_id)
+    return [AssetTypeBriefResponse.model_validate(row) for row in rows]
+
+
+@router.post("/{project_id}/asset-types", response_model=AssetTypeResponse, status_code=status.HTTP_201_CREATED)
+def create_project_asset_type(
+    project_id: UUID,
+    body: ProjectAssetTypeCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> AssetTypeResponse:
+    """Create a project-local asset type."""
+    get_project_or_404(db, project_id)
+    check_project_access(db, project_id, current_user, require_manager=True)
+    try:
+        row = asset_type_crud.create_project_local(
+            db,
+            project_id=project_id,
+            obj_in=body,
+            created_by_user_id=current_user.id,
+        )
+        return AssetTypeResponse.model_validate(row)
+    except asset_type_crud.InvalidAssetTypeNameError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except asset_type_crud.DuplicateAssetTypeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to create project asset type for project %s", project_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project asset type",
+        ) from exc
+
+
+@router.patch("/{project_id}/asset-types/{code}", response_model=AssetTypeResponse)
+def update_project_asset_type(
+    project_id: UUID,
+    code: str,
+    body: ProjectAssetTypeUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> AssetTypeResponse:
+    """Update or retire a project-local asset type."""
+    get_project_or_404(db, project_id)
+    check_project_access(db, project_id, current_user, require_manager=True)
+    row = asset_type_crud.get_by_code(db, code)
+    if row is None or row.scope != "project" or str(row.project_id) != str(project_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project asset type not found")
+    try:
+        updated = asset_type_crud.update_project_local(db, row, body)
+        return AssetTypeResponse.model_validate(updated)
+    except asset_type_crud.InvalidAssetTypeNameError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except asset_type_crud.DuplicateAssetTypeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to update project asset type %s", code)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update project asset type",
         ) from exc
 
 

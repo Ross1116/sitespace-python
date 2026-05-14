@@ -7,6 +7,7 @@ from decimal import Decimal
 import re
 
 from ..models.asset import Asset
+from ..models.asset_type import AssetType
 from ..models.site_project import SiteProject
 from ..models.slot_booking import SlotBooking
 from ..schemas.enums import (
@@ -397,6 +398,11 @@ def create_asset(db: Session, asset: AssetCreate, user_id: UUID = None) -> Asset
         raise ValueError("Cannot set maintenance dates on a retired asset")
 
     if asset.canonical_type:
+        asset_type = db.query(AssetType).filter(AssetType.code == asset.canonical_type).first()
+        if asset_type is None or not asset_type.is_active:
+            raise ValueError(f"Asset type '{asset.canonical_type}' is not active")
+        if asset_type.scope == "project" and str(asset_type.project_id) != str(asset.project_id):
+            raise ValueError(f"Asset type '{asset.canonical_type}' is not available for this project")
         resolution = confirmed_asset_type_resolution(asset.canonical_type)
     else:
         resolution = infer_asset_type_resolution(
@@ -729,6 +735,12 @@ def update_asset(
     asset_code = update_data.get("asset_code", db_asset.asset_code)
 
     if "canonical_type" in update_data and update_data["canonical_type"]:
+        asset_type = db.query(AssetType).filter(AssetType.code == update_data["canonical_type"]).first()
+        target_project_id = update_data.get("project_id", db_asset.project_id)
+        if asset_type is None or not asset_type.is_active:
+            raise ValueError(f"Asset type '{update_data['canonical_type']}' is not active")
+        if asset_type.scope == "project" and str(asset_type.project_id) != str(target_project_id):
+            raise ValueError(f"Asset type '{update_data['canonical_type']}' is not available for this project")
         resolution = confirmed_asset_type_resolution(update_data["canonical_type"])
         update_data["canonical_type"] = resolution.canonical_type
         update_data["type_resolution_status"] = resolution.status

@@ -120,6 +120,12 @@ class ItemClassification(Base):
         ForeignKey("asset_types.code", ondelete="RESTRICT"),
         nullable=False,
     )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("site_projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     confidence = Column(String(10), nullable=False)    # 'high' | 'medium' | 'low'
     source = Column(String(20), nullable=False)        # 'ai' | 'keyword' | 'manual'
     is_active = Column(Boolean, nullable=False, default=True)
@@ -145,6 +151,7 @@ class ItemClassification(Base):
     )
 
     item = relationship("Item", back_populates="classifications", foreign_keys=[item_id])
+    project = relationship("SiteProject", foreign_keys=[project_id])
     events = relationship("ItemClassificationEvent", back_populates="classification", foreign_keys="ItemClassificationEvent.classification_id")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 

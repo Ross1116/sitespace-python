@@ -41,6 +41,7 @@ def _make_cls(
     correction_count: int = 0,
     asset_type: str = "crane",
     item_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
 ) -> ItemClassification:
     c = MagicMock(spec=ItemClassification)
     c.id = uuid.uuid4()
@@ -51,6 +52,7 @@ def _make_cls(
     c.is_active = is_active
     c.confirmation_count = confirmation_count
     c.correction_count = correction_count
+    c.project_id = project_id
     return c
 
 
@@ -366,19 +368,21 @@ class TestReconcileClassificationsOnMerge:
     def _setup_db(self, source_cls, target_cls):
         db = MagicMock()
         # Match filter_by calls by item_id kwarg so the mock is order-independent.
-        source_id = source_cls.item_id if source_cls is not None else None
-        target_id = target_cls.item_id if target_cls is not None else None
+        source_rows = source_cls if isinstance(source_cls, list) else ([] if source_cls is None else [source_cls])
+        target_rows = target_cls if isinstance(target_cls, list) else ([] if target_cls is None else [target_cls])
+        source_id = source_rows[0].item_id if source_rows else None
+        target_id = target_rows[0].item_id if target_rows else None
 
         def filter_by_side(**kwargs):
             m = MagicMock()
             item_id = kwargs.get("item_id")
             if source_id is not None and item_id == source_id:
-                result = source_cls
+                result = source_rows
             elif target_id is not None and item_id == target_id:
-                result = target_cls
+                result = target_rows
             else:
-                result = None
-            m.with_for_update.return_value.first.return_value = result
+                result = []
+            m.with_for_update.return_value.all.return_value = result
             return m
 
         db.query.return_value.filter_by.side_effect = filter_by_side
@@ -447,3 +451,41 @@ class TestReconcileClassificationsOnMerge:
         reconcile_classifications_on_merge(db, source_id, target_id)
         events = [e for e in added if isinstance(e, ItemClassificationEvent)]
         assert any(e.event_type == "merge_reconcile" for e in events)
+
+    def test_merge_multi_scope(self):
+        source_id = uuid.uuid4()
+        target_id = uuid.uuid4()
+        project_id = uuid.uuid4()
+        source_global = _make_cls(
+            source="manual",
+            confidence="high",
+            asset_type="crane",
+            item_id=source_id,
+            project_id=None,
+            confirmation_count=2,
+        )
+        source_project = _make_cls(
+            source="keyword",
+            confidence="medium",
+            asset_type="bulldozer",
+            item_id=source_id,
+            project_id=project_id,
+            confirmation_count=1,
+        )
+        target_global = _make_cls(
+            source="ai",
+            confidence="medium",
+            asset_type="forklift",
+            item_id=target_id,
+            project_id=None,
+            confirmation_count=3,
+        )
+        db = self._setup_db([source_global, source_project], [target_global])
+        reconcile_classifications_on_merge(db, source_id, target_id)
+
+        assert target_global.is_active is False
+        assert source_global.item_id == target_id
+        assert source_global.confirmation_count == 5
+        assert source_project.item_id == target_id
+        assert source_project.is_active is True
+        assert source_project.project_id == project_id
